@@ -73,6 +73,14 @@ func TestTSCasesConvertMessages(t *testing.T) {
 			o, _ := args[1].(map[string]interface{})
 			opts.IsGemmaModel, _ = o["isGemmaModel"].(bool)
 			opts.IsGemini3Model, _ = o["isGemini3Model"].(bool)
+			// TS 1145cd58eb renamed the options after the capabilities they
+			// stand for (Go keeps the model-family field names).
+			if v, ok := o["systemInstructionAsUserMessage"].(bool); ok {
+				opts.IsGemmaModel = v
+			}
+			if v, ok := o["requiresThoughtSignatures"].(bool); ok {
+				opts.IsGemini3Model = v
+			}
 			if v, ok := o["supportsFunctionResponseParts"].(bool); ok {
 				opts.SupportsFunctionResponseParts = v
 			}
@@ -157,6 +165,7 @@ func TestTSCasesInteractions(t *testing.T) {
 		return m
 	}, map[string]string{
 		"round-trips an assistant tool-call + tool-result message pair through the request body (step 2)": "tool result JSON arrives as a Go map, which has no key order",
+		"rejects labels with non-string values before sending a request":                                  "a rejects test (the call fails before any request), which the case runner does not replay; the rejection is covered by TestR88provgInteractionsLabels",
 	})
 }
 

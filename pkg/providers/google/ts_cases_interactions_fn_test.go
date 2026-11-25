@@ -41,15 +41,7 @@ func TestTSCasesInteractionsConvertInput(t *testing.T) {
 			res["systemInstruction"] = system
 		}
 		return res, nil, nil
-	}, map[string]string{
-		// TS afb4e69924 sends tool results as top-level function_result inputs
-		// and nests documents in them; the stored fixture still holds the
-		// replaced cases (ported as TestPortprovgInteractionsToolResults*).
-		"maps an error-text tool result to is_error: true":                          "TS afb4e69924 changed this case (top-level function_result)",
-		"maps a content output with mixed text and image parts to an array result":  "TS afb4e69924 changed this case (top-level function_result)",
-		"maps a text tool result to a function_result block on a user turn":         "TS afb4e69924 changed this case (top-level function_result)",
-		"emits a warning when a content tool-result contains a non-image file part": "TS afb4e69924 changed this case (documents nest in the function_result)",
-	})
+	}, nil)
 }
 
 // TestTSCasesInteractionsFinishReason replays

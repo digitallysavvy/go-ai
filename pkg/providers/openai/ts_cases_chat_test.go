@@ -116,8 +116,7 @@ func TestTSCasesChat(t *testing.T) {
 		return m
 	}, map[string]string{
 		"should pass headers": tsProviderHeaders,
-		"should still clear temperature when top-level reasoning is none on o4-mini": "TS c3ee424a70 changed this test (o4-mini sends effort low with a compatibility warning); the case predates it; covered by TestChatO4MiniStillClearsTemperatureWhenReasoningNone",
-		"should stream text after Azure content filter chunks":                       "Go chat text parts carry no block id (TS id '0'); CanonStream ignores text ids by design",
+		"should stream text after Azure content filter chunks": "Go chat text parts carry no block id (TS id '0'); CanonStream ignores text ids by design",
 	})
 }
 

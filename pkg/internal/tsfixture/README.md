@@ -253,6 +253,22 @@ python3 -I <go-ai repo>/pkg/internal/tsfixture/record/merge_cases.py <case>.json
 gzip -9n < /tmp/out.json > <case>.json.gz
 ```
 
+Port wave 1 (TS `a457990a33`) re-extracted every case file whose TS test
+file changed since `2ebc78b654`: openai `chat` (one case changed upstream)
+and google `interactions_convert_input` (fresh extraction, every other case
+byte-identical); anthropic `language`, google `convert_messages`,
+`interactions`, `interactions_prepare_tools`, `language`, openai
+`responses` and Responses `convert_input`, and xai `responses` were
+reconciled: committed cases kept (gaining fresh `js` programs and aliases),
+cases changed upstream replaced by the fresh ones, removed cases dropped and
+new cases appended, with `capture.mjs` responses filled only for new or
+changed cases and the large-payload shrink rules applied. The gateway
+`create_gateway_error` file is unchanged: its four new access-policy cases
+declare `const response: GatewayErrorResponse` inside a nested describe,
+which the extractor resolves to the previous test's value, so they stay
+hand-ported (`TestPortprovgAccessPolicyDenied`). The openai `prepare_tools`
+file re-extracts identically with `--expand-each`.
+
 Round 87d merged the programs into the google, googlevertex (the shared
 google `language` file), gemini `sanitize_schema`, and the anthropic
 (`convert_prompt`, `convert_usage`, `json_response_tool_fallback`,
