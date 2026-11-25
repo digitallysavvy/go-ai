@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -95,8 +96,20 @@ func (h *SteerHandle) resolve(o SteeringOutcome) {
 type SteerOption func(*steerConfig)
 
 type steerConfig struct {
-	id    string
-	idSet bool
+	id        string
+	idSet     bool
+	interrupt bool
+}
+
+// WithSteerInterrupt makes Steer cancel the current model call when it has
+// not produced any output yet, and make it again in the same step with the
+// message (TS steer option interrupt, e4039889ba). Otherwise the message is
+// added at the next step boundary. Running tools are never interrupted. A
+// cancelled model call can still be billed by the provider, and it is not
+// included in the usage. The step is not counted again, so stop conditions do
+// not limit how often a step is redone. Queue ignores it.
+func WithSteerInterrupt() SteerOption {
+	return func(c *steerConfig) { c.interrupt = true }
 }
 
 // WithSteerID sets the id of the message. Sending a message again with the
@@ -124,17 +137,27 @@ const (
 // Steering sends user messages to a running generation. It can be used for
 // one generation only. Create it with NewSteering.
 type Steering struct {
-	mu       sync.Mutex
-	state    steeringState
-	pending  []pendingSteer
-	queued   []pendingSteer
-	taken    []pendingSteer
-	outcomes map[string]*SteerHandle
+	mu    sync.Mutex
+	state steeringState
+	// endReason is why the run ended (TS 28d17e6fec): a message sent after
+	// the run reports it as its not-delivered reason.
+	endReason SteeringNotDeliveredReason
+	pending   []pendingSteer
+	queued    []pendingSteer
+	taken     []pendingSteer
+	outcomes  map[string]*SteerHandle
+	// interruptRequested is an interrupt that arrived while no model call was
+	// watching, for example during PrepareStep or tool execution. It is
+	// dropped when the messages are taken at a step boundary, because they
+	// are then delivered without cancelling a model call.
+	interruptRequested bool
+	onInterrupt        func()
+	interruptToken     *int
 }
 
 // NewSteering creates a Steering (TS experimental_createSteering). Experimental.
 func NewSteering() *Steering {
-	return &Steering{outcomes: map[string]*SteerHandle{}}
+	return &Steering{outcomes: map[string]*SteerHandle{}, endReason: SteeringFinished}
 }
 
 // Steer adds a user message with the given text to the run at the next step
@@ -183,7 +206,13 @@ func (s *Steering) add(message types.Message, queued bool, opts []SteerOption) (
 	}
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	var interruptCall func()
+	defer func() {
+		s.mu.Unlock()
+		if interruptCall != nil {
+			interruptCall()
+		}
+	}()
 	if existing, ok := s.outcomes[id]; ok {
 		return existing, nil
 	}
@@ -193,7 +222,11 @@ func (s *Steering) add(message types.Message, queued bool, opts []SteerOption) (
 	h := &SteerHandle{done: make(chan struct{})}
 	s.outcomes[id] = h
 	if s.state == steeringEnded {
-		h.resolve(SteeringOutcome{ID: id, Message: message, Reason: SteeringFinished})
+		reason := s.endReason
+		if reason == "" {
+			reason = SteeringFinished
+		}
+		h.resolve(SteeringOutcome{ID: id, Message: message, Reason: reason})
 		return h, nil
 	}
 	p := pendingSteer{id: id, message: message, handle: h}
@@ -201,8 +234,25 @@ func (s *Steering) add(message types.Message, queued bool, opts []SteerOption) (
 		s.queued = append(s.queued, p)
 	} else {
 		s.pending = append(s.pending, p)
+		if cfg.interrupt {
+			interruptCall = s.requestInterruptLocked()
+		}
 	}
 	return h, nil
+}
+
+// requestInterruptLocked records an interrupt. It returns the watcher to call
+// after the lock is released, or nil when no model call is watching (the
+// interrupt then waits for the next watcher).
+func (s *Steering) requestInterruptLocked() func() {
+	onInterrupt := s.onInterrupt
+	if onInterrupt == nil {
+		s.interruptRequested = true
+		return nil
+	}
+	s.onInterrupt = nil
+	s.interruptToken = nil
+	return onInterrupt
 }
 
 // generateSteeringID makes the default id of a steering message: "steer-"
@@ -272,11 +322,46 @@ func (r *steeringRun) takeMessages() []types.Message {
 	}
 	r.s.taken = append(r.s.taken, r.s.pending...)
 	r.s.pending = nil
+	r.s.interruptRequested = false
 	out := make([]types.Message, 0, len(r.s.taken))
 	for _, p := range r.s.taken {
 		out = append(out, p.message)
 	}
 	return out
+}
+
+// watchInterrupt watches for interrupting messages while a model call has not
+// produced any output yet. It calls onInterrupt at most once, right away when
+// an interrupting message is already waiting. The returned function stops
+// watching (TS SteeringRun.watchInterrupt). A nil run watches nothing.
+func (r *steeringRun) watchInterrupt(onInterrupt func()) func() {
+	if r == nil {
+		return func() {}
+	}
+	r.s.mu.Lock()
+	if r.s.state != steeringRunning {
+		r.s.mu.Unlock()
+		return func() {}
+	}
+	if r.s.interruptRequested {
+		r.s.interruptRequested = false
+		r.s.mu.Unlock()
+		onInterrupt()
+		return func() {}
+	}
+	// A func value is not comparable: a token identifies this watcher.
+	token := new(int)
+	r.s.onInterrupt = onInterrupt
+	r.s.interruptToken = token
+	r.s.mu.Unlock()
+	return func() {
+		r.s.mu.Lock()
+		defer r.s.mu.Unlock()
+		if r.s.interruptToken == token {
+			r.s.onInterrupt = nil
+			r.s.interruptToken = nil
+		}
+	}
 }
 
 // steeringDelivered is a delivered steering message with its id (TS
@@ -340,6 +425,9 @@ func (r *steeringRun) end(reason SteeringNotDeliveredReason) {
 	notDelivered := append(append(append([]pendingSteer(nil), r.s.taken...), r.s.pending...), r.s.queued...)
 	r.s.taken, r.s.pending, r.s.queued = nil, nil, nil
 	r.s.state = steeringEnded
+	r.s.endReason = reason
+	r.s.interruptRequested = false
+	r.s.onInterrupt = nil
 	r.s.mu.Unlock()
 	for _, p := range notDelivered {
 		p.handle.resolve(SteeringOutcome{ID: p.id, Message: p.message, Reason: reason})
@@ -347,19 +435,43 @@ func (r *steeringRun) end(reason SteeringNotDeliveredReason) {
 }
 
 // steerIsSent reports whether message is part of sentMessages. PrepareStep can
-// map messages to new values (for example to add provider options), so a
-// message also counts as sent when a user message has the same content.
+// map messages to new values, for example to add provider options to parts,
+// so a message also counts as sent when a user message has the same content
+// parts, ignoring the provider options of the parts (TS 28d17e6fec).
 func steerIsSent(message types.Message, sentMessages []types.Message) bool {
-	content, _ := jsonstr.Marshal(message.Content)
+	content := steerNormalizedContent(message.Content)
 	for _, sent := range sentMessages {
 		if sent.Role != types.RoleUser {
 			continue
 		}
-		if sentContent, _ := jsonstr.Marshal(sent.Content); string(sentContent) == string(content) {
+		if steerNormalizedContent(sent.Content) == content {
 			return true
 		}
 	}
 	return false
+}
+
+// steerNormalizedContent is the JSON of the content parts without their
+// providerOptions (TS normalizeContent). Go content is always a list of
+// parts, so TS's text-string form needs no conversion.
+func steerNormalizedContent(parts []types.ContentPart) string {
+	normalized := make([]interface{}, 0, len(parts))
+	for _, part := range parts {
+		raw, err := jsonstr.Marshal(part)
+		if err != nil {
+			normalized = append(normalized, string(raw))
+			continue
+		}
+		var object map[string]interface{}
+		if err := json.Unmarshal(raw, &object); err != nil || object == nil {
+			normalized = append(normalized, json.RawMessage(raw))
+			continue
+		}
+		delete(object, "providerOptions")
+		normalized = append(normalized, object)
+	}
+	out, _ := jsonstr.Marshal(normalized)
+	return string(out)
 }
 
 // steeringEndReasonFor returns the reason a run ended because of err.

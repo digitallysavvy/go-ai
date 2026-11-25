@@ -58,6 +58,10 @@ type AgentResult struct {
 	// Final finish reason
 	FinishReason types.FinishReason
 
+	// StoppedBy says why the loop stopped: the model, a stop condition, a
+	// tool without an Execute function, or a tool approval (TS stoppedBy).
+	StoppedBy ai.StoppedBy
+
 	// StopReason is the reason string from the StopCondition that stopped the loop.
 	// Empty if the agent ended naturally or was not using custom stop conditions.
 	StopReason string
@@ -545,6 +549,12 @@ type AgentConfig struct {
 	// OnStepStart is called at the beginning of each LLM step.
 	OnStepStartEvent func(ctx context.Context, e ai.OnStepStartEvent)
 
+	// OnWarning receives the warnings of the agent calls, for example
+	// unsupported settings, deprecated prompt parts, or reaching the default
+	// step limit, instead of the global warning logger (TS onWarning,
+	// d834c5bb35). Like OnStepError it is set here, not per call.
+	OnWarning ai.LogWarningsFunction
+
 	// OnStepError is called when a step that started fails before it produces
 	// a step result (the provider call fails or, in Stream, the model stream
 	// ends without output). OnStepEnd is not called for such a step. In
@@ -653,6 +663,7 @@ type AgentConfig struct {
 	// ExperimentalToolApprovalSecret signs issued tool approval requests and
 	// verifies resumed approval responses before tools execute (TS
 	// experimental_toolApprovalSecret). Nil disables signing/verification.
+	// Approval requests of automatically denied tool calls are not signed.
 	ExperimentalToolApprovalSecret []byte
 }
 

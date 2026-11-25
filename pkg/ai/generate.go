@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	retryutil "github.com/digitallysavvy/go-ai/pkg/internal/retry"
@@ -300,7 +301,8 @@ type GenerateTextOptions struct {
 	ToolApproval types.ToolApprovalConfig
 
 	// ExperimentalToolApprovalSecret signs server-issued approval requests so
-	// resumed approval responses can be verified before execution.
+	// resumed approval responses can be verified before execution. Approval
+	// requests of automatically denied tool calls are not signed.
 	ExperimentalToolApprovalSecret []byte
 
 	// MaxSteps is a convenience shorthand for StopWhen{StepCountIs(N)}.
@@ -545,6 +547,12 @@ type GenerateTextOptions struct {
 	// #23813).
 	ExperimentalSteering *Steering
 
+	// OnWarning receives the warnings of the call, for example unsupported
+	// settings or deprecated prompt parts, instead of the global warning
+	// logger (TS onWarning, d834c5bb35). A panic in it does not break the
+	// call.
+	OnWarning LogWarningsFunction
+
 	// OnStepError is called when a step that started fails before it produces
 	// a step result: the provider call fails or an error occurs while the step
 	// runs. OnStepEnd is not called for such a step. In GenerateText an abort
@@ -740,6 +748,12 @@ type GenerateTextResult struct {
 	// NoOutputGeneratedError on access).
 	Output any `json:"output,omitempty"`
 
+	// StoppedBy says why the tool loop stopped: the model, a stop condition,
+	// a tool without an Execute function, or a tool approval. Unlike
+	// FinishReason, which describes the last model call, it tells what ended
+	// the loop (TS stoppedBy). GenerateText always sets it.
+	StoppedBy StoppedBy `json:"stoppedBy,omitempty"`
+
 	// Tool calls made across all steps.
 	ToolCalls []types.ToolCall `json:"toolCalls"`
 
@@ -866,6 +880,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	if err != nil {
 		return nil, err
 	}
+	logCallWarnings := createLogWarnings(opts.OnWarning)
 	// TS logs these after the tool search state, before prepareRetries.
 	// Warn (once, up front) when a streaming-only timeout setting is passed
 	// to the non-streaming GenerateText (TS 349afe7 / generate-text.ts
@@ -890,7 +905,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			})
 		}
 		if len(unsupportedTimeoutWarnings) > 0 {
-			logModelWarnings(unsupportedTimeoutWarnings, opts.Model.Provider(), opts.Model.ModelID())
+			logCallWarnings(LogWarningsOptions{Warnings: unsupportedTimeoutWarnings, Provider: opts.Model.Provider(), Model: opts.Model.ModelID()})
 		}
 	}
 
@@ -1013,6 +1028,8 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	// steeringEndReason says why waiting steering messages are not delivered
 	// when the loop ends.
 	steeringEndReason := SteeringFinished
+	// stoppedBy says why the tool loop ended (TS stoppedBy, 7760e33531).
+	stoppedBy := StoppedByModel
 
 	// openStep is the step that has started but not ended; it is reported to
 	// OnStepError when the call fails before the step produces a result.
@@ -1143,8 +1160,11 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 
 	stopConditions := resolveStopConditions(opts.StopWhen, opts.MaxSteps)
 
-	// Current messages for conversation history
-	currentMessages := prompt.Messages
+	// Current messages for conversation history. Every step gets a messages
+	// slice of its own (TS 0b8cbfadb8), also the first one, so approval
+	// functions can tell the tool calls of one response from those of another
+	// by the slice they receive.
+	currentMessages := append([]types.Message(nil), prompt.Messages...)
 	initialMessages := append([]types.Message(nil), prompt.Messages...)
 
 	// Resume tool approvals from the input messages (TS collectToolApprovals
@@ -1231,13 +1251,21 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			stepCtx, stepCancel = opts.Timeout.CreateTimeoutContext(ctx, "step")
 			defer stepCancel()
 		}
-		stepModel := opts.Model
-		stepSystem := instructionsForNextStep
-		stepInstructionMessages := instructionMessagesForNextStep
 		steeringMessages := steeringRun.takeMessages()
 		if len(steeringMessages) > 0 {
 			currentMessages = append(append([]types.Message(nil), currentMessages...), steeringMessages...)
 		}
+		// A step that a steering interrupt cancelled is made again as the same
+		// step (TS e4039889ba): it keeps the steering messages it already
+		// delivered, calls OnStepStart once, and starts every attempt with
+		// the contexts the step started with.
+		var stepDeliveredSteering []types.Message
+		stepStartNotified := false
+		stepStartRuntimeContext, stepStartToolsContext := runtimeContext, toolsContext
+	stepAttempt:
+		stepModel := opts.Model
+		stepSystem := instructionsForNextStep
+		stepInstructionMessages := instructionMessagesForNextStep
 		stepMessages := currentMessages
 		stepSandbox := opts.ExperimentalSandbox
 		stepTools := FilterActiveTools(opts.Tools, opts.ActiveTools)
@@ -1314,7 +1342,12 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				stepInstructionMessages = nil
 			}
 			if prepared.Messages != nil {
-				stepMessages = prepared.Messages
+				// PrepareStep can return the same slice for several steps
+				// or calls, so its messages are copied (TS 0b8cbfadb8): a
+				// step's tools and approval functions all get this step's
+				// slice, and no other step's.
+				stepMessages = make([]types.Message, len(prepared.Messages))
+				copy(stepMessages, prepared.Messages)
 			}
 			stepTools, stepActiveTools = applyPreparedTools(opts.Tools, stepTools, stepActiveTools, prepared)
 			if prepared.ToolChoice.Type != "" {
@@ -1381,7 +1414,11 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 
 		// Steering messages are delivered when they are part of the messages
 		// sent to the model after PrepareStep.
-		deliveredSteeringMessages := steeringDeliveredMessages(steeringRun.resolveTakenMessages(stepIndex, stepMessages))
+		stepDeliveredSteering = append(stepDeliveredSteering, steeringDeliveredMessages(steeringRun.resolveTakenMessages(stepIndex, stepMessages))...)
+		deliveredSteeringMessages := stepDeliveredSteering
+		if len(deliveredSteeringMessages) == 0 {
+			deliveredSteeringMessages = nil
+		}
 
 		stepTools = resolveStepTools(ctx, stepTools, toolsContext, stepSandbox)
 		stepTools = orderStepTools(stepTools, stepToolOrder)
@@ -1393,7 +1430,10 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			toolsByName[stepExecutionTools[i].Name] = &stepExecutionTools[i]
 		}
 
-		logPromptDeprecations(promptDeprecations.forStep(stepMessages))
+		// The prompt warnings of the step join its warnings and are logged as
+		// one batch, without provider or model (TS promptWarnings).
+		promptWarnings := flattenWarningBatches(promptDeprecations.forStep(stepMessages))
+		logCallWarnings(LogWarningsOptions{Warnings: promptWarnings})
 		stepPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(stepCtx, types.Prompt{
 			Messages: messagesForModel(stepMessages),
 			// The sandbox description is not added to the prompt (TS:
@@ -1441,7 +1481,9 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			RuntimeContext:      runtimeContext,
 			ToolsContext:        toolsContext,
 		}
-		Notify(ctx, stepStartEvent, opts.OnStepStart)
+		if !stepStartNotified {
+			Notify(ctx, stepStartEvent, opts.OnStepStart)
+		}
 		openStep = &stepStartEvent
 
 		// Resolve ResponseFormat: prefer explicit opts.ResponseFormat; fall back
@@ -1494,20 +1536,23 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		if telemetrySettings.ShouldRecordInputs() {
 			stepTelSystem = stepSystem
 		}
-		stepCtx = telemetry.FireOnStepStart(stepCtx, telemetry.TelemetryStepStartEvent{
-			CallID:         callID,
-			OperationType:  "ai.generateText",
-			Settings:       telemetrySettings,
-			StepNumber:     stepIndex,
-			ModelProvider:  stepModel.Provider(),
-			ModelID:        stepModel.ModelID(),
-			ToolChoice:     preparedToolChoice(stepToolChoice),
-			PromptMessages: genOpts.Prompt.Messages,
-			System:         stepTelSystem,
-			StepTools:      stepTools,
-			RuntimeContext: telemetryRuntimeContextWithSensitivity(telemetrySettings, runtimeContext, opts.SensitiveRuntimeContext),
-			ToolsContext:   telemetryToolsContext(telemetrySettings, toolsContext),
-		})
+		if !stepStartNotified {
+			stepCtx = telemetry.FireOnStepStart(stepCtx, telemetry.TelemetryStepStartEvent{
+				CallID:         callID,
+				OperationType:  "ai.generateText",
+				Settings:       telemetrySettings,
+				StepNumber:     stepIndex,
+				ModelProvider:  stepModel.Provider(),
+				ModelID:        stepModel.ModelID(),
+				ToolChoice:     preparedToolChoice(stepToolChoice),
+				PromptMessages: genOpts.Prompt.Messages,
+				System:         stepTelSystem,
+				StepTools:      stepTools,
+				RuntimeContext: telemetryRuntimeContextWithSensitivity(telemetrySettings, runtimeContext, opts.SensitiveRuntimeContext),
+				ToolsContext:   telemetryToolsContext(telemetrySettings, toolsContext),
+			})
+		}
+		stepStartNotified = true
 		openStepTelemetryCtx = stepCtx
 
 		// TS generateText takes one stepStartTimestampMs after onStepStart,
@@ -1566,8 +1611,37 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		modelCallStart := stepStart
 		var genResult *types.GenerateResult
 		err := responseFormatErr
+		// A steering interrupt cancels the model call while it has produced
+		// no output (TS interruptController merged into the call's signal).
+		interruptCtx, interruptCancel := context.WithCancel(modelCallCtx)
+		var interrupted atomic.Bool
+		stopWatchingInterrupt := steeringRun.watchInterrupt(func() {
+			interrupted.Store(true)
+			interruptCancel()
+		})
 		if err == nil {
-			genResult, err = doGenerateWithGatewayRetry(modelCallCtx, stepModel, genOpts, opts.MaxRetries)
+			genResult, err = doGenerateWithGatewayRetry(interruptCtx, stepModel, genOpts, opts.MaxRetries)
+		}
+		stopWatchingInterrupt()
+		interruptCancel()
+		if err != nil && interrupted.Load() && stepCtx.Err() == nil {
+			// A caller abort or a timeout wins over an interrupt: the run
+			// ends instead of making the model call again. Otherwise the
+			// step is made again with the interrupting messages; the
+			// cancelled call is not counted in the usage.
+			runtimeContext, toolsContext = stepStartRuntimeContext, stepStartToolsContext
+			if more := steeringRun.takeMessages(); len(more) > 0 {
+				steeringMessages = append(steeringMessages, more...)
+				currentMessages = append(append([]types.Message(nil), currentMessages...), more...)
+			}
+			goto stepAttempt
+		}
+		if err != nil && interrupted.Load() {
+			// The caller's abort (or a timeout) won: report its reason, not
+			// the interrupt's cancellation (TS throws mergedAbortSignal.reason).
+			if cause := context.Cause(stepCtx); cause != nil {
+				err = cause
+			}
 		}
 		if err != nil {
 			if opts.Timeout != nil {
@@ -1736,7 +1810,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			RawFinishReason:              stepRawFinishReason,
 			Usage:                        genResult.Usage,
 			Performance:                  performance,
-			Warnings:                     genResult.Warnings,
+			Warnings:                     stepWarningsWithPrompt(promptWarnings, genResult.Warnings),
 			Sources:                      stepSources,
 			Request:                      stepRequest,
 			Response: types.StepResponse{
@@ -1857,9 +1931,12 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			// An approved local call that did not run (no Execute, or a finish
 			// reason that blocks execution) still records its approval
 			// request and response, as TS does.
-			attachToolApprovalSignatures(toolResults, opts.ExperimentalToolApprovalSecret)
+			attachSignaturesToIssuedApprovals(toolResults, opts.ExperimentalToolApprovalSecret)
 			contentResults := invalidToolErrorsFirst(withApprovedUnexecutedCalls(toolResults, toolsToExecute, stepExecutionTools, preApprovals), toolsToExecute)
-			stepResult.Content = append(stepResult.Content, attachInputSchemaInputs(toolResultsToContentParts(contentResults, opts.ExperimentalToolApprovalSecret), inputSchemaInputs(preRefinementCalls, genResult.ToolCalls))...)
+			// Signed here, not by toolResultsToContentParts, so that an
+			// automatic denial stays unsigned (TS 63593a7f6a).
+			attachSignaturesToIssuedApprovals(contentResults, opts.ExperimentalToolApprovalSecret)
+			stepResult.Content = append(stepResult.Content, attachInputSchemaInputs(toolResultsToContentParts(contentResults), inputSchemaInputs(preRefinementCalls, genResult.ToolCalls))...)
 			stepResult.Performance = finishStepPerformance(stepResult.Performance, stepStart, toolCallbacks.toolExecutionMs)
 			result.ToolResults = append(result.ToolResults, publicResults...)
 			result.StaticToolResults = filterStaticToolResults(result.ToolResults)
@@ -2000,7 +2077,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		// Log this step's model warnings once per model call (TS
 		// generate-text.ts logWarnings, called per step just before the step
 		// is pushed onto steps).
-		logModelWarnings(stepResult.Warnings, stepModel.Provider(), stepModel.ModelID())
+		logCallWarnings(LogWarningsOptions{Warnings: genResult.Warnings, Provider: stepModel.Provider(), Model: stepModel.ModelID()})
 
 		// Add step to results
 		result.Steps = append(result.Steps, stepResult)
@@ -2130,6 +2207,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			result.Text = stepResult.Text
 			result.FinishReason = stepResult.FinishReason
 			steeringEndReason = SteeringWaitingForToolResults
+			stoppedBy = pendingToolCallStoppedBy(result.Steps[len(result.Steps)-1])
 			break
 		}
 
@@ -2149,6 +2227,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		// left unexecuted because of an unsafe finish reason stop the loop.
 		if hasUnresolvedLocalToolCalls(genResult.ToolCalls, toolsByName, rawStepToolResults) {
 			steeringEndReason = SteeringWaitingForToolResults
+			stoppedBy = pendingToolCallStoppedBy(result.Steps[len(result.Steps)-1])
 			break
 		}
 		if !hasLocalToolCalls && !hasPendingDeferred {
@@ -2157,6 +2236,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			// task that was not cut off (TS generate-text.ts 984-992).
 			isTruncated := genResult.FinishReason == types.FinishReasonLength || genResult.FinishReason == types.FinishReasonContentFilter
 			if !steeringRun.hasPendingMessages() && (isTruncated || !steeringRun.promoteQueuedMessage()) {
+				stoppedBy = modelStoppedBy(result.Steps[len(result.Steps)-1])
 				break
 			}
 			if genResult.FinishReason == types.FinishReasonError {
@@ -2180,6 +2260,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				result.Text = lastStep.Text
 				result.FinishReason = lastStep.FinishReason
 				steeringEndReason = SteeringStopCondition
+				stoppedBy = StoppedByStopCondition
 				break
 			}
 		}
@@ -2194,6 +2275,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	}
 
 	steeringRun.end(steeringEndReason)
+	result.StoppedBy = stoppedBy
 
 	// Populate TotalUsage and final shortcuts before finish callbacks observe the result.
 	result.TotalUsage = result.Usage
@@ -3466,4 +3548,16 @@ func streamRequestURL(stream provider.TextStream) string {
 // shape (the step-end and end events carry the step's request as in TS).
 func generateStepRequestOf(r types.StepRequest) GenerateStepRequest {
 	return GenerateStepRequest{Body: r.Body, Messages: r.Messages, URL: r.URL}
+}
+
+// stepWarningsWithPrompt is a step's warnings: the prompt conversion warnings
+// followed by the model call's (TS `[...promptWarnings, ...warnings]`). It
+// returns the model warnings as they are when the prompt has none.
+func stepWarningsWithPrompt(prompt, model []types.Warning) []types.Warning {
+	if len(prompt) == 0 {
+		return model
+	}
+	out := make([]types.Warning, 0, len(prompt)+len(model))
+	out = append(out, prompt...)
+	return append(out, model...)
 }

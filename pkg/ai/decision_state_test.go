@@ -105,6 +105,7 @@ func TestExperimentalDecide_StopsBeforeModelCallWhenImageDownloadFails(t *testin
 	model := stateTestModel()
 	_, err := ExperimentalDecide(context.Background(), DecideOptions{
 		Model: model, Questions: stateTestQuestions(),
+		ExperimentalDownload: CreateDownload(nil),
 		// Loopback is blocked by the download SSRF guard, so this fails
 		// without any network access.
 		State: []provider.DecisionStatePart{provider.DecisionFilePart(types.FileContent{

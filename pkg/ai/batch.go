@@ -164,6 +164,15 @@ type StartBatchOptions struct {
 	Requests        []BatchRequest
 	ProviderOptions map[string]interface{}
 
+	// Output specifies structured data in the text responses (TS
+	// startBatch `output`, 3bea041f28): an Output[T, P] such as
+	// ObjectOutput, ArrayOutput, ChoiceOutput or JSONOutput. Its response
+	// format is sent with every text request in the batch, replacing the
+	// request's ResponseFormat; image requests ignore it. Pass the same
+	// specification to GetBatchResults as Output to parse and validate each
+	// result.
+	Output interface{}
+
 	// WebhookURL, when set, is the URL the provider notifies when the batch
 	// reaches a terminal state. Providers that do not support completion
 	// webhooks return an unsupported-functionality warning instead of
@@ -208,6 +217,13 @@ func ExperimentalStartBatch(ctx context.Context, opts StartBatchOptions) (*Start
 	// batch interface itself (requests may target arbitrary per-request
 	// models), not from a single provider.LanguageModel.
 	urlChecker := SupportedURLCheckerFromPatterns(batchAPI.SupportedURLs())
+	if err := context.Cause(callCtx); err != nil { // TS throwIfAborted after supportedUrls
+		return nil, err
+	}
+	outputSpec, err := resolveBatchOutput(callCtx, opts.Output)
+	if err != nil {
+		return nil, err
+	}
 
 	providerRequests := make([]provider.BatchV4Request, 0, len(opts.Requests))
 	toolsByName := map[string]interface{}{}
@@ -215,7 +231,7 @@ func ExperimentalStartBatch(ctx context.Context, opts StartBatchOptions) (*Start
 		if err := context.Cause(callCtx); err != nil { // TS throwIfAborted: signal.reason
 			return nil, err
 		}
-		pr, buildErr := buildBatchProviderRequest(callCtx, req, urlChecker, toolsByName)
+		pr, buildErr := buildBatchProviderRequestWithOutput(callCtx, req, urlChecker, toolsByName, outputSpec)
 		if buildErr != nil {
 			return nil, buildErr
 		}
@@ -334,6 +350,12 @@ type GetBatchResultsOptions struct {
 	// tools or with invalid input come back with Invalid and Error set. Their
 	// Execute functions are never invoked.
 	Tools []types.Tool
+
+	// Output is the output specification that was given to the StartBatch
+	// requests (TS getBatchResults `output`). When set, the text of every
+	// succeeded text item is parsed and validated with it, and the item has
+	// either Output or OutputError.
+	Output interface{}
 }
 
 // BatchItemResult is a complete terminal result for one request in a batch.
@@ -355,6 +377,17 @@ type BatchItemResult struct {
 
 	Error            *provider.BatchError
 	ProviderMetadata map[string]interface{}
+
+	// Output is the parsed output of a succeeded text item, set only when
+	// GetBatchResultsOptions.Output is set and the item's text could be
+	// parsed (TS item.output).
+	Output interface{}
+
+	// OutputError says why no Output is available: the text was not valid
+	// JSON, did not match the schema, or the item did not finish with a
+	// complete response (TS item.outputError). A parsing failure does not
+	// fail the item: Text and the other results stay available.
+	OutputError *provider.BatchError
 }
 
 // BatchResultsStream streams terminal results for the requests in a batch.
@@ -365,6 +398,7 @@ type BatchResultsStream struct {
 	cancel context.CancelFunc
 	ctx    context.Context
 	tools  []types.Tool
+	output outputProcessor
 }
 
 // Next returns the next item result in the stream. Returns io.EOF when the
@@ -395,7 +429,7 @@ func (s *BatchResultsStream) Next() (*BatchItemResult, error) {
 		}
 		images = files
 	}
-	return &BatchItemResult{
+	out := &BatchItemResult{
 		Images:           images,
 		Type:             item.Type,
 		ID:               item.ID,
@@ -404,7 +438,11 @@ func (s *BatchResultsStream) Next() (*BatchItemResult, error) {
 		Image:            item.ImageResult,
 		Error:            item.Error,
 		ProviderMetadata: item.ProviderMetadata,
-	}, nil
+	}
+	if s.output != nil && textResult != nil && item.Status == provider.BatchItemSucceeded {
+		out.Output, out.OutputError = parseBatchOutput(s.ctx, textResult, s.output)
+	}
+	return out, nil
 }
 
 // Err returns any error that occurred during streaming.
@@ -436,6 +474,15 @@ func ExperimentalGetBatchResults(ctx context.Context, opts GetBatchResultsOption
 		return nil, err
 	}
 
+	var outputProc outputProcessor
+	if opts.Output != nil {
+		proc, ok := opts.Output.(outputProcessor)
+		if !ok {
+			return nil, errInvalidBatchOutput(opts.Output)
+		}
+		outputProc = proc
+	}
+
 	callCtx, cancel := withOptionalTimeout(ctx, opts.Timeout)
 
 	headers := version.WithUserAgentSuffix(opts.Headers, version.UserAgent())
@@ -465,7 +512,7 @@ func ExperimentalGetBatchResults(ctx context.Context, opts GetBatchResultsOption
 		return nil, errBatchNoResult(batchAPI)
 	}
 
-	return &BatchResultsStream{inner: inner, cancel: cancel, ctx: callCtx, tools: opts.Tools}, nil
+	return &BatchResultsStream{inner: inner, cancel: cancel, ctx: callCtx, tools: opts.Tools, output: outputProc}, nil
 }
 
 // parseBatchToolCalls validates the tool calls of a succeeded text result
@@ -497,6 +544,86 @@ func parseBatchToolCalls(ctx context.Context, result *types.GenerateResult, tool
 	// with its call's input.
 	out.Content = generateResultContentParts(&out)
 	return &out, nil
+}
+
+// batchOutputSpec is the response format of a StartBatch Output.
+type batchOutputSpec struct {
+	set    bool
+	format *provider.ResponseFormat
+}
+
+func errInvalidBatchOutput(output interface{}) error {
+	return &providererrors.InvalidArgumentError{
+		Field:   "Output",
+		Value:   output,
+		Message: "Output must be an Output specification such as ObjectOutput, ArrayOutput, ChoiceOutput, JSONOutput or TextOutput.",
+	}
+}
+
+// resolveBatchOutput reads the response format of a StartBatch Output (TS
+// `await output?.responseFormat`).
+func resolveBatchOutput(ctx context.Context, output interface{}) (batchOutputSpec, error) {
+	if output == nil {
+		return batchOutputSpec{}, nil
+	}
+	proc, ok := output.(outputProcessor)
+	if !ok {
+		return batchOutputSpec{}, errInvalidBatchOutput(output)
+	}
+	format, err := proc.ResponseFormat(ctx)
+	if err != nil {
+		return batchOutputSpec{}, err
+	}
+	return batchOutputSpec{set: true, format: format}, nil
+}
+
+// parseBatchOutput parses the structured output of a succeeded text item.
+// Failures are reported as an OutputError so that one malformed item does not
+// affect the rest of the batch or discard the item's text and usage (TS
+// parseBatchOutput, 3bea041f28).
+func parseBatchOutput(ctx context.Context, result *types.GenerateResult, output outputProcessor) (interface{}, *provider.BatchError) {
+	text := *result
+	normalizeGenerateResultText(&text)
+	generatedText := text.Text
+
+	// Same conditions as generateText: stop responses and non-empty
+	// responses that are not tool calls.
+	if !shouldParseFinalOutput(result.FinishReason, generatedText) {
+		err := &NoOutputGeneratedError{Message: "No output generated."}
+		return nil, &provider.BatchError{Message: err.Error(), Type: "AI_NoOutputGeneratedError"}
+	}
+
+	textForOutput := generatedText
+	if result.StructuredOutputText != nil {
+		if format, err := output.ResponseFormat(ctx); err == nil && format != nil && format.Type == "json" {
+			textForOutput = *result.StructuredOutputText
+		}
+	}
+
+	response := &types.ResponseMetadata{Timestamp: time.Unix(0, 0)}
+	if result.ResponseMetadata != nil {
+		response.ID = result.ResponseMetadata.ID
+		response.ModelID = result.ResponseMetadata.ModelID
+		response.Headers = result.ResponseMetadata.Headers
+		if !result.ResponseMetadata.Timestamp.IsZero() {
+			response.Timestamp = result.ResponseMetadata.Timestamp
+		}
+	}
+	usage := result.Usage
+	parsed, err := output.parseCompleteOutput(ctx, ParseCompleteOutputOptions{
+		Text:         textForOutput,
+		Response:     response,
+		Usage:        &usage,
+		FinishReason: result.FinishReason,
+	})
+	if err != nil {
+		name := "Error"
+		if named, ok := err.(providerutils.ErrorNamer); ok {
+			name = named.ErrorName()
+		}
+		return nil, &provider.BatchError{Message: err.Error(), Type: name}
+	}
+	return parsed, nil
 }
 
 // CancelBatchOptions are options for requesting cancellation of a batch.
@@ -781,6 +908,10 @@ func validateBatchReference(batchAPI provider.BatchV4, batch BatchReference) err
 }
 
 func buildBatchProviderRequest(ctx context.Context, req BatchRequest, urlChecker promptutils.URLSupportChecker, toolsByName map[string]interface{}) (provider.BatchV4Request, error) {
+	return buildBatchProviderRequestWithOutput(ctx, req, urlChecker, toolsByName, batchOutputSpec{})
+}
+
+func buildBatchProviderRequestWithOutput(ctx context.Context, req BatchRequest, urlChecker promptutils.URLSupportChecker, toolsByName map[string]interface{}, outputSpec batchOutputSpec) (provider.BatchV4Request, error) {
 	switch {
 	case req.Text != nil:
 		t := req.Text
@@ -859,6 +990,11 @@ func buildBatchProviderRequest(ctx context.Context, req BatchRequest, urlChecker
 			Reasoning:             t.Reasoning,
 			ResponseFormat:        t.ResponseFormat,
 			ProviderOptions:       t.ProviderOptions,
+		}
+		if outputSpec.set {
+			// TS `responseFormat` of the output specification follows the
+			// request options: it is the request's response format.
+			genOpts.ResponseFormat = outputSpec.format
 		}
 		return provider.BatchV4Request{
 			Type: provider.BatchRequestTypeText,

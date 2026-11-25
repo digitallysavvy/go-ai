@@ -167,6 +167,38 @@ func FormatWarning(warning types.Warning, provider, model string) string {
 	}
 }
 
+// createLogWarnings returns the warning logger of one call (TS
+// createLogWarnings, d834c5bb35): the global logger, or onWarning when the
+// call has one. With onWarning the warnings never reach the global logger
+// (and its deprecation dedup); like the other callbacks, a panic in onWarning
+// does not break the call, and an empty batch is not reported.
+func createLogWarnings(onWarning LogWarningsFunction) LogWarningsFunction {
+	if onWarning == nil {
+		return LogWarnings
+	}
+	return func(options LogWarningsOptions) {
+		if len(options.Warnings) > 0 {
+			safeInvoke(func() { onWarning(options) })
+		}
+	}
+}
+
+// CreateLogWarnings is createLogWarnings for callers outside the package
+// (the ToolLoopAgent default stop condition and the WorkflowAgent).
+func CreateLogWarnings(onWarning LogWarningsFunction) LogWarningsFunction {
+	return createLogWarnings(onWarning)
+}
+
+// flattenWarningBatches joins warning batches into one list (TS collects the
+// prompt warnings of every message into one array).
+func flattenWarningBatches(batches [][]types.Warning) []types.Warning {
+	var out []types.Warning
+	for _, batch := range batches {
+		out = append(out, batch...)
+	}
+	return out
+}
+
 // logModelWarnings is the internal call-site helper.
 func logModelWarnings(warnings []types.Warning, provider, model string) {
 	LogWarnings(LogWarningsOptions{Warnings: warnings, Provider: provider, Model: model})

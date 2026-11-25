@@ -233,7 +233,7 @@ func NewToolLoopAgent(config AgentConfig) *ToolLoopAgent {
 		})
 		config.MaxSteps = 0
 	} else {
-		config.StopWhen = []ai.StopCondition{createDefaultStopCondition(20)}
+		config.StopWhen = []ai.StopCondition{createDefaultStopCondition(20, config.OnWarning)}
 		config.MaxSteps = 0
 	}
 
@@ -412,6 +412,7 @@ func (a *ToolLoopAgent) Generate(ctx context.Context, opts AgentGenerateOptions)
 		OnStart:                        cbs.onStart,
 		OnStepStart:                    cbs.onStepStart,
 		OnStepError:                    config.OnStepError,
+		OnWarning:                      config.OnWarning,
 		ExperimentalSteering:           opts.ExperimentalSteering,
 		OnToolExecutionStart:           cbs.onToolCallStart,
 		OnToolExecutionEnd:             cbs.onToolCallFinish,
@@ -834,6 +835,12 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 			prepared := a.prepareCallConfig(ctx, stepIndex, "", currentMessages, result.Steps, result.Usage, customData)
 			callTools = prepared.Tools
 			callConfig = a.finishStepCallConfig(ctx, stepIndex, prepared)
+			// PrepareCall can return the same slice for several steps, so the
+			// step gets a copy (TS 0b8cbfadb8): the step's tools and approval
+			// functions all see this step's slice and no other step's.
+			if callConfig.Messages != nil {
+				callConfig.Messages = append(make([]types.Message, 0, len(callConfig.Messages)), callConfig.Messages...)
+			}
 		}
 		// A PrepareCall override of the telemetry settings (TS prepareCall
 		// `telemetry`) applies to this and the following steps' spans.
@@ -1265,6 +1272,7 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 		if !shouldContinue {
 			result.Text = stepResult.Text
 			result.FinishReason = stepResult.FinishReason
+			result.StoppedBy = agentLoopStoppedBy(*stepResult)
 
 			// Call OnAgentFinish callback when agent reaches final answer
 			if a.config.OnAgentFinish != nil {
@@ -1299,6 +1307,7 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 			}
 			if reason := ai.EvaluateStopConditions(callConfig.StopWhen, state); reason != "" {
 				result.StopReason = reason
+				result.StoppedBy = ai.StoppedByStopCondition
 				result.Text = stepResult.Text
 				result.FinishReason = stepResult.FinishReason
 
@@ -1330,6 +1339,7 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 		// Check if we've hit max steps
 		if stepNum == a.config.MaxSteps {
 			result.Text = stepResult.Text
+			result.StoppedBy = ai.StoppedByStopCondition
 			result.FinishReason = types.FinishReasonLength
 			result.Warnings = append(result.Warnings, types.Warning{
 				Type:    "max_steps_reached",
@@ -3370,7 +3380,9 @@ func agentToolResultsToContentParts(results []types.ToolResult, secret []byte) [
 				Dynamic:             result.Dynamic,
 			}
 			signature := ""
-			if secret != nil {
+			// An automatically denied call is never signed (TS 63593a7f6a): a
+			// signature would let a client replay the request as approved.
+			if secret != nil && result.ApprovalStatus != types.ToolApprovalStatusDenied {
 				signature, _ = ai.SignToolApproval(secret, agentApprovalID(result), result.ToolCallID, result.ToolName, result.Input)
 			}
 			approvalRequest := types.ToolApprovalRequestContent{
@@ -3938,4 +3950,31 @@ func agentModelCallRequest(rawURL string) *ai.LanguageModelCallRequest {
 		return nil
 	}
 	return &ai.LanguageModelCallRequest{URL: origin}
+}
+
+// agentLoopStoppedBy says why the legacy loop stopped without a stop condition
+// (TS getPendingToolCallStoppedBy / getModelStoppedBy): an approval request
+// that waits for a user, a client tool call left without a result, or the
+// model.
+func agentLoopStoppedBy(step types.StepResult) ai.StoppedBy {
+	pendingApproval := false
+	for _, part := range step.Content {
+		switch p := part.(type) {
+		case types.ToolApprovalRequestContent:
+			pendingApproval = pendingApproval || !p.IsAutomatic
+		case *types.ToolApprovalRequestContent:
+			pendingApproval = pendingApproval || (p != nil && !p.IsAutomatic)
+		}
+	}
+	if pendingApproval {
+		return ai.StoppedByApproval
+	}
+	if step.FinishReason == types.FinishReasonToolCalls || step.FinishReason == types.FinishReasonStop {
+		for _, call := range step.ToolCalls {
+			if !call.ProviderExecuted {
+				return ai.StoppedByToolWithoutExecute
+			}
+		}
+	}
+	return ai.StoppedByModel
 }

@@ -474,7 +474,7 @@ func TestR85genQueueNotDelivered(t *testing.T) {
 	if o := waitOutcome(t, h); o.Delivered || o.ID != "queued-1" || o.Reason != SteeringStopCondition || userText(o.Message) != "Then update the readme." || o.Message.Role != types.RoleUser {
 		t.Fatalf("outcome = %+v", o)
 	}
-	if o := waitOutcome(t, steering.Queue("Then update the readme.", WithSteerID("late"))); o.Delivered || o.Reason != SteeringFinished {
+	if o := waitOutcome(t, steering.Queue("Then update the readme.", WithSteerID("late"))); o.Delivered || o.Reason != SteeringStopCondition {
 		t.Fatalf("late outcome = %+v", o)
 	}
 

@@ -176,6 +176,10 @@ func (e *NoObjectGeneratedError) Error() string {
 	return e.Message
 }
 
+// ErrorName is the TS error name, used where TS shows error.name or
+// error.toString().
+func (e *NoObjectGeneratedError) ErrorName() string { return "AI_NoObjectGeneratedError" }
+
 func (e *NoObjectGeneratedError) Unwrap() error {
 	return e.Cause
 }
