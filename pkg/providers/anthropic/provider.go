@@ -478,6 +478,28 @@ func (p *Provider) DecisionModel(modelID string) (provider.DecisionModel, error)
 	})
 }
 
+// ExtractionModel returns an experimental typed field extraction model backed
+// by the Anthropic Messages API language model. Mirrors TypeScript's
+// AnthropicProvider.extractionModel (6d5094711e): Anthropic caps structured
+// output at 16 union parameters, so field maps larger than 16 are split into
+// parallel calls of up to 16 fields each.
+func (p *Provider) ExtractionModel(modelID string) (provider.ExtractionModel, error) {
+	model, err := p.LanguageModel(modelID)
+	if err != nil {
+		return nil, err
+	}
+	maxFields := anthropicExtractionMaxFieldsPerCall
+	return providerutils.NewExtractionLanguageModel(providerutils.ExtractionLanguageModelOptions{
+		Model:            model,
+		Provider:         p.baseName() + ".extraction",
+		MaxFieldsPerCall: &maxFields,
+	})
+}
+
+// anthropicExtractionMaxFieldsPerCall is Anthropic's limit on union-typed
+// structured-output parameters per schema.
+const anthropicExtractionMaxFieldsPerCall = 16
+
 // EvaluationModel is the deprecated form of DecisionModel.
 //
 // Deprecated: Use DecisionModel instead.
