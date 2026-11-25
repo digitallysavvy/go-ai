@@ -402,7 +402,14 @@ type elevenLabsRealtimeEvent struct {
 	Text         string                   `json:"text,omitempty"`
 	LanguageCode *string                  `json:"language_code,omitempty"`
 	Words        []elevenLabsRealtimeWord `json:"words,omitempty"`
-	Error        string                   `json:"error,omitempty"`
+	// TextNotString reports a present, non-null text that is not a string:
+	// TS `(raw.text ?? '').trim()` throws a TypeError on it.
+	TextNotString bool `json:"-"`
+	// WordsTypeError is the TypeError TS `words.filter(word => typeof
+	// word.start ...)` throws for a non-array words value or a null element
+	// ("" when it throws none).
+	WordsTypeError string `json:"-"`
+	Error          string `json:"error,omitempty"`
 	// HasError reports a present, non-null error (TS raw.error ?? fallback).
 	HasError bool `json:"-"`
 	// Null reports a JSON null message (TS reads raw.message_type of it).
@@ -432,12 +439,24 @@ func decodeElevenLabsRealtimeEvent(text string) (elevenLabsRealtimeEvent, bool) 
 		ev.SessionID = jsErrorMessage(sid)
 		ev.HasSessionID = true
 	}
-	ev.Text, _ = m["text"].(string)
+	var textIsString bool
+	ev.Text, textIsString = m["text"].(string)
+	if t, present := m["text"]; present && t != nil && !textIsString {
+		ev.TextNotString = true
+	}
 	if lc, ok := m["language_code"].(string); ok {
 		ev.LanguageCode = &lc
 	}
+	if w, present := m["words"]; present && w != nil {
+		if _, isArray := w.([]interface{}); !isArray {
+			ev.WordsTypeError = "words.filter is not a function"
+		}
+	}
 	if words, ok := m["words"].([]interface{}); ok {
 		for _, w := range words {
+			if w == nil && ev.WordsTypeError == "" {
+				ev.WordsTypeError = "Cannot read properties of null (reading 'start')"
+			}
 			wm, _ := w.(map[string]interface{})
 			word := elevenLabsRealtimeWord{}
 			word.Text, _ = wm["text"].(string)
@@ -732,6 +751,12 @@ func (s *elevenLabsRealtimeTranscriptionStream) run(cfg elevenLabsRealtimeStream
 
 			case "final_transcript", "committed_transcript":
 				committedEventCount++
+				if raw.TextNotString {
+					// TS (raw.text ?? '').trim() on a non-string: the
+					// TypeError fails the stream through onProcessingError.
+					fail(errors.New(`(raw.text ?? "").trim is not a function`))
+					return
+				}
 				text := providerutils.JSTrim(raw.Text)
 				id := segID()
 				if len(text) > 0 {
@@ -753,6 +778,16 @@ func (s *elevenLabsRealtimeTranscriptionStream) run(cfg elevenLabsRealtimeStream
 				}
 
 			case "final_transcript_with_timestamps", "committed_transcript_with_timestamps":
+				// TS trims the text, then filters the words: a TypeError of
+				// either fails the stream through onProcessingError.
+				if raw.TextNotString {
+					fail(errors.New(`(raw.text ?? "").trim is not a function`))
+					return
+				}
+				if raw.WordsTypeError != "" {
+					fail(errors.New(raw.WordsTypeError))
+					return
+				}
 				text := providerutils.JSTrim(raw.Text)
 				var timestampedWords []elevenLabsRealtimeWord
 				for _, w := range raw.Words {
