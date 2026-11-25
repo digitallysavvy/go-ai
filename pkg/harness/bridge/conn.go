@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"fmt"
+	"net"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -74,6 +75,45 @@ type wsConn struct {
 	// read failed (the peer closed it), or a write failed. Mirrors TS
 	// `ws.readyState !== OPEN` for the channel's send gate.
 	closed atomic.Bool
+	// read counts the bytes read from the network (the heartbeat's sign of
+	// life, TS `socket.bytesRead`); nil when unknown.
+	read *readCounter
+}
+
+// readCounter counts bytes read through a wrapped net.Conn.
+type readCounter struct{ n atomic.Int64 }
+
+type countingConn struct {
+	net.Conn
+	c *readCounter
+}
+
+func (cc *countingConn) Read(p []byte) (int, error) {
+	n, err := cc.Conn.Read(p)
+	cc.c.n.Add(int64(n))
+	return n, err
+}
+
+// BytesRead reports the bytes read from the network so far.
+func (c *wsConn) BytesRead() int64 {
+	if c.read == nil {
+		return 0
+	}
+	return c.read.n.Load()
+}
+
+// Ping sends a WebSocket ping frame within the write timeout. The peer's
+// pong is read, and counted, by Receive.
+func (c *wsConn) Ping() error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	if c.writeTimeout > 0 {
+		_ = c.ws.SetWriteDeadline(time.Now().Add(c.writeTimeout))
+		defer func() { _ = c.ws.SetWriteDeadline(time.Time{}) }()
+	}
+	c.ws.PayloadType = websocket.PingFrame
+	_, err := c.ws.Write(nil)
+	return err
 }
 
 func (c *wsConn) isOpen() bool { return !c.closed.Load() }
@@ -208,9 +248,12 @@ func dial(ctx context.Context, endpoint harness.PortEndpoint, opts DialOptions, 
 	// x/net/websocket reports every close as io.EOF; closeInfo reads the
 	// server's close frame off the raw connection.
 	closeInfo := &wsutil.CloseInfo{}
+	read := &readCounter{}
 	ws, err := wsutil.Dial(dialCtx, endpoint.URL, wsutil.DialOptions{
-		Headers:  endpoint.Headers,
-		WrapConn: closeInfo.Wrap,
+		Headers: endpoint.Headers,
+		WrapConn: func(c net.Conn) net.Conn {
+			return &countingConn{Conn: closeInfo.Wrap(c), c: read}
+		},
 	})
 	if err != nil {
 		if ctx.Err() != nil {
@@ -225,7 +268,7 @@ func dial(ctx context.Context, endpoint harness.PortEndpoint, opts DialOptions, 
 	if writeTimeout <= 0 {
 		writeTimeout = DefaultWriteTimeout
 	}
-	conn := &wsConn{ws: ws, closeInfo: closeInfo, writeTimeout: writeTimeout}
+	conn := &wsConn{ws: ws, closeInfo: closeInfo, writeTimeout: writeTimeout, read: read}
 	authenticated := authKey == nil
 	if !opts.WaitForHello && authenticated {
 		if ctx.Err() != nil {
