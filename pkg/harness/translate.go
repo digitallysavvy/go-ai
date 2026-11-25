@@ -4,7 +4,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness/internal/jsstr"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -137,18 +136,24 @@ func TranslatePart(part StreamPart, opts TranslateOptions) []provider.StreamChun
 		if hasCall && (call.ProviderExecuted || call.ProviderExecutedSet) {
 			providerExecuted = call.ProviderExecuted
 		}
-		if p.IsError && providerExecuted {
+		if p.IsError {
+			// A failed host tool is not provider-executed, so its error stays
+			// redactable (TS 7fffff9f02: every failed result is a tool-error,
+			// marked provider-executed unless its call is a host tool's).
 			return []provider.StreamChunk{{
 				Type: provider.ChunkTypeToolResult,
 				ToolResult: &types.ToolResult{
 					ToolCallID: p.ToolCallID, ToolName: p.ToolName,
 					Input: call.Input,
-					Error: fmt.Errorf("%v", p.Result),
+					Error: ErrorFromValue(p.Result),
 					// The raw error value (TS tool-error.error): core replays a
 					// structured one as error-json and JSON-encodes it in the
 					// UI error text.
 					Result:           p.Result,
-					ProviderExecuted: true,
+					ProviderExecuted: providerExecuted,
+					// TS tool-error always carries providerExecuted, false
+					// included.
+					ProviderExecutedSet: true,
 					// TS tool-error carries only dynamic and providerMetadata:
 					// no preliminary flag.
 					Dynamic:          p.Dynamic,

@@ -1048,7 +1048,12 @@ func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, alre
 			continue
 		}
 
+		// Whether a host tool failed is what the host submitted for it: the
+		// runtime's echo can also flag a success whose model output is an
+		// error (TS 7fffff9f02 `submittedHostToolResult`).
+		var submittedHostResult *ToolResultSubmission
 		if tr, isResult := part.(*ToolResultPart); isResult {
+			submittedHostResult = d.submittedHostResult(tr.ToolCallID)
 			d.clearAwaitingEcho(tr.ToolCallID)
 			d.forgetSubmittedHostResult(tr.ToolCallID)
 			delete(d.pendingResultsByToolCallID, tr.ToolCallID)
@@ -1122,6 +1127,11 @@ func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, alre
 		}
 
 		display := StripWorkDir(part, d.in.SessionWorkDir)
+		if dtr, ok := display.(*ToolResultPart); ok && submittedHostResult != nil {
+			flagged := *dtr
+			flagged.IsError = submittedHostResult.IsError
+			display = &flagged
+		}
 
 		// TS: a settled host call replays as tool-call, tool-result and
 		// approval-request; a settled built-in approval only as tool-call and
@@ -2726,6 +2736,18 @@ func (d *turnDriver) rememberSubmittedHostResult(submission ToolResultSubmission
 	d.submittedHostResults[submission.ToolCallID] = submission
 }
 
+// submittedHostResult returns the submission recorded for a host tool call
+// that the runtime has not echoed yet, or nil.
+func (d *turnDriver) submittedHostResult(toolCallID string) *ToolResultSubmission {
+	d.execMu.Lock()
+	defer d.execMu.Unlock()
+	sub, ok := d.submittedHostResults[toolCallID]
+	if !ok {
+		return nil
+	}
+	return &sub
+}
+
 // forgetSubmittedHostResult drops a submission once the runtime echoed it.
 func (d *turnDriver) forgetSubmittedHostResult(toolCallID string) {
 	d.execMu.Lock()
@@ -2860,7 +2882,7 @@ func (d *turnDriver) publishSuspendedOutcomes() {
 		modelOutput, hasModelOutput := d.toolModelOutputs[display.ToolCallID]
 		d.execMu.Unlock()
 		for _, c := range TranslatePart(display, d.translateOpts()) {
-			if c.ToolResult != nil && c.ToolResult.Error == nil {
+			if c.ToolResult != nil && (c.ToolResult.Error == nil || display.IsError) {
 				result := *c.ToolResult
 				// enqueueHostToolOutcome sets no providerExecuted, unlike a
 				// translated echo of the call.

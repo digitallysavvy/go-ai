@@ -2,6 +2,8 @@ package harness
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -120,5 +122,132 @@ func TestPortcarryharPanicValueStaysOutOfStream(t *testing.T) {
 	submitted, _ := mock.toolResults[0].Output.(map[string]interface{})
 	if got := failed.Error.Error(); "Error: "+got != submitted["error"] {
 		t.Fatalf("stream error %q differs from the submitted text %v", got, submitted["error"])
+	}
+}
+
+// portcarryharEcho runs one host tool call whose echo the scripted runtime
+// flags with echoIsError (nil: the submission's own flag), as in TS
+// streamEchoedHostToolResult.
+func portcarryharEcho(t *testing.T, tool types.Tool, echoIsError func(ToolResultSubmission) bool) (toolOutcomes []provider.StreamChunk, endErr error) {
+	t.Helper()
+	tools := map[string]types.Tool{tool.Name: tool}
+	mock := newScriptedHarness(
+		func(emit func(StreamPart)) {
+			emit(&StreamStartPart{})
+			emit(&ToolCallPart{ToolCallID: "c1", ToolName: tool.Name, Input: `{}`})
+		},
+		func(sub ToolResultSubmission, emit func(StreamPart)) {
+			isErr := sub.IsError
+			if echoIsError != nil {
+				isErr = echoIsError(sub)
+			}
+			emit(&ToolResultPart{ToolCallID: sub.ToolCallID, ToolName: tool.Name, IsError: isErr, Result: sub.Output})
+			emit(&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonStop}, Usage: stringUsage(1, 1)})
+			emit(&FinishPart{FinishReason: FinishReason{Unified: FinishReasonStop}, TotalUsage: stringUsage(1, 1)})
+		},
+	)
+	var mu sync.Mutex
+	out := runPrompt(context.Background(), runPromptInput{
+		Harness: mock.harness, Session: mock.session,
+		Prompt: TextPrompt("go"), Tools: tools, ActiveTools: tools, SandboxSession: testSandbox(),
+		SessionWorkDir: "/work/dir",
+		Callbacks: Callbacks{OnToolExecutionEnd: func(_ context.Context, e ai.OnToolCallFinishEvent) {
+			mu.Lock()
+			endErr = e.ToolOutput.Error
+			mu.Unlock()
+		}},
+	})
+	chunks := drainRunPrompt(t, out)
+	toolOutcomes = chunksOfType(chunks, provider.ChunkTypeToolResult)
+	mu.Lock()
+	defer mu.Unlock()
+	return toolOutcomes, endErr
+}
+
+type portcarryharSecretErr struct{ APIKey string }
+
+func (e *portcarryharSecretErr) Error() string { return "no forecast in /work/dir/forecast.json" }
+
+// TS 7fffff9f02 'streams a failed host tool result as the runtime received
+// it': one tool-error with the submitted output (work dir stripped), not
+// provider-executed; the host callback keeps the thrown error.
+func TestPortcarryharFailedHostToolEchoIsToolError(t *testing.T) {
+	tool := types.Tool{
+		Name: "weather", Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
+		Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			return nil, &portcarryharSecretErr{APIKey: "host-secret"}
+		},
+	}
+	outcomes, endErr := portcarryharEcho(t, tool, nil)
+	var secret *portcarryharSecretErr
+	if !errors.As(endErr, &secret) {
+		t.Fatalf("OnToolExecutionEnd error = %v, want the thrown error", endErr)
+	}
+	if len(outcomes) != 1 || outcomes[0].ToolResult.Error == nil {
+		t.Fatalf("outcomes = %+v, want one tool-error", outcomes)
+	}
+	tr := outcomes[0].ToolResult
+	if tr.ProviderExecuted {
+		t.Fatal("a failed host tool error must not be provider-executed")
+	}
+	if got := tr.Error.Error(); got != `{"error":"Error: no forecast in forecast.json"}` {
+		t.Fatalf("error text = %q", got)
+	}
+	if strings.Contains(fmt.Sprintf("%+v", tr), "host-secret") {
+		t.Fatalf("the secret reached the stream part: %+v", tr)
+	}
+}
+
+// TS 7fffff9f02 test.each: whether a host tool failed is what the host
+// submitted, not the echo's flag.
+func TestPortcarryharEchoFlagFollowsSubmission(t *testing.T) {
+	ok := types.Tool{
+		Name: "lookup", Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
+		Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			return map[string]interface{}{"found": false}, nil
+		},
+		ToModelOutput: func(context.Context, types.ToModelOutputOptions) (*types.ToolResultOutput, error) {
+			return &types.ToolResultOutput{Type: "error-text", Value: "Not found."}, nil
+		},
+	}
+	failing := types.Tool{
+		Name: "lookup", Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
+		Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			return nil, errors.New("lookup failed")
+		},
+	}
+	// reason: flags a result whose model output is an error.
+	outcomes, _ := portcarryharEcho(t, ok, func(ToolResultSubmission) bool { return true })
+	if len(outcomes) != 1 || outcomes[0].ToolResult.Error != nil {
+		t.Fatalf("flagged success = %+v, want one tool-result", outcomes)
+	}
+	// reason: drops the flag of a failed call.
+	outcomes, _ = portcarryharEcho(t, failing, func(ToolResultSubmission) bool { return false })
+	if len(outcomes) != 1 || outcomes[0].ToolResult.Error == nil {
+		t.Fatalf("unflagged failure = %+v, want one tool-error", outcomes)
+	}
+	if got := outcomes[0].ToolResult.Error.Error(); got != `{"error":"Error: lookup failed"}` {
+		t.Fatalf("error text = %q", got)
+	}
+}
+
+// TS 'streams one tool-error and closes the stream when a host tool
+// toModelOutput fails'.
+func TestPortcarryharToModelOutputFailureIsOneToolError(t *testing.T) {
+	tool := types.Tool{
+		Name: "visualize", Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
+		Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			return map[string]interface{}{"ok": true}, nil
+		},
+		ToModelOutput: func(context.Context, types.ToModelOutputOptions) (*types.ToolResultOutput, error) {
+			return nil, errors.New("conversion failed")
+		},
+	}
+	outcomes, _ := portcarryharEcho(t, tool, nil)
+	if len(outcomes) != 1 || outcomes[0].ToolResult.Error == nil {
+		t.Fatalf("outcomes = %+v, want one tool-error", outcomes)
+	}
+	if got := outcomes[0].ToolResult.Error.Error(); got != `{"error":"Error: conversion failed"}` {
+		t.Fatalf("error text = %q", got)
 	}
 }

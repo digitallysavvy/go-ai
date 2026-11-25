@@ -5,12 +5,13 @@ import "testing"
 // TS `toolCall?.providerExecuted ?? isProviderExecuted?.(id) ?? true`: a
 // failed tool-result whose call leaves providerExecuted undefined asks
 // IsProviderExecuted (or defaults to provider-executed), while an explicit
-// false keeps it a host tool-result.
+// false marks the tool-error as a host tool's (TS 7fffff9f02: every failed
+// result is a tool-error).
 func TestR45TranslateToolErrorFallsBackWhenCallLeavesProviderExecutedUndefined(t *testing.T) {
 	for name, tc := range map[string]struct {
-		info      ToolCallInfo
-		isPE      func(string) bool
-		wantError bool
+		info                 ToolCallInfo
+		isPE                 func(string) bool
+		wantProviderExecuted bool
 	}{
 		"undefined, no callback":    {ToolCallInfo{}, nil, true},
 		"undefined, callback true":  {ToolCallInfo{}, func(string) bool { return true }, true},
@@ -26,8 +27,11 @@ func TestR45TranslateToolErrorFallsBackWhenCallLeavesProviderExecutedUndefined(t
 			if len(chunks) != 1 || chunks[0].ToolResult == nil {
 				t.Fatalf("chunks = %+v", chunks)
 			}
-			if got := chunks[0].ToolResult.Error != nil; got != tc.wantError {
-				t.Fatalf("tool-error = %v, want %v (%+v)", got, tc.wantError, chunks[0].ToolResult)
+			if chunks[0].ToolResult.Error == nil {
+				t.Fatalf("not a tool-error: %+v", chunks[0].ToolResult)
+			}
+			if got := chunks[0].ToolResult.ProviderExecuted; got != tc.wantProviderExecuted || !chunks[0].ToolResult.ProviderExecutedSet {
+				t.Fatalf("providerExecuted = %v, want %v (%+v)", got, tc.wantProviderExecuted, chunks[0].ToolResult)
 			}
 		})
 	}
