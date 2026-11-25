@@ -67,6 +67,8 @@ func NewWorkflowAgent(agent WorkflowAgent) (*WorkflowAgent, error)
 | `RepairToolCall` | `ai.ToolCallRepairFunction` | RepairToolCall attempts to repair tool calls that fail to parse. |
 | `ExperimentalRepairToolCall` | `ai.ToolCallRepairFunction` | ExperimentalRepairToolCall is a deprecated alias for RepairToolCall. Deprecated: use RepairToolCall. |
 | `ExperimentalToolApprovalSecret` | `[]byte` | ExperimentalToolApprovalSecret signs issued approval requests and verifies resumed approvals before approved tools execute. |
+| `ToolApproval` | `types.ToolApprovalConfig` | ToolApproval configures tool approval for every call: a types.GenericToolApprovalFunc for all tool calls, or a map from tool name to a status, a per-tool function or a result. It takes precedence over a tool's own approval setting, as in ToolLoopAgent. A user-approval decision pauses the run with an approval request, approved runs the tool in the same step and denied sends the model an execution-denied result. A call's ToolApproval replaces the agent's. Mirrors TS WorkflowAgent `toolApproval` (2559173ea7). |
+| `ToolOrder` | `[]string` | ToolOrder is the default order in which tools are sent to the provider. It can be partial: tools it does not list follow the listed ones. A call's ToolOrder replaces it. Mirrors TS WorkflowAgent `toolOrder` (b9f6c82f0e). |
 | `MaxRetries` | `*int` | MaxRetries controls transient provider call retries for each model call, forwarded to agent.AgentConfig.MaxRetries. Defaults to 2 when nil, matching TS WorkflowAgent's `mergedGenerationSettings.maxRetries ?? 2`. |
 | `Timeout` | `*ai.TimeoutConfig` | Timeout provides granular timeout controls, forwarded to agent.AgentConfig.Timeout. |
 | `ToolCallConcurrency` | `*int` | ToolCallConcurrency is the maximum number of local tool calls that may execute concurrently. Set to 1 to execute calls sequentially in model order, including approved calls resumed by the agent. nil runs all calls concurrently. Values below 1 return an InvalidArgumentError. Mirrors TS WorkflowAgent's `toolCallConcurrency`. |
@@ -98,6 +100,8 @@ func NewWorkflowAgent(agent WorkflowAgent) (*WorkflowAgent, error)
 | `Headers` | `map[string]string` |  |
 | `Reasoning` | `*types.ReasoningLevel` |  |
 | `ProviderOptions` | `map[string]interface{}` |  |
+| `ToolApproval` | `types.ToolApprovalConfig` | ToolApproval and ToolOrder replace the agent's values for this call. |
+| `ToolOrder` | `[]string` |  |
 | `Prompt` | `string` |  |
 | `Messages` | `[]types.Message` |  |
 | `System` | `string` |  |
@@ -153,6 +157,8 @@ func NewWorkflowAgent(agent WorkflowAgent) (*WorkflowAgent, error)
 | `Headers` | `map[string]string` |  |
 | `Reasoning` | `*types.ReasoningLevel` |  |
 | `ProviderOptions` | `map[string]interface{}` |  |
+| `ToolApproval` | `types.ToolApprovalConfig` | ToolApproval and ToolOrder replace the agent's values for this call. |
+| `ToolOrder` | `[]string` |  |
 | `Prompt` | `string` |  |
 | `Messages` | `[]types.Message` |  |
 | `System` | `string` |  |
@@ -245,6 +251,7 @@ The hook and callback function types mirror the `ToolLoopAgent` ones.
 | `Messages` | `[]types.Message` |  |
 | `Tools` | `[]types.Tool` |  |
 | `ToolChoice` | `types.ToolChoice` |  |
+| `ToolOrder` | `[]string` | ToolOrder is the order in which tools are sent to the provider. A nil value keeps the current order; a PrepareStep result applies to that step only. |
 | `CallOptions` | `interface{}` |  |
 | `Temperature` | `*float64` |  |
 | `MaxTokens` | `*int` |  |

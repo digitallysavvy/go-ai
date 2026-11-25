@@ -500,7 +500,7 @@ groqModel, _ := groqProvider.TranscriptionModel("whisper-large-v3-turbo")
 
 // AssemblyAI
 assemblyProvider := assemblyai.New(assemblyai.Config{APIKey: os.Getenv("ASSEMBLYAI_API_KEY")})
-assemblyModel, _ := assemblyProvider.TranscriptionModel("best")
+assemblyModel, _ := assemblyProvider.TranscriptionModel(assemblyai.ModelAssemblyAISTT37)
 
 // Use any model with the same API
 result, _ := ai.Transcribe(ctx, ai.TranscribeOptions{

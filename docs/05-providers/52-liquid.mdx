@@ -1,0 +1,89 @@
+---
+title: Liquid Provider
+description: Setup and usage guide for Liquid decision models with Go AI SDK
+---
+
+# Liquid Provider
+
+Liquid provides decision models for the experimental `ai.ExperimentalDecide`
+API: it answers choice, score, boolean and box questions about a state
+(text, JSON, images and audio) through the Liquid Decisions API
+(`POST {baseURL}/decisions/v1/systemone`). The decision model is the only
+capability: `LanguageModel`, `EmbeddingModel`, `ImageModel`, `SpeechModel`,
+`TranscriptionModel` and `RerankingModel` return `NoSuchModelError`.
+
+## Setup
+
+```go
+import (
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    goprovider "github.com/digitallysavvy/go-ai/pkg/provider"
+    "github.com/digitallysavvy/go-ai/pkg/providers/liquid"
+)
+
+provider := liquid.New(liquid.Config{
+    APIKey: os.Getenv("LIQUID_API_KEY"),
+})
+```
+
+`liquid.Config` also accepts `BaseURL` (default `https://api.liquid.ai`, a
+trailing slash is removed), `Headers` (added to every request; they override
+`Authorization`) and `HTTPClient`. When `APIKey` is empty, `LIQUID_API_KEY` is
+read on each request, so a missing key surfaces when a decision is made.
+`liquid.CreateLiquid` is an alias of `liquid.New`.
+
+## Decision
+
+```go
+model, err := provider.DecisionModel(liquid.DecisionModelD12)
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := ai.ExperimentalDecide(ctx, ai.DecideOptions{
+    Model: model,
+    State: "The capital of France is Paris.",
+    Questions: map[string]goprovider.DecisionQuestion{
+        "factual": {
+            Type:         "boolean",
+            Instructions: "Is this statement factually correct?",
+        },
+    },
+})
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Println(result.Answers["factual"])
+```
+
+### Model IDs
+
+`liquid.DecisionModelD12` (`d1.2`) and `liquid.DecisionModelD12Ultra`
+(`d1.2-ultra`); any other ID is sent unchanged.
+
+### Questions and state
+
+- Boolean questions are sent as Liquid's native `noul` type; choice questions
+  take 2 to 255 options, score questions 2 to 10 levels, and a request at most
+  128 questions.
+- Images (JPEG, PNG, WebP, up to 8) and audio clips (WAV, MPEG, FLAC, OGG, up
+  to 8) in the state are sent as ordered data URLs beside it. Other files,
+  URLs and file references fail with `*errors.UnsupportedFunctionalityError`
+  before any request.
+- Per-question confidence, score legends and the box found probability are in
+  `ProviderMetadata["liquid"]`. A box question whose object is not found
+  returns a refusal.
+- Liquid has no provider options: every `ProviderOptions["liquid"]` key, and
+  `MaxOutputTokens` or `Reasoning`, produce `unsupported` warnings.
+
+## Workflow serialization
+
+The decision model serializes as `liquid.decision` through
+`provider.SerializeDecisionModel` / `DeserializeDecisionModel`. The base URL
+and static headers are kept; the API key is never serialized, so the restored
+model reads `LIQUID_API_KEY`. See
+[Provider Serialization](../03-agents/07-workflow-agent.mdx#provider-serialization).
+
+## See Also
+
+- [TS Liquid provider documentation](https://ai-sdk.dev/providers/ai-sdk-providers/liquid)

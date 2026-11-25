@@ -342,7 +342,8 @@ Options for `ai.CreateUIMessageStream`, `ai.ToUIMessageStream` and the response 
 | `OnStepFinish` | `UIMessageStreamOnStepFinishCallback` | Deprecated: use OnStepEnd. |
 | `OnEnd` | `UIMessageStreamOnEndCallback` |  |
 | `OnFinish` | `UIMessageStreamOnFinishCallback` | Deprecated: use OnEnd. |
-| `OnError` | `func(error) string` |  |
+| `OnError` | `func(error) string` | OnError formats stream errors. It also formats the error text of failed tool calls (tool execution errors and invalid tool calls) when RedactToolErrors is enabled, which is the default when OnError is set. Provider-executed tool execution errors bypass it. Invalid tool calls of provider-executed tools always use it. A nil OnError masks stream errors with "An error occurred.". |
+| `RedactToolErrors` | `*bool` | RedactToolErrors replaces the error text of failed tool calls (tool execution errors and invalid tool calls) with the result of OnError. By default the client receives the error text the model received (the UI messages are sent back to the model on the next request, so a different text changes the history that its reasoning and answers are based on; some models reject such a history, for example Anthropic models with preserved thinking). To keep error details away from the model and the client, return a safe error from the tool's Execute function. Nil defaults to true when OnError is set, so an existing OnError keeps handling tool errors, and to false otherwise. Mirrors TS redactToolErrors (#24980). |
 | `PartialStream` | `bool` | PartialStream marks a source that may end without a finish or error chunk because the producer intentionally suspended it mid-step (a time-sliced harness turn). The converter then forwards what arrived and stops: it does not close open parts, invent a trailing `finish-step` or `finish`, or report an incomplete-stream error. TS forwards stream parts as they come and repairs nothing. |
 
 {/* /gen:fields */}

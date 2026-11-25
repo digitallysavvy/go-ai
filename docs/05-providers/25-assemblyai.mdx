@@ -28,7 +28,7 @@ provider := assemblyai.New(assemblyai.Config{
     APIKey: os.Getenv("ASSEMBLYAI_API_KEY"),
 })
 
-model, err := provider.TranscriptionModel("best")
+model, err := provider.TranscriptionModel(assemblyai.ModelAssemblyAISTT37)
 if err != nil {
     log.Fatal(err)
 }
@@ -103,10 +103,48 @@ for _, segment := range result.Segments {
 
 ## Models
 
-| Model ID | Best For |
-|---|---|
-| `best` | Highest-accuracy transcription |
-| `nano` | Lower-latency transcription |
+| Constant | Model ID | Notes |
+|---|---|---|
+| `assemblyai.ModelAssemblyAISTT37` | `assemblyai-stt-3-7` | Flagship transcription model (also selected by `TranscriptionModel("")`) |
+| `assemblyai.ModelUniversal35Pro` | `universal-3-5-pro` | Deprecated by AssemblyAI; returns a deprecation warning pointing to `assemblyai-stt-3-7` |
+| `assemblyai.ModelUniversal2` | `universal-2` | Supported; returns a warning suggesting `assemblyai-stt-3-7` |
+| `assemblyai.SpeechModelTTS1` | `assemblyai-tts-1` | Text-to-speech (`SpeechModel`) |
+
+Every model ID, including any other string, is sent through `speech_models`.
+`assemblyai.ModelBest` (`best`) and `assemblyai.ModelUniversal3Pro`
+(`universal-3-pro`) are deprecated constants kept for v0.5 code: they are sent
+as given, with no special handling, and AssemblyAI rejects the IDs it no
+longer accepts.
+
+`TranscriptionOptions.AudioBase64` is decoded before the upload; a malformed
+base64 string fails before any request.
+
+## Text-to-Speech
+
+`SpeechModel` returns the `assemblyai-tts-1` model (`POST /v1/speech` on
+`https://tts.us.assemblyai.com`; `Config.SpeechBaseURL` overrides the host).
+The output format maps to an encoding (`mp3` by default, `wav`, `pcm`, `mulaw`,
+`alaw`); `ProviderOptions["assemblyai"]` (`assemblyai.SpeechModelOptions`)
+sets `encoding`, `container`, `sampleRate` and `bitRate` and overrides it.
+Unsupported settings (speed other than 1, instructions, an unsupported
+language) produce warnings.
+
+```go
+speechModel, err := provider.SpeechModel(assemblyai.SpeechModelTTS1)
+if err != nil {
+    log.Fatal(err)
+}
+
+speech, err := ai.GenerateSpeech(context.Background(), ai.GenerateSpeechOptions{
+    Model: speechModel,
+    Text:  "Hello from the Go AI SDK.",
+    Voice: "aai-kyla",
+})
+if err != nil {
+    log.Fatal(err)
+}
+_ = speech
+```
 
 ## Workflow Serialization
 

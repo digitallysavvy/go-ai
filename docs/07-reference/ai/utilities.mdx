@@ -173,6 +173,8 @@ Options for streaming array elements as they complete.
 
 A decision model must report specification version `v4`; another version fails with `*ai.UnsupportedModelVersionError` before any call. `ai.SetDefaultProvider(p)` sets the provider that resolves a string decision model ID (and a batch model without a provider), like TS `globalThis.AI_SDK_DEFAULT_PROVIDER`. Custom decision models called directly can normalize typed criteria with `provider.DecisionQuestionsJSON`.
 
+File parts of `State` that point to a URL are downloaded before the model call, and only through `DecideOptions.ExperimentalDownload` (TS `experimental_download`, 79d2004947): without it a remote file fails with a `DownloadError` and nothing is sent. Use `ai.CreateDownload` with a DNS-protected transport for untrusted URLs. Inline file data needs no hook.
+
 {/* gen:fields ai.DecisionLanguageModelOptions */}
 
 | Field | Type | Description |

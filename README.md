@@ -346,7 +346,7 @@ The Go AI SDK supports 50 providers:
 | **Tencent Cloud**| Hunyuan (TokenHub)           | -          | Video (Kling, Seedance) | -     |
 | **Ollama**       | Local models                 | ✓          | -                | -            |
 
-And more (Replicate, Hugging Face, Stability, ElevenLabs, Deepgram, Gladia, LMNT, ByteDance, Baseten, Cerebras, DeepInfra, Gateway, GMI Cloud, Z.AI, MiniMax, TypeSafe AI, Fish Audio, Cartesia, Rev.ai, Hume, Luma, BFL, Voyage, AssemblyAI, Vercel, Moonshot, Anthropic AWS, Google Vertex xAI, Open Responses, Topaz Labs, You.com tools)
+And more (Replicate, Hugging Face, Stability, ElevenLabs, Deepgram, Gladia, LMNT, ByteDance, Baseten, Cerebras, DeepInfra, Gateway, GMI Cloud, Z.AI, MiniMax, TypeSafe AI, Liquid, ScaleDown, Fish Audio, Cartesia, Rev.ai, Hume, Luma, BFL, Voyage, AssemblyAI, Vercel, Moonshot, Anthropic AWS, Google Vertex xAI, Open Responses, Topaz Labs, You.com tools)
 
 ## Features
 

@@ -32,6 +32,7 @@ A `Provider` field accepts a `provider.BatchV4` value, a provider that exposes `
 | `Provider` | `interface{}` | Provider is a provider.BatchV4 instance, a provider.BatchProvider (a Provider exposing ExperimentalBatch()), or nil. When nil, batches are processed through the SetDefaultProvider provider, else the AI Gateway (mirrors TypeScript: `globalThis.AI_SDK_DEFAULT_PROVIDER ?? gateway`). |
 | `Requests` | `[]BatchRequest` |  |
 | `ProviderOptions` | `map[string]interface{}` |  |
+| `Output` | `interface{}` | Output specifies structured data in the text responses (TS startBatch `output`, 3bea041f28): an Output[T, P] such as ObjectOutput, ArrayOutput, ChoiceOutput or JSONOutput. Its response format is sent with every text request in the batch, replacing the request's ResponseFormat; image requests ignore it. Pass the same specification to GetBatchResults as Output to parse and validate each result. |
 | `WebhookURL` | `string` | WebhookURL, when set, is the URL the provider notifies when the batch reaches a terminal state. Providers that do not support completion webhooks return an unsupported-functionality warning instead of erroring. |
 | `MaxRetries` | `*int` | MaxRetries is kept for v0.5 callers. It is validated (it must not be negative) but not used: TS startBatch takes no maxRetries and calls doStartBatch once, so a failed start is never retried. |
 | `Headers` | `map[string]string` |  |
@@ -99,6 +100,7 @@ An image request inside a batch.
 | `Headers` | `map[string]string` |  |
 | `Timeout` | `*time.Duration` |  |
 | `Tools` | `[]types.Tool` | Tools are the client tool definitions given to the StartBatch requests. They are used only to validate and normalize the tool calls of succeeded text results (TS getBatchResults `tools`): calls to unknown tools or with invalid input come back with Invalid and Error set. Their Execute functions are never invoked. |
+| `Output` | `interface{}` | Output is the output specification that was given to the StartBatch requests (TS getBatchResults `output`). When set, the text of every succeeded text item is parsed and validated with it, and the item has either Output or OutputError. |
 
 {/* /gen:fields */}
 
@@ -118,6 +120,8 @@ An image request inside a batch.
 | `Images` | `[]types.GeneratedFile` | Images are the generated images of a succeeded image result as generated files with detected media types and per-image provider metadata (TS convertImageResult -&gt; DefaultGeneratedFile). |
 | `Error` | `*provider.BatchError` |  |
 | `ProviderMetadata` | `map[string]interface{}` |  |
+| `Output` | `interface{}` | Output is the parsed output of a succeeded text item, set only when GetBatchResultsOptions.Output is set and the item's text could be parsed (TS item.output). |
+| `OutputError` | `*provider.BatchError` | OutputError says why no Output is available: the text was not valid JSON, did not match the schema, or the item did not finish with a complete response (TS item.outputError). A parsing failure does not fail the item: Text and the other results stay available. |
 
 {/* /gen:fields */}
 

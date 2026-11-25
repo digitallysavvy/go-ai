@@ -373,6 +373,10 @@ Credentials when none are set. This is a separate code path from the
 generic `googlevertex.NewMaaS` wrapper below — either works for Grok, but
 `googlevertex/xai` is the TS-parity implementation for new code.
 
+### Remote MCP Server
+
+Vertex Interactions models take the same remote MCP server tool as the Google provider: `googlevertex.MCPServerTool` (an alias of `google.MCPServerTool`, provider ID `google.mcp_server`). Header values are sent to the API and redacted in telemetry; see [Remote MCP servers](04-google.mdx#remote-mcp-servers).
+
 ## Provider-Specific Options
 
 Pass Vertex AI-specific options through `ProviderOptions` under the

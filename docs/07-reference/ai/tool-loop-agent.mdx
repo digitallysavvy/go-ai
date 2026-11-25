@@ -232,6 +232,7 @@ These tables are generated from the `agent.AgentConfig` and `agent.PrepareCallCo
 | `OnFinish` | `func(result *AgentResult)` |  |
 | `OnStart` | `func(ctx context.Context, e ai.OnStartEvent)` | OnStart is called once when agent execution begins. |
 | `OnStepStartEvent` | `func(ctx context.Context, e ai.OnStepStartEvent)` | OnStepStart is called at the beginning of each LLM step. |
+| `OnWarning` | `ai.LogWarningsFunction` | OnWarning receives the warnings of the agent calls, for example unsupported settings, deprecated prompt parts, or reaching the default step limit, instead of the global warning logger (TS onWarning, d834c5bb35). Like OnStepError it is set here, not per call. |
 | `OnStepError` | `func(ctx context.Context, e ai.OnStepErrorEvent)` | OnStepError is called when a step that started fails before it produces a step result (the provider call fails or, in Stream, the model stream ends without output). OnStepEnd is not called for such a step. In Generate an abort or timeout also ends the step here; in Stream it ends with OnAbort. Config-only: it has no per-call counterpart (TS #23758). |
 | `ErrorHandler` | `func(ctx context.Context, err error)` | ErrorHandler is called when an error occurs. For Stream it receives the errors of the stream, for Generate it receives the error before it is returned. Aborts and timeouts are not reported. A per-call AgentStreamOptions.OnError fires after it. Config-only (TS onError). |
 | `AbortHandler` | `func(ctx context.Context, steps []types.StepResult)` | AbortHandler is called when Stream is aborted or times out. Generate does not call it: an aborted Generate call returns an error and its step ends with OnStepError. A per-call AgentStreamOptions.OnAbort fires after it. Config-only (TS onAbort). |
@@ -254,7 +255,7 @@ These tables are generated from the `agent.AgentConfig` and `agent.PrepareCallCo
 | `ToolApprovalRequired` | `bool` | ToolApprovalRequired determines if tools require approval before execution |
 | `ToolApprover` | `func(toolCall types.ToolCall) bool` | ToolApprover is called when a tool needs approval (if ToolApprovalRequired is true) Should return true to approve, false to reject |
 | `ToolApproval` | `types.ToolApprovalConfig` | ToolApproval configures automatic approval handling. Supported values are types.ToolApprovalFunc and maps keyed by tool name. Nil or zero-valued results are treated as not-applicable. |
-| `ExperimentalToolApprovalSecret` | `[]byte` | ExperimentalToolApprovalSecret signs issued tool approval requests and verifies resumed approval responses before tools execute (TS experimental_toolApprovalSecret). Nil disables signing/verification. |
+| `ExperimentalToolApprovalSecret` | `[]byte` | ExperimentalToolApprovalSecret signs issued tool approval requests and verifies resumed approval responses before tools execute (TS experimental_toolApprovalSecret). Nil disables signing/verification. Approval requests of automatically denied tool calls are not signed. |
 
 {/* /gen:fields */}
 

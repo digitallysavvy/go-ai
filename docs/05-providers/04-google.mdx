@@ -439,6 +439,24 @@ result, err := agentModel.DoGenerate(ctx, &provider.GenerateOptions{
 
 Interactions responses preserve ordered text, reasoning, files, sources, and tool-call content. Google metadata is available under `ProviderMetadata["google"]`, including the `interactionId` when returned by the API.
 
+#### Remote MCP servers
+
+`google.MCPServerTool` (TS `google.tools.mcpServer`, provider ID `google.mcp_server`) connects a remote MCP server so an Interactions model can call its tools. It takes `name`, `url`, `headers` and `allowedTools`; only Interactions models send it.
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  interactionsModel,
+    Prompt: "What is the weather in Paris?",
+    Tools: []types.Tool{google.MCPServerTool(map[string]interface{}{
+        "name":    "weather-mcp",
+        "url":     "https://example.com/mcp",
+        "headers": map[string]string{"Authorization": "Bearer " + os.Getenv("MCP_TOKEN")},
+    })},
+})
+```
+
+The header values go to the Gemini API unchanged. Telemetry copies of the tool definition and of the Interactions request body show every header name with the value `[redacted]`. Go redacts centrally by provider ID and wire shape (`pkg/telemetry`), so a tool built by hand with `ProviderID: "google.mcp_server"` is redacted too.
+
 ### Grounding with Google Search
 
 Connect Gemini to real-time web information:
