@@ -71,14 +71,14 @@ type errTest string
 
 func (e errTest) Error() string { return string(e) }
 
-// TS sizes the title border with String.length (UTF-16 units), not the
-// display width.
-func TestSectionTitleBorderUsesUTF16Length(t *testing.T) {
+// TS (2d2fc466c4) lays section headers out by terminal columns, not UTF-16
+// units.
+func TestSectionTitleBorderUsesDisplayWidth(t *testing.T) {
 	// "日本" is two UTF-16 units but four columns wide.
 	lines := renderSectionLines(chatSection{kind: sectionTool, title: "日本", content: "x"}, 30)
 	top := lines[0]
-	// " 日本 " is 4 UTF-16 units.
-	if got := strings.Count(top, "─"); got != 30-2-4 {
+	// " 日本 " is 6 columns.
+	if got := strings.Count(top, "─"); got != 30-2-6 {
 		t.Fatalf("border cells = %d in %q", got, top)
 	}
 }

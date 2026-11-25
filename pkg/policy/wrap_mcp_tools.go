@@ -10,6 +10,16 @@ type WrappedMCPTools struct {
 
 // WrapMCPTools makes approval total over a discovered tool surface, falling
 // back to user-approval for uncovered or not-applicable tools by default.
+//
+// A fallback of denied ("hard allowlist mode") over an OPA policy needs the
+// policy passed as NewOPAPolicy(...) (or NewShadow over it), not as the plain
+// function OPAPolicy returns: only the approval object can take the fallback
+// into each of its evaluations (TS fac1d6a588). The plain function gets the
+// fallback on the combined decision only, so a call that the policy leaves
+// not-applicable alone but ranks user-approval against earlier calls of the
+// response asks for approval instead of being denied. v0.5.2 declares OPAPolicy
+// as returning types.GenericToolApprovalFunc, and a Go func value carries no
+// hidden hook, so that return type stays.
 func WrapMCPTools(tools map[string]types.Tool, approval types.ToolApprovalConfig, defaults ...types.ToolApprovalStatus) WrappedMCPTools {
 	fallback := types.ToolApprovalStatusUserApproval
 	if len(defaults) > 0 && defaults[0] != "" {

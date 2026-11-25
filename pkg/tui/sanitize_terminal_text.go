@@ -1,6 +1,10 @@
 package tui
 
-import "strings"
+import (
+	"strconv"
+	"strings"
+	"unicode"
+)
 
 // sanitizeTerminalText escapes untrusted terminal control characters before
 // adding any TUI-owned ANSI styles or layout (hash 8e0fbcc10a). Agent text,
@@ -55,4 +59,23 @@ func escapedControl(r rune) string {
 	b[5] = hexDigits[code&0xf]
 	b[4] = hexDigits[(code>>4)&0xf]
 	return string(b[:])
+}
+
+// escapeFormatCharacters escapes Unicode format characters (general category
+// Cf) as \u{hex} (TS escapeFormatCharacters, 25972d7857). They are invisible,
+// and some of them change how the surrounding text reads, such as
+// bidirectional controls, zero-width characters, and tag characters.
+func escapeFormatCharacters(input string) string {
+	var out strings.Builder
+	out.Grow(len(input))
+	for _, r := range input {
+		if unicode.Is(unicode.Cf, r) {
+			out.WriteString(`\u{`)
+			out.WriteString(strconv.FormatInt(int64(r), 16))
+			out.WriteByte('}')
+			continue
+		}
+		out.WriteRune(r)
+	}
+	return out.String()
 }
