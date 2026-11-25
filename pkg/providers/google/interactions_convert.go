@@ -75,14 +75,15 @@ func (m *InteractionsLanguageModel) convertPrompt(p types.Prompt, opts GoogleInt
 			warnings = append(warnings, ws...)
 			steps = append(steps, assistantSteps...)
 		case types.RoleTool:
-			content, ws, err := convertToolResults(msg.Content)
+			// Tool results are top-level function_result inputs: the API
+			// rejects document / audio results nested in user_input.content
+			// (TS afb4e69924).
+			results, ws, err := convertToolResults(msg.Content, opts.MediaResolution)
 			if err != nil {
 				return nil, "", nil, err
 			}
 			warnings = append(warnings, ws...)
-			if len(content) > 0 {
-				steps = append(steps, map[string]interface{}{"type": "user_input", "content": content})
-			}
+			steps = append(steps, results...)
 		}
 	}
 
@@ -252,6 +253,12 @@ func fileContentToInteractionBlock(part types.FileContent, mediaResolution strin
 		msg := fmt.Sprintf("google.interactions: unsupported file media type \"%s\"; part dropped.", mediaType)
 		return nil, []types.Warning{{Type: "other", Message: msg, Details: msg}}, nil
 	}
+	// TS googleInteractionsFileOptionsSchema.parse of the part's options:
+	// an invalid selection fails before the whole file could be sent.
+	fileOptions, err := parseInteractionsFileOptions(part.ProviderOptions)
+	if err != nil {
+		return nil, nil, err
+	}
 	var warnings []types.Warning
 	block := map[string]interface{}{
 		"type": kind,
@@ -301,65 +308,19 @@ func fileContentToInteractionBlock(part types.FileContent, mediaResolution strin
 		block["data"] = ""
 		block["mime_type"] = mediaType
 	}
-	if mediaResolution != "" && (kind == "image" || kind == "video") {
-		block["resolution"] = mediaResolution
+	// The per-file resolution wins over the call-level default; audio has
+	// none (TS afb4e69924).
+	resolution := fileOptions.Resolution
+	if resolution == "" {
+		resolution = mediaResolution
 	}
-	if kind == "video" {
-		processing, processingWarning := videoProcessingField(part.ProviderOptions)
-		if processing != nil {
-			block["processing"] = processing
-		}
-		if processingWarning != nil {
-			warnings = append(warnings, *processingWarning)
-		}
+	if resolution != "" && kind != "audio" {
+		block["resolution"] = resolution
+	}
+	if kind != "image" && fileOptions.Processing != nil {
+		block["processing"] = fileOptions.Processing
 	}
 	return block, warnings, nil
-}
-
-// videoProcessingField converts providerOptions.google.processing (TS
-// getVideoProcessingField) into the wire `processing` field for a video file
-// part: either the strings "agentic"/"static", or
-// `{type:"static", start_offset?, end_offset?, fps?}`. Returns (nil, nil)
-// when unset, and (nil, warning) for an invalid value (option dropped, block
-// still emitted).
-func videoProcessingField(providerOptions map[string]interface{}) (interface{}, *types.Warning) {
-	// Typed-option ruling: part options are read in their JSON form.
-	google, _ := providerutils.NormalizeOptionsJSON(providerOptions)["google"].(map[string]interface{})
-	if google == nil {
-		return nil, nil
-	}
-	processing, ok := google["processing"]
-	if !ok || processing == nil {
-		return nil, nil
-	}
-	if s, ok := processing.(string); ok && (s == "agentic" || s == "static") {
-		return s, nil
-	}
-	if m, ok := processing.(map[string]interface{}); ok && stringValue(m["type"]) == "static" {
-		out := pruneMap(map[string]interface{}{
-			"type":         "static",
-			"start_offset": videoOffsetString(m["startOffset"]),
-			"end_offset":   videoOffsetString(m["endOffset"]),
-			"fps":          numericOrNil(m["fps"]),
-		})
-		if out == nil {
-			out = map[string]interface{}{"type": "static"}
-		}
-		return out, nil
-	}
-	msg := "google.interactions: invalid providerOptions.google.processing on video file part; expected \"agentic\", \"static\", or a static processing configuration. Option dropped."
-	return nil, &types.Warning{Type: "other", Message: msg, Details: msg}
-}
-
-// numericOrNil returns v when it is a JSON number type, otherwise nil (so
-// pruneMap drops the key).
-func numericOrNil(v interface{}) interface{} {
-	switch v.(type) {
-	case int, int32, int64, float32, float64:
-		return v
-	default:
-		return nil
-	}
 }
 
 // videoOffsetString formats a numeric video start/end offset as a duration
@@ -387,7 +348,7 @@ func videoOffsetString(v interface{}) interface{} {
 	return providerutils.JSNumberString(f) + "s"
 }
 
-func convertToolResults(parts []types.ContentPart) ([]map[string]interface{}, []types.Warning, error) {
+func convertToolResults(parts []types.ContentPart, mediaResolution string) ([]map[string]interface{}, []types.Warning, error) {
 	var warnings []types.Warning
 	content := make([]map[string]interface{}, 0, len(parts))
 	for _, part := range parts {
@@ -397,7 +358,7 @@ func convertToolResults(parts []types.ContentPart) ([]map[string]interface{}, []
 			warnings = append(warnings, types.Warning{Type: "other", Message: msg, Details: msg})
 			continue
 		}
-		block, ws, err := toolResultToInteractionBlock(tr)
+		block, ws, err := toolResultToInteractionBlock(tr, mediaResolution)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -407,7 +368,7 @@ func convertToolResults(parts []types.ContentPart) ([]map[string]interface{}, []
 	return content, warnings, nil
 }
 
-func toolResultToInteractionBlock(part types.ToolResultContent) (map[string]interface{}, []types.Warning, error) {
+func toolResultToInteractionBlock(part types.ToolResultContent, mediaResolution string) (map[string]interface{}, []types.Warning, error) {
 	base := map[string]interface{}{
 		"type":    "function_result",
 		"call_id": part.ToolCallID,
@@ -441,7 +402,7 @@ func toolResultToInteractionBlock(part types.ToolResultContent) (map[string]inte
 		base["is_error"] = true
 		base["result"] = part.Output.ReasonOr("Tool execution denied by user.")
 	case types.ToolResultOutputContent:
-		blocks, warnings, err := toolResultContentBlocks(part.Output.Content)
+		blocks, warnings, err := toolResultContentBlocks(part.Output.Content, mediaResolution)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -466,7 +427,7 @@ func interactionResultText(v interface{}) string {
 	return jsonStringify(v)
 }
 
-func toolResultContentBlocks(blocks []types.ToolResultContentBlock) ([]map[string]interface{}, []types.Warning, error) {
+func toolResultContentBlocks(blocks []types.ToolResultContentBlock, mediaResolution string) ([]map[string]interface{}, []types.Warning, error) {
 	var warnings []types.Warning
 	out := make([]map[string]interface{}, 0, len(blocks))
 	for _, block := range blocks {
@@ -480,20 +441,17 @@ func toolResultContentBlocks(blocks []types.ToolResultContentBlock) ([]map[strin
 		case types.TextContentBlock:
 			out = append(out, map[string]interface{}{"type": "text", "text": b.Text})
 		case types.FileContentBlock:
-			// TS getTopLevelMediaType(mediaType) !== 'image'.
-			if top, _, _ := strings.Cut(b.MediaType, "/"); top != "image" {
-				msg := fmt.Sprintf("google.interactions: tool-result file with mediaType \"%s\" is not supported (Interactions %s accepts only text and image content); part dropped.", b.MediaType, "`function_result.result`")
-				warnings = append(warnings, types.Warning{Type: "other", Message: msg, Details: msg})
-				continue
-			}
-			// TS filePartToImageBlock: text data is not representable as an image.
-			if b.FileData.Type == types.FileDataTypeText || (b.FileData.Type == "" && b.Text != "") {
+			// TS: an image whose data is text is not representable as an image.
+			if top, _, _ := strings.Cut(b.MediaType, "/"); top == "image" && (b.FileData.Type == types.FileDataTypeText || (b.FileData.Type == "" && b.Text != "")) {
 				msg := "google.interactions: tool-result image part with `data.type === \"text\"` is not representable as an image; part dropped."
 				warnings = append(warnings, types.Warning{Type: "other", Message: msg, Details: msg})
 				continue
 			}
-			file := types.FileContent{FileData: b.FileData, Data: b.Data, MediaType: b.MediaType, URL: b.URL, Reference: b.Reference, Text: b.Text}
-			ib, ws, err := fileContentToInteractionBlock(file, "")
+			// Any other file goes through the file-part converter (documents,
+			// audio and video keep their per-file options and nest in the
+			// function_result; TS afb4e69924).
+			file := types.FileContent{FileData: b.FileData, Data: b.Data, MediaType: b.MediaType, URL: b.URL, Reference: b.Reference, Text: b.Text, ProviderOptions: b.ProviderOptions}
+			ib, ws, err := fileContentToInteractionBlock(file, mediaResolution)
 			if err != nil {
 				return nil, nil, err
 			}

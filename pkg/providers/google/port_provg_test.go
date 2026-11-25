@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -682,5 +683,345 @@ func TestPortprovgLiveStreamingOptionsValidation(t *testing.T) {
 	opts, err := parseTranscriptionModelOptionsChecked(map[string]interface{}{"google": map[string]interface{}{"streaming": map[string]interface{}{"automaticActivityDetection": map[string]interface{}{}}}})
 	if err != nil || opts.ManualActivityDetection {
 		t.Fatalf("opts = %+v err = %v", opts, err)
+	}
+}
+
+// ---- Interactions file inspection (TS afb4e69924, google-file-inspection.test.ts
+// and convert-to-google-interactions-input.test.ts) ----
+
+const portprovgInspectionURI = "https://generativelanguage.googleapis.com/v1beta/files/inspection"
+
+type portprovgInteractionsCase struct {
+	name      string
+	mediaType string
+	options   map[string]interface{}
+	expected  map[string]interface{}
+}
+
+func portprovgInteractionsCases() []portprovgInteractionsCase {
+	m := func(kv ...interface{}) map[string]interface{} {
+		out := map[string]interface{}{}
+		for i := 0; i < len(kv); i += 2 {
+			out[kv[i].(string)] = kv[i+1]
+		}
+		return out
+	}
+	return []portprovgInteractionsCase{
+		{"PDF pages", "application/pdf",
+			m("processing", m("type", "static", "pageOptions", m("startPage", 3, "endPage", 4))),
+			m("type", "document", "processing", m("type", "static", "page_options", m("start_page", 3, "end_page", 4)))},
+		{"Word text layers", "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+			m("processing", m("type", "static", "pageOptions", m("startPage", 2, "endPage", 3, "contentLayers", []interface{}{"page_text"}))),
+			m("type", "document", "processing", m("type", "static", "page_options", m("start_page", 2, "end_page", 3, "content_layers", []interface{}{"page_text"})))},
+		{"PowerPoint visual layers", "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+			m("resolution", "high", "processing", m("type", "static", "pageOptions", m("startPage", 4, "endPage", 5, "contentLayers", []interface{}{"page_image"}))),
+			m("type", "document", "resolution", "high", "processing", m("type", "static", "page_options", m("start_page", 4, "end_page", 5, "content_layers", []interface{}{"page_image"})))},
+		{"spreadsheet cells and formulas", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+			m("processing", m("type", "static", "spreadsheetOptions", m("sheetIndex", 3, "visibleCells", "A1:C5", "contentLayers", []interface{}{"data", "formulas"}))),
+			m("type", "document", "processing", m("type", "static", "spreadsheet_options", m("sheet_index", 3, "visible_cells", "A1:C5", "content_layers", []interface{}{"data", "formulas"})))},
+		{"OpenDocument sheet rendering", "application/vnd.oasis.opendocument.spreadsheet",
+			m("resolution", "medium", "processing", m("type", "static", "spreadsheetOptions", m("sheetIndex", 1, "visibleCells", "B5", "contentLayers", []interface{}{"visual"}))),
+			m("type", "document", "resolution", "medium", "processing", m("type", "static", "spreadsheet_options", m("sheet_index", 1, "visible_cells", "B5", "content_layers", []interface{}{"visual"})))},
+		{"video frames", "video/mp4",
+			m("processing", m("type", "static", "startOffset", 10, "endOffset", 20, "fps", 2, "contentLayers", []interface{}{"frames"})),
+			m("type", "video", "processing", m("type", "static", "start_offset", "10s", "end_offset", "20s", "fps", 2, "content_layers", []interface{}{"frames"}))},
+		{"audio clip starting at zero", "audio/mpeg",
+			m("processing", m("type", "static", "startOffset", 0, "endOffset", 30.5)),
+			m("type", "audio", "processing", m("type", "static", "start_offset", "0s", "end_offset", "30.5s"))},
+	}
+}
+
+func portprovgInteractionsJSON(t *testing.T, v interface{}) interface{} {
+	t.Helper()
+	raw, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out interface{}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+func portprovgConvertInteractions(t *testing.T, messages []types.Message, opts GoogleInteractionsProviderOptions) ([]map[string]interface{}, []types.Warning, error) {
+	t.Helper()
+	m := NewInteractionsLanguageModel(New(Config{APIKey: "k"}), "gemini-4-hydrogen")
+	steps, _, warnings, err := m.convertPrompt(types.Prompt{Messages: messages}, opts)
+	return steps, warnings, err
+}
+
+func TestPortprovgInteractionsFileInspectionSerializes(t *testing.T) {
+	type dataCase struct {
+		name   string
+		data   types.FileData
+		inline bool
+	}
+	dataCases := []dataCase{
+		{"bytes", types.FileData{Type: types.FileDataTypeData, Data: []byte{1, 2, 3}}, true},
+		{"base64", types.FileData{Type: types.FileDataTypeData, DataString: "AQID"}, true},
+		{"uploaded URL", types.FileData{Type: types.FileDataTypeURL, URL: portprovgInspectionURI}, false},
+		{"provider reference", types.FileData{Type: types.FileDataTypeReference, Reference: types.ProviderReference{"google": portprovgInspectionURI}}, false},
+	}
+	for _, toolResult := range []bool{false, true} {
+		for _, dc := range dataCases {
+			for _, ic := range portprovgInteractionsCases() {
+				name := ic.name + "/" + dc.name
+				if toolResult {
+					name = "tool result/" + name
+				}
+				t.Run(name, func(t *testing.T) {
+					options := map[string]interface{}{"google": ic.options}
+					var messages []types.Message
+					if toolResult {
+						messages = []types.Message{{Role: types.RoleTool, Content: []types.ContentPart{types.ToolResultContent{
+							ToolCallID: "call-1", ToolName: "view_file",
+							Output: &types.ToolResultOutput{Type: types.ToolResultOutputContent, Content: []types.ToolResultContentBlock{
+								types.FileContentBlock{FileData: dc.data, MediaType: ic.mediaType, ProviderOptions: options},
+							}},
+						}}}}
+					} else {
+						messages = []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{
+							types.FileContent{FileData: dc.data, MediaType: ic.mediaType, ProviderOptions: options},
+						}}}
+					}
+					steps, warnings, err := portprovgConvertInteractions(t, messages, GoogleInteractionsProviderOptions{})
+					if err != nil {
+						t.Fatal(err)
+					}
+					block := map[string]interface{}{"mime_type": ic.mediaType}
+					for k, v := range ic.expected {
+						block[k] = v
+					}
+					if dc.inline {
+						block["data"] = "AQID"
+					} else {
+						block["uri"] = portprovgInspectionURI
+					}
+					var want interface{} = map[string]interface{}{"type": "user_input", "content": []interface{}{block}}
+					if toolResult {
+						want = map[string]interface{}{"type": "function_result", "call_id": "call-1", "name": "view_file", "result": []interface{}{block}}
+					}
+					if len(steps) != 1 || !reflect.DeepEqual(portprovgInteractionsJSON(t, steps[0]), portprovgInteractionsJSON(t, want)) {
+						t.Fatalf("steps = %v\nwant   %v", portprovgInteractionsJSON(t, steps), portprovgInteractionsJSON(t, want))
+					}
+					if len(warnings) != 0 {
+						t.Fatalf("warnings = %v", warnings)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestPortprovgInteractionsProcessingKeyOrder(t *testing.T) {
+	steps, _, err := portprovgConvertInteractions(t, []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.FileContent{
+		MediaType: "video/mp4", FileData: types.FileData{Type: types.FileDataTypeURL, URL: "https://example.com/v.mp4"},
+		ProviderOptions: map[string]interface{}{"google": map[string]interface{}{"processing": map[string]interface{}{
+			"type": "static", "spreadsheetOptions": map[string]interface{}{"visibleCells": "A1", "sheetIndex": 2},
+			"pageOptions": map[string]interface{}{"endPage": 4, "startPage": 3}, "contentLayers": []interface{}{"audio"}, "fps": 3, "endOffset": 9, "startOffset": 1,
+		}}},
+	}}}}, GoogleInteractionsProviderOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(steps)
+	want := `"processing":{"type":"static","start_offset":"1s","end_offset":"9s","fps":3,"content_layers":["audio"],"page_options":{"start_page":3,"end_page":4},"spreadsheet_options":{"sheet_index":2,"visible_cells":"A1"}}`
+	if !strings.Contains(string(raw), want) {
+		t.Fatalf("steps = %s", raw)
+	}
+}
+
+func TestPortprovgInteractionsSameWorkbookSelectionsStaySeparate(t *testing.T) {
+	var parts []types.ContentPart
+	for _, sheet := range []int{1, 3} {
+		parts = append(parts, types.FileContent{
+			MediaType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+			FileData:  types.FileData{Type: types.FileDataTypeReference, Reference: types.ProviderReference{"google": portprovgInspectionURI}},
+			ProviderOptions: map[string]interface{}{"google": map[string]interface{}{"processing": map[string]interface{}{
+				"type": "static", "spreadsheetOptions": map[string]interface{}{"sheetIndex": sheet},
+			}}},
+		})
+	}
+	steps, _, err := portprovgConvertInteractions(t, []types.Message{{Role: types.RoleUser, Content: parts}}, GoogleInteractionsProviderOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, _ := steps[0]["content"].([]map[string]interface{})
+	if len(steps) != 1 || len(content) != 2 {
+		t.Fatalf("steps = %v", steps)
+	}
+	for i, sheet := range []float64{1, 3} {
+		spreadsheet := portprovgInteractionsJSON(t, content[i]).(map[string]interface{})["processing"].(map[string]interface{})["spreadsheet_options"].(map[string]interface{})
+		if spreadsheet["sheet_index"] != sheet {
+			t.Fatalf("block %d = %v", i, content[i])
+		}
+	}
+}
+
+func TestPortprovgInteractionsPerFileResolutionBeatsCallDefault(t *testing.T) {
+	file := func(options map[string]interface{}) []types.Message {
+		return []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.FileContent{
+			MediaType: "application/pdf", FileData: types.FileData{Type: types.FileDataTypeData, DataString: "AQID"}, ProviderOptions: options,
+		}}}}
+	}
+	steps, _, err := portprovgConvertInteractions(t, file(map[string]interface{}{"google": map[string]interface{}{"resolution": "high"}}), GoogleInteractionsProviderOptions{MediaResolution: "low"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if raw, _ := json.Marshal(steps); !strings.Contains(string(raw), `"resolution":"high"`) || strings.Contains(string(raw), `"low"`) {
+		t.Fatalf("steps = %s", raw)
+	}
+	// The call-level default now reaches documents too, but never audio.
+	steps, _, err = portprovgConvertInteractions(t, file(nil), GoogleInteractionsProviderOptions{MediaResolution: "low"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if raw, _ := json.Marshal(steps); !strings.Contains(string(raw), `"resolution":"low"`) {
+		t.Fatalf("document steps = %s", raw)
+	}
+	audio := []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.FileContent{MediaType: "audio/mpeg", FileData: types.FileData{Type: types.FileDataTypeData, DataString: "AQID"}}}}}
+	steps, _, err = portprovgConvertInteractions(t, audio, GoogleInteractionsProviderOptions{MediaResolution: "low"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if raw, _ := json.Marshal(steps); strings.Contains(string(raw), "resolution") {
+		t.Fatalf("audio steps = %s", raw)
+	}
+}
+
+func TestPortprovgInteractionsRejectsMalformedInspectionOptions(t *testing.T) {
+	for name, options := range map[string]map[string]interface{}{
+		"ultra_high resolution":          {"resolution": "ultra_high"},
+		"processing without a type":      {"processing": map[string]interface{}{"pageOptions": map[string]interface{}{"startPage": 3}}},
+		"spreadsheetOptions as an array": {"processing": map[string]interface{}{"type": "static", "spreadsheetOptions": []interface{}{map[string]interface{}{"sheetIndex": 1}}}},
+		"start page zero":                {"processing": map[string]interface{}{"type": "static", "pageOptions": map[string]interface{}{"startPage": 0}}},
+		"negative offset":                {"processing": map[string]interface{}{"type": "static", "startOffset": -1}},
+		"fps above 24":                   {"processing": map[string]interface{}{"type": "static", "fps": 25}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, _, err := portprovgConvertInteractions(t, []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.FileContent{
+				MediaType: "application/pdf", FileData: types.FileData{Type: types.FileDataTypeData, DataString: "AQID"},
+				ProviderOptions: map[string]interface{}{"google": options},
+			}}}}, GoogleInteractionsProviderOptions{})
+			var validation *providererrors.ValidationError
+			if !errors.As(err, &validation) {
+				t.Fatalf("err = %v (%T)", err, err)
+			}
+		})
+	}
+}
+
+// TS convert-to-google-interactions-input.test.ts "tool-result messages":
+// results are top-level function_result inputs and a document nests in its
+// result without a warning.
+func TestPortprovgInteractionsToolResultsAreTopLevel(t *testing.T) {
+	call := types.ToolCallContent{ToolCallID: "call_abc", ToolName: "getWeather", Input: `{"location":"NYC"}`}
+	result := func(output types.ToolResultOutput) []types.Message {
+		return []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "q"}}},
+			{Role: types.RoleAssistant, Content: []types.ContentPart{call}},
+			{Role: types.RoleTool, Content: []types.ContentPart{types.ToolResultContent{ToolCallID: "call_abc", ToolName: "getWeather", Output: &output}}},
+		}
+	}
+	steps, warnings, err := portprovgConvertInteractions(t, result(types.ToolResultOutput{Type: types.ToolResultOutputText, Value: "It is sunny."}), GoogleInteractionsProviderOptions{})
+	if err != nil || len(warnings) != 0 {
+		t.Fatalf("err = %v warnings = %v", err, warnings)
+	}
+	want := map[string]interface{}{"type": "function_result", "call_id": "call_abc", "name": "getWeather", "result": "It is sunny."}
+	if len(steps) != 3 || !reflect.DeepEqual(portprovgInteractionsJSON(t, steps[2]), portprovgInteractionsJSON(t, want)) {
+		t.Fatalf("steps = %v", portprovgInteractionsJSON(t, steps))
+	}
+
+	steps, warnings, err = portprovgConvertInteractions(t, result(types.ToolResultOutput{Type: types.ToolResultOutputContent, Content: []types.ToolResultContentBlock{
+		types.FileContentBlock{MediaType: "application/pdf", FileData: types.FileData{Type: types.FileDataTypeData, DataString: "AQID"}},
+	}}), GoogleInteractionsProviderOptions{})
+	if err != nil || len(warnings) != 0 {
+		t.Fatalf("err = %v warnings = %v", err, warnings)
+	}
+	want = map[string]interface{}{"type": "function_result", "call_id": "call_abc", "name": "getWeather", "result": []interface{}{
+		map[string]interface{}{"type": "document", "data": "AQID", "mime_type": "application/pdf"},
+	}}
+	if !reflect.DeepEqual(portprovgInteractionsJSON(t, steps[2]), portprovgInteractionsJSON(t, want)) {
+		t.Fatalf("step = %v", portprovgInteractionsJSON(t, steps[2]))
+	}
+}
+
+// TS "keeps mixed file content inside its tool result (compact: %s)".
+func TestPortprovgInteractionsMixedToolResultFiles(t *testing.T) {
+	fileURI := portprovgInspectionURI
+	firstCall := types.ToolCallContent{ToolCallID: "first-call", ToolName: "viewFile", Input: `{}`, ProviderOptions: map[string]interface{}{"google": map[string]interface{}{"interactionId": "stored-interaction"}}}
+	secondCall := types.ToolCallContent{ToolCallID: "second-call", ToolName: "viewFile", Input: `{}`}
+	static := func(extra map[string]interface{}) map[string]interface{} {
+		processing := map[string]interface{}{"type": "static"}
+		for k, v := range extra {
+			processing[k] = v
+		}
+		return processing
+	}
+	firstOutput := types.ToolResultOutput{Type: types.ToolResultOutputContent, Content: []types.ToolResultContentBlock{
+		types.TextContentBlock{Text: "First selection"},
+		types.FileContentBlock{MediaType: "application/pdf", FileData: types.FileData{Type: types.FileDataTypeData, DataString: "AQID"},
+			ProviderOptions: map[string]interface{}{"google": map[string]interface{}{"resolution": "high", "processing": static(map[string]interface{}{"pageOptions": map[string]interface{}{"startPage": 1, "endPage": 1}})}}},
+		types.FileContentBlock{MediaType: "image/png", FileData: types.FileData{Type: types.FileDataTypeData, DataString: "BAUG"}},
+		types.FileContentBlock{MediaType: "audio/mpeg", FileData: types.FileData{Type: types.FileDataTypeReference, Reference: types.ProviderReference{"google": fileURI}},
+			ProviderOptions: map[string]interface{}{"google": map[string]interface{}{"processing": static(map[string]interface{}{"startOffset": 0, "endOffset": 10})}}},
+		types.FileContentBlock{MediaType: "video/mp4", FileData: types.FileData{Type: types.FileDataTypeURL, URL: fileURI}},
+	}}
+	secondOutput := types.ToolResultOutput{Type: types.ToolResultOutputContent, Content: []types.ToolResultContentBlock{
+		types.FileContentBlock{MediaType: "application/pdf", FileData: types.FileData{Type: types.FileDataTypeReference, Reference: types.ProviderReference{"google": fileURI}},
+			ProviderOptions: map[string]interface{}{"google": map[string]interface{}{"processing": static(map[string]interface{}{"pageOptions": map[string]interface{}{"startPage": 2, "endPage": 2}})}}},
+	}}
+	for _, compact := range []bool{false, true} {
+		t.Run(map[bool]string{false: "full history", true: "compact"}[compact], func(t *testing.T) {
+			messages := []types.Message{
+				{Role: types.RoleAssistant, Content: []types.ContentPart{firstCall}},
+				{Role: types.RoleAssistant, Content: []types.ContentPart{secondCall}},
+				{Role: types.RoleTool, Content: []types.ContentPart{
+					types.ToolResultContent{ToolCallID: "first-call", ToolName: "viewFile", Output: &firstOutput, ProviderOptions: map[string]interface{}{"google": map[string]interface{}{"signature": "first-signature"}}},
+					types.ToolResultContent{ToolCallID: "second-call", ToolName: "viewFile", Output: &secondOutput, ProviderOptions: map[string]interface{}{"google": map[string]interface{}{"signature": "second-signature"}}},
+				}},
+			}
+			opts := GoogleInteractionsProviderOptions{}
+			if compact {
+				opts.PreviousInteractionID = "stored-interaction"
+			}
+			steps, warnings, err := portprovgConvertInteractions(t, messages, opts)
+			if err != nil || len(warnings) != 0 {
+				t.Fatalf("err = %v warnings = %v", err, warnings)
+			}
+			var results []interface{}
+			for _, step := range steps {
+				if step["type"] == "function_result" {
+					results = append(results, portprovgInteractionsJSON(t, step))
+				}
+			}
+			first := map[string]interface{}{"type": "function_result", "call_id": "first-call", "name": "viewFile", "signature": "first-signature", "result": []interface{}{
+				map[string]interface{}{"type": "text", "text": "First selection"},
+				map[string]interface{}{"type": "document", "data": "AQID", "mime_type": "application/pdf", "resolution": "high", "processing": map[string]interface{}{"type": "static", "page_options": map[string]interface{}{"start_page": 1, "end_page": 1}}},
+				map[string]interface{}{"type": "image", "data": "BAUG", "mime_type": "image/png"},
+				map[string]interface{}{"type": "audio", "uri": fileURI, "mime_type": "audio/mpeg", "processing": map[string]interface{}{"type": "static", "start_offset": "0s", "end_offset": "10s"}},
+				map[string]interface{}{"type": "video", "uri": fileURI, "mime_type": "video/mp4"},
+			}}
+			second := map[string]interface{}{"type": "function_result", "call_id": "second-call", "name": "viewFile", "signature": "second-signature", "result": []interface{}{
+				map[string]interface{}{"type": "document", "uri": fileURI, "mime_type": "application/pdf", "processing": map[string]interface{}{"type": "static", "page_options": map[string]interface{}{"start_page": 2, "end_page": 2}}},
+			}}
+			want := []interface{}{first, second}
+			if compact {
+				want = []interface{}{second}
+			}
+			if !reflect.DeepEqual(results, portprovgInteractionsJSON(t, want)) {
+				t.Fatalf("results = %v\nwant     %v", results, want)
+			}
+		})
+	}
+}
+
+// supportedUrls: uploaded Gemini Files API URLs are accepted for any media type.
+func TestPortprovgInteractionsSupportsFilesAPIURLs(t *testing.T) {
+	m := NewInteractionsLanguageModel(New(Config{APIKey: "k"}), "gemini-4-hydrogen")
+	patterns := m.SupportedURLs()["*"]
+	if len(patterns) != 1 || !regexp.MustCompile(patterns[0]).MatchString(portprovgInspectionURI) {
+		t.Fatalf("patterns = %v", patterns)
 	}
 }

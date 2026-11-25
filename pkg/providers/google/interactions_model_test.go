@@ -14,6 +14,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 func TestInteractionsGenerateRequestAndResponse(t *testing.T) {
@@ -715,11 +716,11 @@ func TestInteractionsVideoInputProcessingOption(t *testing.T) {
 		if err != nil || len(warnings) != 0 {
 			t.Fatalf("err=%v warnings=%#v", err, warnings)
 		}
-		processing, ok := block["processing"].(map[string]interface{})
+		processing, ok := block["processing"].(providerutils.OrderedMap)
 		if !ok {
 			t.Fatalf("processing = %#v", block["processing"])
 		}
-		if processing["type"] != "static" || processing["start_offset"] != "1s" || processing["end_offset"] != "5s" || processing["fps"] != float64(2) {
+		if processing.Vals["type"] != "static" || processing.Vals["start_offset"] != "1s" || processing.Vals["end_offset"] != "5s" || processing.Vals["fps"] != float64(2) {
 			t.Fatalf("processing = %#v", processing)
 		}
 	})
@@ -741,37 +742,30 @@ func TestInteractionsVideoInputProcessingOption(t *testing.T) {
 		if err != nil || len(warnings) != 0 {
 			t.Fatalf("err=%v warnings=%#v", err, warnings)
 		}
-		processing, ok := block["processing"].(map[string]interface{})
+		processing, ok := block["processing"].(providerutils.OrderedMap)
 		if !ok {
 			t.Fatalf("processing = %#v", block["processing"])
 		}
-		if processing["start_offset"] != "10.5s" || processing["end_offset"] != "20.25s" {
+		if processing.Vals["start_offset"] != "10.5s" || processing.Vals["end_offset"] != "20.25s" {
 			t.Fatalf("processing = %#v", processing)
 		}
-		if _, has := processing["fps"]; has {
+		if _, has := processing.Vals["fps"]; has {
 			t.Fatalf("expected no fps key when unset: %#v", processing)
 		}
 	})
 
-	t.Run("invalid value warns but keeps the block", func(t *testing.T) {
-		block, warnings, err := fileContentToInteractionBlock(types.FileContent{
+	t.Run("invalid value is rejected before the whole file is sent", func(t *testing.T) {
+		// Since TS afb4e69924 an invalid inspection option is a validation
+		// error (zod parse) instead of a dropped option with a warning.
+		block, _, err := fileContentToInteractionBlock(types.FileContent{
 			MediaType: "video/mp4",
 			URL:       "https://example.com/in.mp4",
 			ProviderOptions: map[string]interface{}{
 				"google": map[string]interface{}{"processing": 42},
 			},
 		}, "")
-		if err != nil {
-			t.Fatalf("err = %v", err)
-		}
-		if block == nil {
-			t.Fatal("expected the video block to still be emitted")
-		}
-		if _, has := block["processing"]; has {
-			t.Fatalf("processing should be dropped: %#v", block)
-		}
-		if len(warnings) != 1 || !strings.Contains(warnings[0].Message, "invalid providerOptions.google.processing") {
-			t.Fatalf("warnings = %#v", warnings)
+		if err == nil || block != nil || !strings.Contains(err.Error(), "Type validation failed") {
+			t.Fatalf("block = %v err = %v", block, err)
 		}
 	})
 }

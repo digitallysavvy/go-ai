@@ -128,6 +128,7 @@ func (m *InteractionsLanguageModel) SupportsImageInput() bool { return true }
 // Interactions API, mirroring the TypeScript SDK supportedUrls capability.
 func (m *InteractionsLanguageModel) SupportedURLs() map[string][]string {
 	return map[string][]string{
+		"*":               {`^https://generativelanguage\.googleapis\.com/v1beta/files/.*$`},
 		"image/*":         {`^https?://.+`},
 		"application/pdf": {`^https?://.+`},
 		"audio/*":         {`^https?://.+`},

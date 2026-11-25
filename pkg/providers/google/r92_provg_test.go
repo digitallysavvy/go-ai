@@ -186,7 +186,7 @@ func TestR92provgInteractionsPartOptionsTypedLiterals(t *testing.T) {
 		t.Fatalf("warnings = %+v", warnings)
 	}
 	b, _ := json.Marshal(steps)
-	for _, want := range []string{`"processing":{"fps":2,"start_offset":"3s","type":"static"}`, `"signature":"sig-1"`} {
+	for _, want := range []string{`"processing":{"type":"static","start_offset":"3s","fps":2}`, `"signature":"sig-1"`} {
 		if !strings.Contains(string(b), want) {
 			t.Fatalf("steps = %s, missing %s", b, want)
 		}
