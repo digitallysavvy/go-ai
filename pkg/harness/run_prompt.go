@@ -34,8 +34,26 @@ const invalidToolInputMessage = "Tool input validation failed." //nolint:staticc
 // the error it failed with. Mirrors TS `HostToolOutcome`.
 type hostToolOutcome struct {
 	output interface{}
-	err    error
+	// err is for host-only consumers such as lifecycle callbacks.
+	err error
+	// streamErr is the error for stream parts. Set when err carries
+	// host-only details the runtime did not receive (TS `streamError`, 1a94af38c7):
+	// stream parts reach the client and the model, so a failed tool context
+	// validation must not put the context value into one.
+	streamErr error
 }
+
+// streamError is the error a tool-error stream part carries.
+func (o hostToolOutcome) streamError() error {
+	if o.streamErr != nil {
+		return o.streamErr
+	}
+	return o.err
+}
+
+// invalidToolContextMessage is what the runtime receives for a failed tool
+// context validation (TS `invalidToolContextMessage`).
+const invalidToolContextMessage = "Tool context validation failed." //nolint:staticcheck // exact TS parity string
 
 // nowMs returns the current wall-clock time in Unix milliseconds, used for
 // telemetry.go's model-call response-time measurement (mirrors TS
@@ -2522,8 +2540,8 @@ func (d *turnDriver) executeHostToolAsync(tool types.Tool, raw *ToolCallPart, ca
 				d.setHostOutcome(raw.ToolCallID, hostToolOutcome{err: providererrors.NewValidationErrorWithContext(
 					normalizedToolCtx, err.Error(), err,
 					&providererrors.ValidationContext{Field: "tool context", EntityName: raw.ToolName},
-				)})
-				d.submitHostToolResult(raw.ToolCallID, ToolResultSubmission{ToolCallID: raw.ToolCallID, Output: map[string]interface{}{"error": "Tool context validation failed."}, IsError: true})
+				), streamErr: errors.New(invalidToolContextMessage)})
+				d.submitHostToolResult(raw.ToolCallID, ToolResultSubmission{ToolCallID: raw.ToolCallID, Output: map[string]interface{}{"error": invalidToolContextMessage}, IsError: true})
 				return
 			}
 			toolCtx = normalizedToolCtx
@@ -3049,7 +3067,7 @@ func (d *turnDriver) processApprovalContinuation(approval PendingToolApproval, c
 func (d *turnDriver) hostOutcomeChunk(toolCallID, toolName string, call types.ToolCall, o hostToolOutcome) provider.StreamChunk {
 	tr := &types.ToolResult{ToolCallID: toolCallID, ToolName: toolName, Input: call.Arguments}
 	if o.err != nil {
-		tr.Error = o.err
+		tr.Error = o.streamError()
 	} else {
 		tr.Result = o.output
 		if stripped, _ := StripWorkDir(&ToolResultPart{ToolCallID: toolCallID, ToolName: toolName, Result: o.output}, d.in.SessionWorkDir).(*ToolResultPart); stripped != nil {
