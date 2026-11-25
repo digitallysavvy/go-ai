@@ -2,6 +2,7 @@ package vercel
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -76,7 +77,7 @@ func TestPort2toolsSessionRunBoundedCancelsInFlightCommand(t *testing.T) {
 // TS `templateName ?? derivedTemplateName`: only an absent name falls back,
 // so an explicit empty name replaces the derived one.
 func TestPort2toolsTemplateNameEmptyStringIsNotUnset(t *testing.T) {
-	create := func(name *string) string {
+	create := func(name *string) (string, bool) {
 		f := newFakeServer()
 		defer f.Close()
 		f.snapshotOnStop = true
@@ -90,15 +91,37 @@ func TestPort2toolsTemplateNameEmptyStringIsNotUnset(t *testing.T) {
 		if len(f.createRequests) < 1 {
 			t.Fatal("no create request")
 		}
-		return f.createRequests[0].Name
+		return f.createRequests[0].Name, f.createRequests[0].NameSet
 	}
-	if got := create(nil); !strings.HasPrefix(got, "ai-sdk-harness-v3-") {
+	if got, set := create(nil); !strings.HasPrefix(got, "ai-sdk-harness-v3-") || !set {
 		t.Fatalf("absent name: template name = %q, want the derived name", got)
 	}
-	if got := create(port2toolsStr("")); strings.HasPrefix(got, "ai-sdk-harness-v3-") {
-		t.Fatalf("empty name: template name = %q, the derived name must not be used", got)
+	if got, set := create(port2toolsStr("")); got != "" || !set {
+		t.Fatalf("empty name: template name = %q (sent=%v), want an explicit empty name on the wire", got, set)
 	}
-	if got := create(port2toolsStr("app-template")); got != "app-template" {
+	if got, _ := create(port2toolsStr("app-template")); got != "app-template" {
 		t.Fatalf("explicit name: template name = %q", got)
+	}
+}
+
+// A defined empty name is sent as "name":"", an absent one is omitted.
+func TestPort2toolsCreateRequestNameWire(t *testing.T) {
+	cases := map[string]struct {
+		req  createSandboxRequest
+		want string
+	}{
+		"absent":   {createSandboxRequest{}, ""},
+		"empty":    {createSandboxRequest{NameSet: true}, `"name":""`},
+		"named":    {createSandboxRequest{Name: "n", NameSet: true}, `"name":"n"`},
+		"named un": {createSandboxRequest{Name: "n"}, `"name":"n"`},
+	}
+	for name, tc := range cases {
+		raw, err := json.Marshal(tc.req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if has := strings.Contains(string(raw), `"name"`); has != (tc.want != "") || (tc.want != "" && !strings.Contains(string(raw), tc.want)) {
+			t.Fatalf("%s: body = %s, want %q", name, raw, tc.want)
+		}
 	}
 }

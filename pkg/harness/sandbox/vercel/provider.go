@@ -332,6 +332,7 @@ func ensureTemplateSnapshot(ctx context.Context, client *APIClient, baseParams C
 
 	templateParams := baseParams
 	templateParams.Name = templateName
+	templateParams.NameSet = true // TS always passes `name: templateName`
 	persistent := false
 	templateParams.Persistent = &persistent
 	if templateParams.SnapshotExpiration == nil {
