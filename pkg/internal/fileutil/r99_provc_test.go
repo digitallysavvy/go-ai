@@ -2,13 +2,17 @@ package fileutil
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/atob"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -78,6 +82,39 @@ func TestR99provcDownloadStatusCodeAndEmptyBody(t *testing.T) {
 		var pe *providererrors.ProviderError
 		if !errors.As(err, &pe) || pe.Message != "Response body is empty" || pe.StatusCode != status || pe.ResponseBody != "" {
 			t.Errorf("%d: %#v", status, err)
+		}
+	}
+}
+
+// TS convertBase64ToUint8Array fails with atob's DOMException message.
+// Cases generated with Node 24 atob (testdata/r99_provc_atob.json); the same
+// rule applies to types.DecodeFileDataString (cr-r99-provc-to-integrator §3).
+func TestR99provcConvertBase64AtobMessage(t *testing.T) {
+	raw, err := os.ReadFile("testdata/r99_provc_atob.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cases [][2]string
+	if err := json.Unmarshal(raw, &cases); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range cases {
+		for name, decode := range map[string]func(string) ([]byte, error){
+			"ConvertBase64ToBytes": ConvertBase64ToBytes,
+			"DecodeFileDataString": types.DecodeFileDataString,
+		} {
+			_, err := decode(c[0])
+			got := "OK"
+			if err != nil {
+				var ae *atob.InvalidCharacterError
+				if !errors.As(err, &ae) {
+					t.Fatalf("%s(%q): %T", name, c[0], err)
+				}
+				got = err.Error()
+			}
+			if got != c[1] {
+				t.Errorf("%s(%q): got %q, want %q", name, c[0], got, c[1])
+			}
 		}
 	}
 }

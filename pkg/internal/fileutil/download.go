@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/atob"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/version"
@@ -694,9 +695,14 @@ func decodeDataURL(raw string) ([]byte, error) {
 // base64url characters ('-', '_') are mapped to the standard alphabet and the
 // result is decoded with the forgiving rules of atob (ASCII whitespace
 // ignored, padding optional; a length of 1 mod 4 or a non-alphabet byte is an
-// error).
+// error). A failure is the DOMException atob throws (*atob.InvalidCharacterError
+// with Node's message).
 func ConvertBase64ToBytes(s string) ([]byte, error) {
-	return DecodeForgivingBase64(strings.NewReplacer("-", "+", "_", "/").Replace(s))
+	data, err := DecodeForgivingBase64(strings.NewReplacer("-", "+", "_", "/").Replace(s))
+	if err != nil {
+		return nil, atob.Error(s)
+	}
+	return data, nil
 }
 
 // DecodeForgivingBase64 is the WHATWG forgiving-base64 decode behind JS atob:

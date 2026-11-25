@@ -5,6 +5,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/atob"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
@@ -170,8 +171,18 @@ func (f FileData) IsZero() bool {
 // WHATWG forgiving-base64 rules (ASCII whitespace ignored, up to two
 // trailing "=" dropped when the length is a multiple of 4, any other "=" or
 // a length of 1 mod 4 rejected). The same rules as
-// fileutil.DecodeForgivingBase64, which this package cannot import.
+// fileutil.DecodeForgivingBase64, which this package cannot import. A
+// failure is the DOMException atob throws (*atob.InvalidCharacterError with
+// Node's message).
 func DecodeFileDataString(value string) ([]byte, error) {
+	data, err := decodeFileDataString(value)
+	if err != nil {
+		return nil, atob.Error(value)
+	}
+	return data, nil
+}
+
+func decodeFileDataString(value string) ([]byte, error) {
 	compact := strings.Map(func(r rune) rune {
 		switch r {
 		case ' ', '\t', '\n', '\f', '\r':

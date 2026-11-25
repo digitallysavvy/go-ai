@@ -273,7 +273,9 @@ func runWireTest(t *testing.T, pkg string, s WireSuite, w WireTest) {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		got, err := RunWireCall(ctx, srv, s, p, kind, c)
 		cancel()
-		if err != nil && strings.Contains(err.Error(), "illegal base64 data") {
+		if err != nil && (strings.Contains(err.Error(), "illegal base64 data") ||
+			strings.Contains(err.Error(), "The string to be decoded is not correctly encoded.") ||
+			strings.Contains(err.Error(), "Invalid character")) {
 			skip("TS test data is not valid base64; TS passes the string through")
 		}
 		if err == errWireSkip {
