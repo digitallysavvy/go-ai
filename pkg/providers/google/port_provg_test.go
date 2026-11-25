@@ -3,6 +3,7 @@ package google
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -341,4 +343,86 @@ func portprovg2Server(t *testing.T, contentType, body string) (*httptest.Server,
 	}))
 	t.Cleanup(server.Close)
 	return server, &got
+}
+
+const portprovgBatchOperation = `{"name":"batches/b1","done":false,"metadata":{"state":"BATCH_STATE_PENDING","createTime":"2026-08-04T12:34:56.123Z","batchStats":{"requestCount":"1","pendingRequestCount":"1"}}}`
+
+func portprovgBatchRequest(format *provider.ResponseFormat, providerOptions map[string]interface{}) provider.BatchV4Request {
+	return provider.BatchV4Request{
+		Type: provider.BatchRequestTypeText,
+		Text: &provider.TextBatchV4Request{
+			ID:      "schema",
+			ModelID: "gemini-2.5-flash",
+			Options: provider.GenerateOptions{Prompt: types.Prompt{Text: "Hello"}, ResponseFormat: format, ProviderOptions: providerOptions},
+		},
+	}
+}
+
+func portprovgGenerationConfig(t *testing.T, body map[string]interface{}) map[string]interface{} {
+	t.Helper()
+	batch, _ := body["batch"].(map[string]interface{})
+	inputConfig, _ := batch["inputConfig"].(map[string]interface{})
+	wrapper, _ := inputConfig["requests"].(map[string]interface{})
+	requests, _ := wrapper["requests"].([]interface{})
+	if len(requests) != 1 {
+		t.Fatalf("requests = %v", requests)
+	}
+	request, _ := requests[0].(map[string]interface{})["request"].(map[string]interface{})
+	gc, _ := request["generationConfig"].(map[string]interface{})
+	return gc
+}
+
+// TS google-batch.test.ts (3bea041f28, fe1b382b8e): a response schema is
+// rejected before any request, unless structuredOutputs is false, and JSON
+// mode without a schema stays allowed.
+func TestPortprovgGoogleBatchResponseSchema(t *testing.T) {
+	schema := &provider.ResponseFormat{Type: "json", Schema: map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}}
+
+	t.Run("rejects response schemas", func(t *testing.T) {
+		calls := 0
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls++ }))
+		defer server.Close()
+		b := New(Config{APIKey: "k", BaseURL: server.URL}).ExperimentalBatch()
+		_, err := b.DoStartBatch(t.Context(), provider.BatchV4StartOptions{Requests: []provider.BatchV4Request{portprovgBatchRequest(schema, nil)}})
+		var unsupported *providererrors.UnsupportedFunctionalityError
+		if !errors.As(err, &unsupported) {
+			t.Fatalf("err = %v (%T)", err, err)
+		}
+		if unsupported.Functionality != "structured output schemas in Google batches" || !strings.Contains(unsupported.Message, "providerOptions.google.structuredOutputs") || !strings.Contains(unsupported.Message, `(request "schema")`) {
+			t.Fatalf("error = %+v", unsupported)
+		}
+		if calls != 0 {
+			t.Fatalf("%d requests were sent", calls)
+		}
+	})
+
+	for name, tc := range map[string]struct {
+		format  *provider.ResponseFormat
+		options map[string]interface{}
+		schema  bool
+	}{
+		"allows a schema when structuredOutputs is disabled and does not send it": {schema, map[string]interface{}{"google": map[string]interface{}{"structuredOutputs": false}}, false},
+		"allows JSON mode without a schema":                                       {&provider.ResponseFormat{Type: "json"}, nil, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var body map[string]interface{}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_ = json.NewDecoder(r.Body).Decode(&body)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, portprovgBatchOperation)
+			}))
+			defer server.Close()
+			b := New(Config{APIKey: "k", BaseURL: server.URL}).ExperimentalBatch()
+			if _, err := b.DoStartBatch(t.Context(), provider.BatchV4StartOptions{Requests: []provider.BatchV4Request{portprovgBatchRequest(tc.format, tc.options)}}); err != nil {
+				t.Fatal(err)
+			}
+			gc := portprovgGenerationConfig(t, body)
+			if gc["responseMimeType"] != "application/json" {
+				t.Fatalf("generationConfig = %v", gc)
+			}
+			if _, has := gc["responseJsonSchema"]; has {
+				t.Fatalf("schema was sent: %v", gc)
+			}
+		})
+	}
 }

@@ -106,6 +106,9 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 			textReq := req.Text
 			lm := NewLanguageModel(b.provider, textReq.ModelID)
 			body, reqWarnings, err = lm.PrepareBatchRequestBody(&textReq.Options)
+			if err == nil {
+				err = rejectBatchResponseSchema(body, req.RequestID())
+			}
 		}
 		if err != nil {
 			return nil, err
@@ -513,6 +516,25 @@ func (b *Batch) retrieveBatch(ctx context.Context, batchID string, headers map[s
 func (b *Batch) handleError(err error) error {
 	lm := NewLanguageModel(b.provider, "")
 	return lm.HandleError(err)
+}
+
+// rejectBatchResponseSchema mirrors TS GoogleBatch.prepareTextRequest
+// (3bea041f28, fe1b382b8e): the batch endpoint does not reliably enforce
+// responseJsonSchema, so a prepared text request that carries one is rejected.
+// A schema is not sent (and so not rejected) when providerOptions.google
+// structuredOutputs is false; JSON mode without a schema is allowed.
+func rejectBatchResponseSchema(body map[string]interface{}, requestID string) error {
+	generationConfig, _ := body["generationConfig"].(map[string]interface{})
+	if generationConfig["responseJsonSchema"] == nil {
+		return nil
+	}
+	return &providererrors.UnsupportedFunctionalityError{
+		Functionality: "structured output schemas in Google batches",
+		Message: fmt.Sprintf("The Google Batch API does not reliably enforce JSON schemas (request \"%s\"). ", requestID) +
+			"Remove the output schema, use `Output.json()` without a schema, or set " +
+			"`providerOptions.google.structuredOutputs` to `false` to not send the schema " +
+			"and validate the results with `getBatchResults({ output })` instead.",
+	}
 }
 
 // validateGoogleBatchRequests mirrors TS assertSupportedBatchRequests: text
