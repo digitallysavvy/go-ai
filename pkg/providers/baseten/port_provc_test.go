@@ -156,7 +156,7 @@ func TestPortProvcSendsSystemOneRequest(t *testing.T) {
 		t.Fatalf("body = %v\nwant %v", c.body, want)
 	}
 	// TS body key order: model, state, questions.
-	if i, j, k := strings.Index(c.raw, `"model"`), strings.Index(c.raw, `"state"`), strings.Index(c.raw, `"questions"`); !(i < j && j < k) {
+	if i, j, k := strings.Index(c.raw, `"model"`), strings.Index(c.raw, `"state"`), strings.Index(c.raw, `"questions"`); i >= j || j >= k {
 		t.Fatalf("body key order: %s", c.raw)
 	}
 }

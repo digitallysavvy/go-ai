@@ -15,7 +15,6 @@ import (
 type portprovcLiveModel struct {
 	mockRealtimeModel
 	connections []string
-	declare     bool
 	mints       *int
 	mintFn      func(context.Context) (provider.ClientSecretResult, error)
 }
