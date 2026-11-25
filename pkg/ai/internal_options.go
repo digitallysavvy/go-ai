@@ -82,13 +82,12 @@ type InternalOptions struct {
 	OmitReasoningFilesFromPrompt bool
 
 	// streamModeUsage makes a StreamText run report TS WorkflowAgent's
-	// stream-mode total usage (aggregateExecutionUsage(steps, 'stream'), that
-	// is aggregateUsage): the steps' input and output tokens summed with
-	// missing counts as 0, and TotalTokens their sum, set even when no step
-	// reported usage. It applies to the end event's Usage/TotalUsage (completed
-	// and failed runs), the telemetry end event and the result's Usage. The
-	// token details and raw usage of the plain sum are kept. Plain StreamText
-	// keeps TS streamText's addLanguageModelUsage totals.
+	// stream-mode total usage (aggregateUsage, TS 1876747927): the steps' usage
+	// added with addLanguageModelUsage, token details kept and unreported
+	// counts nil. It applies to the end event's Usage/TotalUsage (completed
+	// and failed runs), the telemetry end event and the result's Usage, and
+	// is taken over the steps even when a stream transform rewrote the
+	// call-level finish part.
 	//
 	// onStreamDone, when set, is called once when a StreamText run ends
 	// (completed, failed or aborted), after its end callbacks and before
@@ -286,19 +285,15 @@ func notifyFailedEnd(ctx context.Context, internal *InternalOptions, onEndEvent 
 }
 
 // streamModeUsage is TS WorkflowAgent's stream-mode total (aggregateUsage):
-// inputTokens and outputTokens are the steps' sums with a missing count as 0,
-// and totalTokens is input + output, whatever the steps' own totals say. The
-// details and raw usage of the plain step sum are kept as Go extras.
+// the steps' usage added with addLanguageModelUsage, as generateText,
+// streamText and WorkflowAgent.generate do. Token details are kept and a count
+// no step reported stays nil. The sum is taken over the steps, not over a
+// call-level finish part a stream transform may have rewritten.
 func streamModeUsage(steps []types.StepResult) types.Usage {
 	var total types.Usage
-	var input, output int64
 	for _, step := range steps {
 		total = total.Add(step.Usage)
-		input += step.Usage.GetInputTokens()
-		output += step.Usage.GetOutputTokens()
 	}
-	sum := input + output
-	total.InputTokens, total.OutputTokens, total.TotalTokens = &input, &output, &sum
 	return total
 }
 

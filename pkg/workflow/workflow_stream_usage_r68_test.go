@@ -45,13 +45,23 @@ func (c *r68EndUsageCapture) OnFinish(_ context.Context, e telemetry.TelemetryFi
 
 func r68Int(v int64) *int64 { return &v }
 
-func r68WantCounts(t *testing.T, name string, in, out, total *int64, wantIn, wantOut int64) {
+// r68WantCounts checks the counts of a usage total; -1 means the count is
+// unreported (nil), as TS addLanguageModelUsage leaves it undefined.
+func r68WantCounts(t *testing.T, name string, in, out, total *int64, wantIn, wantOut, wantTotal int64) {
 	t.Helper()
-	if in == nil || out == nil || total == nil {
-		t.Fatalf("%s: counts = %v/%v/%v, want all set (TS aggregateUsage)", name, in, out, total)
-	}
-	if *in != wantIn || *out != wantOut || *total != wantIn+wantOut {
-		t.Fatalf("%s: counts = %d/%d/%d, want %d/%d/%d", name, *in, *out, *total, wantIn, wantOut, wantIn+wantOut)
+	for _, c := range []struct {
+		label string
+		got   *int64
+		want  int64
+	}{{"input", in, wantIn}, {"output", out, wantOut}, {"total", total, wantTotal}} {
+		switch {
+		case c.want < 0 && c.got != nil:
+			t.Fatalf("%s: %s = %d, want unreported", name, c.label, *c.got)
+		case c.want >= 0 && c.got == nil:
+			t.Fatalf("%s: %s unreported, want %d", name, c.label, c.want)
+		case c.want >= 0 && *c.got != c.want:
+			t.Fatalf("%s: %s = %d, want %d", name, c.label, *c.got, c.want)
+		}
 	}
 }
 
@@ -87,13 +97,17 @@ func r68UsageModel(failSecond bool) *testutil.MockLanguageModel {
 
 // TS WorkflowAgent stream mode: onEnd usage/totalUsage, telemetry onEnd and
 // the stream result's totalUsage are aggregateExecutionUsage(steps, 'stream')
-// = aggregateUsage: input/output sums with ?? 0, totalTokens = input + output.
+// = aggregateUsage: the steps' usage added with addLanguageModelUsage (TS
+// 1876747927): a count no step reported stays unreported, totalTokens is the
+// sum of the steps' totals (each input + output).
 func TestR68WorkflowStreamEndUsageIsAggregateUsage(t *testing.T) {
 	for _, failSecond := range []bool{false, true} {
 		name := "completed"
 		wantOut := int64(5)
+		wantTotal := int64(15)
 		if failSecond {
-			name, wantOut = "failed", 0
+			name, wantOut = "failed", -1
+			wantTotal = 10
 		}
 		t.Run(name, func(t *testing.T) {
 			capture := &r68EndUsageCapture{}
@@ -121,8 +135,8 @@ func TestR68WorkflowStreamEndUsageIsAggregateUsage(t *testing.T) {
 				t.Fatalf("onEnd calls = %d, want 1", len(ends))
 			}
 			e := ends[0]
-			r68WantCounts(t, "onEnd totalUsage", e.TotalUsage.InputTokens, e.TotalUsage.OutputTokens, e.TotalUsage.TotalTokens, 10, wantOut)
-			r68WantCounts(t, "onEnd usage", e.Usage.InputTokens, e.Usage.OutputTokens, e.Usage.TotalTokens, 10, wantOut)
+			r68WantCounts(t, "onEnd totalUsage", e.TotalUsage.InputTokens, e.TotalUsage.OutputTokens, e.TotalUsage.TotalTokens, 10, wantOut, wantTotal)
+			r68WantCounts(t, "onEnd usage", e.Usage.InputTokens, e.Usage.OutputTokens, e.Usage.TotalTokens, 10, wantOut, wantTotal)
 			if d := e.TotalUsage.InputDetails; d == nil || d.CacheReadTokens == nil || *d.CacheReadTokens != 4 {
 				t.Fatalf("Go keeps the summed token details; got %+v", d)
 			}
@@ -130,7 +144,7 @@ func TestR68WorkflowStreamEndUsageIsAggregateUsage(t *testing.T) {
 				return
 			}
 			u := res.Usage()
-			r68WantCounts(t, "result usage", u.InputTokens, u.OutputTokens, u.TotalTokens, 10, 5)
+			r68WantCounts(t, "result usage", u.InputTokens, u.OutputTokens, u.TotalTokens, 10, 5, 15)
 			capture.mu.Lock()
 			defer capture.mu.Unlock()
 			if capture.innerStart != 0 || capture.innerEnds != 0 {
@@ -140,13 +154,14 @@ func TestR68WorkflowStreamEndUsageIsAggregateUsage(t *testing.T) {
 				t.Fatalf("telemetry ends = %d, want 1", len(capture.ends))
 			}
 			te := capture.ends[0]
-			r68WantCounts(t, "telemetry onEnd", te.InputTokens, te.OutputTokens, te.TotalTokens, 10, 5)
+			r68WantCounts(t, "telemetry onEnd", te.InputTokens, te.OutputTokens, te.TotalTokens, 10, 5, 15)
 		})
 	}
 }
 
-// A run that fails before any step: TS onEnd reports aggregateUsage([]) =
-// zero counts, not missing ones.
+// A run that fails before any step: TS onEnd reports the null usage (TS
+// 1876747927 addLanguageModelUsage from createNullLanguageModelUsage), so
+// every count is unreported.
 func TestR68WorkflowStreamFailedBeforeStepsReportsZeroUsage(t *testing.T) {
 	var mu sync.Mutex
 	var ends []ai.OnFinishEvent
@@ -169,7 +184,7 @@ func TestR68WorkflowStreamFailedBeforeStepsReportsZeroUsage(t *testing.T) {
 		t.Fatalf("onEnd calls = %d, want 1", len(ends))
 	}
 	u := ends[0].TotalUsage
-	r68WantCounts(t, "totalUsage", u.InputTokens, u.OutputTokens, u.TotalTokens, 0, 0)
+	r68WantCounts(t, "totalUsage", u.InputTokens, u.OutputTokens, u.TotalTokens, -1, -1, -1)
 }
 
 // The total comes from the steps (TS aggregateUsage(steps)), not from a
@@ -208,7 +223,7 @@ func TestR68WorkflowStreamEndUsageIgnoresTransformedFinish(t *testing.T) {
 		t.Fatalf("onEnd calls = %d, want 1", len(ends))
 	}
 	u := ends[0].TotalUsage
-	r68WantCounts(t, "totalUsage", u.InputTokens, u.OutputTokens, u.TotalTokens, 10, 5)
+	r68WantCounts(t, "totalUsage", u.InputTokens, u.OutputTokens, u.TotalTokens, 10, 5, 15)
 }
 
 // r68RootCapture records the root's telemetry (every event that is not the
@@ -248,12 +263,13 @@ func TestR68WorkflowStreamRootTelemetryEndsWithRun(t *testing.T) {
 		model      *testutil.MockLanguageModel
 		wantEvents string
 		wantOut    int64
+		wantTotal  int64
 	}{
-		{"completed", r68UsageModel(false), "root-end", 5},
-		{"failed", r68UsageModel(true), "error,root-end", 0},
+		{"completed", r68UsageModel(false), "root-end", 5, 15},
+		{"failed", r68UsageModel(true), "error,root-end", -1, 10},
 		{"failed without steps", &testutil.MockLanguageModel{DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
 			return nil, errors.New("boom")
-		}}, "error", 0},
+		}}, "error", -1, -1},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -295,7 +311,7 @@ func TestR68WorkflowStreamRootTelemetryEndsWithRun(t *testing.T) {
 				return
 			}
 			u := capture.end.Usage
-			r68WantCounts(t, "root usage", u.InputTokens, u.OutputTokens, u.TotalTokens, 10, c.wantOut)
+			r68WantCounts(t, "root usage", u.InputTokens, u.OutputTokens, u.TotalTokens, 10, c.wantOut, c.wantTotal)
 			if c.name == "completed" && (capture.end.Text != "done" || capture.end.FinishReason != string(types.FinishReasonStop)) {
 				t.Fatalf("root end text/finish = %q/%q, want done/stop", capture.end.Text, capture.end.FinishReason)
 			}

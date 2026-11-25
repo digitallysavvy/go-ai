@@ -532,7 +532,7 @@ func NewWorkflowAgent(cfg WorkflowAgent) (*WorkflowAgent, error) {
 		cfg.System = system
 	}
 	if len(cfg.StopWhen) == 0 {
-		cfg.StopWhen = []ai.StopCondition{ai.IsStepCount(20)}
+		cfg.StopWhen = []ai.StopCondition{workflowDefaultStopCondition(workflowDefaultStepLimit)}
 		cfg.stopWhenDefaulted = true
 	}
 	return &cfg, nil
@@ -1000,6 +1000,7 @@ type workflowApprovalResumeOptions struct {
 	experimentalSandbox interface{}
 	toolApprovalSecret  []byte
 	toolApproval        types.ToolApprovalConfig
+	refineToolInput     map[string]ai.ToolInputRefiner
 	onToolStart         ToolExecutionStartCallback
 	onToolEnd           ToolExecutionEndCallback
 	// telemetrySettings, when set, dispatches each approved tool's execution
@@ -1113,6 +1114,7 @@ func processWorkflowApprovalResume(ctx context.Context, opts workflowApprovalRes
 			ToolsContext:          opts.toolsContext,
 			RuntimeContext:        opts.runtimeContext,
 			ToolApprovalSecret:    opts.toolApprovalSecret,
+			RefineToolInput:       opts.refineToolInput,
 		})
 		// TS getErrorMessage: an error renders as its toString(),
 		// "<name>: <message>".
@@ -2291,7 +2293,7 @@ func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenera
 		if streaming {
 			stopWhen = []ai.StopCondition{func(ai.StopConditionState) string { return "" }}
 		} else {
-			stopWhen = []ai.StopCondition{ai.IsStepCount(20)}
+			stopWhen = []ai.StopCondition{workflowDefaultStopCondition(workflowDefaultStepLimit)}
 		}
 	}
 	if len(govr.StopWhen) > 0 {
@@ -2328,13 +2330,7 @@ func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenera
 	if ovr.ExperimentalSandbox != nil {
 		sandbox = ovr.ExperimentalSandbox
 	}
-	refineToolInput := w.ExperimentalRefineToolInput
-	if govr.ExperimentalRefineToolInput != nil {
-		refineToolInput = govr.ExperimentalRefineToolInput
-	}
-	if ovr.ExperimentalRefineToolInput != nil {
-		refineToolInput = ovr.ExperimentalRefineToolInput
-	}
+	refineToolInput := w.effectiveRefineToolInput(ovr, govr)
 	repairToolCall := w.RepairToolCall
 	if repairToolCall == nil {
 		repairToolCall = w.ExperimentalRepairToolCall
@@ -2725,6 +2721,41 @@ func (e *earlyPrepare) run(ctx context.Context, messages []types.Message, prompt
 	return &opts, nil
 }
 
+// workflowDefaultStepLimit is the step limit of WorkflowAgent.Generate when no
+// stop condition is configured (TS isStepCount(20)).
+const workflowDefaultStepLimit = 20
+
+// workflowDefaultStopCondition is the default step limit of Generate: it
+// behaves like ai.IsStepCount(stepCount) and logs a warning when the limit
+// stops a loop that could otherwise continue (TS f43ee39373
+// createDefaultStepLimitStopCondition + logDefaultStopConditionWarning). Stop
+// conditions are only evaluated when the loop can otherwise continue, so a run
+// that finishes naturally on the last allowed step logs nothing, and a
+// condition the caller or prepareCall supplies replaces this one and its
+// warning. It has no twin helper in pkg/agent until gen splits one out; the
+// message is the same.
+func workflowDefaultStopCondition(stepCount int) ai.StopCondition {
+	limit := ai.IsStepCount(stepCount)
+	return func(state ai.StopConditionState) string {
+		reason := limit(state)
+		if reason == "" {
+			return ""
+		}
+		model := state.Steps[len(state.Steps)-1].Model
+		ai.LogWarnings(ai.LogWarningsOptions{
+			Provider: model.Provider,
+			Model:    model.ModelID,
+			Warnings: []types.Warning{{
+				Type: "other",
+				Message: fmt.Sprintf("The tool loop stopped because it reached the default stopWhen condition, IsStepCount(%d). ", stepCount) +
+					"To allow more steps, set StopWhen to IsStepCount(...) with a higher limit or provide a custom stop condition. " +
+					"Learn more: https://ai-sdk.dev/docs/agents/loop-control",
+			}},
+		})
+		return reason
+	}
+}
+
 // withFinishReasonStop adds the WorkflowAgent rule that a step which ended
 // with any finish reason other than stop or tool-calls (length, content-filter,
 // error, other) is the last one: TS modelCallIterator sets
@@ -2752,6 +2783,20 @@ func withFinishReasonStop(conditions []ai.StopCondition) []ai.StopCondition {
 }
 
 // effectiveToolApproval is TS `options.toolApproval ?? this.toolApproval`.
+// effectiveRefineToolInput is the call's experimental_refineToolInput, else the
+// agent's. The same refiners run when an approved call is revalidated on resume
+// (TS 9307549d51: the approved input is the refined input).
+func (w *WorkflowAgent) effectiveRefineToolInput(ovr WorkflowStreamOptions, govr WorkflowGenerateOptions) map[string]ai.ToolInputRefiner {
+	refine := w.ExperimentalRefineToolInput
+	if govr.ExperimentalRefineToolInput != nil {
+		refine = govr.ExperimentalRefineToolInput
+	}
+	if ovr.ExperimentalRefineToolInput != nil {
+		refine = ovr.ExperimentalRefineToolInput
+	}
+	return refine
+}
+
 func (w *WorkflowAgent) effectiveToolApproval(ovr WorkflowStreamOptions, govr WorkflowGenerateOptions) types.ToolApprovalConfig {
 	if ovr.ToolApproval != nil {
 		return ovr.ToolApproval
@@ -2939,6 +2984,13 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 	if err := w.standardizeWorkflowPrompt(opts.Prompt, opts.Messages, workflowAllowSystem(prepared, w.AllowSystemInMessages, opts.AllowSystemInMessages), opts.System, opts.Instructions, early); err != nil {
 		return nil, err
 	}
+	// TS resolveTimeoutSettings runs after standardizePrompt and before any
+	// model call; a total deadline that has passed ends the run as timed out.
+	callTimeout := workflowCallTimeout(w.Timeout, opts.Timeout, prepared)
+	if err := validateWorkflowTimeout(callTimeout); err != nil {
+		return nil, err
+	}
+	ctx, _ = workflowExpiredTotalContext(ctx, callTimeout)
 	callID := newWorkflowCallID()
 	var initialResponseMessages []types.Message
 	opts.Messages, _, err = processWorkflowApprovalResume(ctx, workflowApprovalResumeOptions{
@@ -2950,6 +3002,7 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 		experimentalSandbox: sandbox,
 		toolApprovalSecret:  w.effectiveToolApprovalSecret(WorkflowStreamOptions{}, opts),
 		toolApproval:        w.effectiveToolApproval(WorkflowStreamOptions{}, opts),
+		refineToolInput:     w.effectiveRefineToolInput(WorkflowStreamOptions{}, opts),
 		onToolStart:         mergeToolStart(w.OnToolExecutionStart, opts.OnToolExecutionStart),
 		onToolEnd:           mergeToolEnd(w.OnToolExecutionEnd, opts.OnToolExecutionEnd),
 		telemetrySettings:   telemetrySettings,
@@ -3227,6 +3280,13 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 	// Every root event carries the run's call ID (TS callId): each
 	// integration finds its own root span by it, not through ctx, which holds
 	// only the last integration's span.
+	// TS resolveTimeoutSettings runs after standardizePrompt and before any
+	// model call; a total deadline that has passed ends the run as timed out.
+	callTimeout := workflowCallTimeout(w.Timeout, opts.Timeout, prepared)
+	if err := validateWorkflowTimeout(callTimeout); err != nil {
+		return nil, err
+	}
+	ctx, _ = workflowExpiredTotalContext(ctx, callTimeout)
 	callID := newWorkflowCallID()
 	var prefixChunks []provider.StreamChunk
 	opts.Messages, prefixChunks, err = processWorkflowApprovalResume(ctx, workflowApprovalResumeOptions{
@@ -3237,6 +3297,7 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 		experimentalSandbox: sandbox,
 		toolApprovalSecret:  w.effectiveToolApprovalSecret(opts, WorkflowGenerateOptions{}),
 		toolApproval:        w.effectiveToolApproval(opts, WorkflowGenerateOptions{}),
+		refineToolInput:     w.effectiveRefineToolInput(opts, WorkflowGenerateOptions{}),
 		onToolStart:         mergeToolStart(w.OnToolExecutionStart, opts.OnToolExecutionStart),
 		onToolEnd:           mergeToolEnd(w.OnToolExecutionEnd, opts.OnToolExecutionEnd),
 		telemetrySettings:   telemetrySettings,
