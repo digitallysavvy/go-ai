@@ -2,11 +2,13 @@ package ai
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
@@ -100,4 +102,40 @@ func TestIntegPort2CallMessagesStillRejectSystemMessages(t *testing.T) {
 			t.Fatalf("model called %d times", len(model.StreamCalls))
 		}
 	})
+}
+
+// Twin of TS telemetry/tracing-channel.test.ts 583 "traces one step span when
+// a steering interrupt redoes the generateText model call": one step start,
+// two model-call starts for the same call (the redo carries the steering
+// message), one model-call end and no error (the stream side is
+// TestPort2streamInterruptTelemetryStartsASecondModelCallInTheStep).
+func TestIntegPort2GenerateInterruptTelemetryStartsASecondModelCallInTheStep(t *testing.T) {
+	steering := NewSteering()
+	h := &portgenHangingModel{}
+	model := h.model(func() { steering.Steer("Use Paris, Texas instead.", WithSteerInterrupt()) },
+		func(*provider.GenerateOptions) *types.GenerateResult {
+			return portgenText("It is sunny.", 3)
+		})
+	rec := &port2streamTelemetry{}
+	enabled := true
+	if _, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: model, Prompt: "What is the weather in Paris?", ExperimentalSteering: steering,
+		ExperimentalTelemetry: &TelemetrySettings{IsEnabled: &enabled, Integrations: []telemetry.TelemetryIntegration{rec}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(h.calls) != 2 {
+		t.Fatalf("model calls = %d, want 2", len(h.calls))
+	}
+	if rec.stepStarts != 1 {
+		t.Fatalf("step starts = %d, want 1", rec.stepStarts)
+	}
+	if rec.callStarts != 2 || len(rec.callIDs) != 1 || !reflect.DeepEqual(rec.callPrompt, []int{1, 2}) {
+		t.Fatalf("call starts = %d, call ids = %v, messages per call = %v", rec.callStarts, rec.callIDs, rec.callPrompt)
+	}
+	if rec.callEnds != 1 || rec.errors != 0 {
+		t.Fatalf("call ends = %d, errors = %d, want 1 and 0", rec.callEnds, rec.errors)
+	}
 }
