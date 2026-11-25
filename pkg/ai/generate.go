@@ -1620,7 +1620,16 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			interruptCancel()
 		})
 		if err == nil {
-			genResult, err = doGenerateWithGatewayRetry(interruptCtx, stepModel, genOpts, opts.MaxRetries)
+			callRetries := opts.MaxRetries
+			if interrupted.Load() {
+				// An interrupt sent during PrepareStep cancels the call
+				// before it starts. TS still calls doGenerate, with the
+				// aborted signal, and the model's error ends the attempt;
+				// the retry helper would refuse to start, so call once.
+				zero := 0
+				callRetries = &zero
+			}
+			genResult, err = doGenerateWithGatewayRetry(interruptCtx, stepModel, genOpts, callRetries)
 		}
 		stopWatchingInterrupt()
 		interruptCancel()

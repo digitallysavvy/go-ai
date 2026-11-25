@@ -1191,18 +1191,19 @@ func TestPortgenSteeringInterruptPrepareStepRunsAgainWithStartContexts(t *testin
 func TestPortgenSteeringInterruptSentDuringPrepareStepOrBeforeTheRun(t *testing.T) {
 	t.Run("during prepareStep", func(t *testing.T) {
 		// The interrupt waits for the model call and cancels it right away.
-		// TS still calls doGenerate with the aborted signal; Go does not
-		// call a model whose context is already cancelled, so this test
-		// checks the call that ran: it carries the message (known
-		// difference, S1).
+		// TS calls doGenerate with the aborted signal (the model rejects),
+		// then redoes the step with the message: two model calls, the first
+		// one cancelled and without the message.
 		steering := NewSteering()
 		var handle *SteerHandle
 		var users [][]string
+		var cancelled []bool
 		model := &testutil.MockLanguageModel{ProviderName: "p", ModelName: "m", DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			users = append(users, portgenUserTexts(opts))
+			cancelled = append(cancelled, ctx.Err() != nil)
 			if ctx.Err() != nil {
 				return nil, context.Cause(ctx)
 			}
-			users = append(users, portgenUserTexts(opts))
 			return portgenText("sunny", 10), nil
 		}}
 		result, err := GenerateText(context.Background(), GenerateTextOptions{
@@ -1217,8 +1218,8 @@ func TestPortgenSteeringInterruptSentDuringPrepareStepOrBeforeTheRun(t *testing.
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(users) != 1 || !reflect.DeepEqual(users[0], []string{"q", "Use Paris, Texas instead."}) || len(result.Steps) != 1 {
-			t.Fatalf("users = %v, steps = %d", users, len(result.Steps))
+		if !reflect.DeepEqual(users, [][]string{{"q"}, {"q", "Use Paris, Texas instead."}}) || !reflect.DeepEqual(cancelled, []bool{true, false}) || len(result.Steps) != 1 {
+			t.Fatalf("users = %v, cancelled = %v, steps = %d", users, cancelled, len(result.Steps))
 		}
 		if o := waitOutcome(t, handle); !o.Delivered || o.StepNumber != 0 {
 			t.Fatalf("outcome = %+v", o)

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/middleware"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -409,6 +410,41 @@ func (r *Registry) ResolveDecisionModel(model string) (provider.DecisionModel, e
 	return resolved, nil
 }
 
+// ResolveExtractionModel resolves a "provider:model" string to an
+// ExtractionModel (TS registry `extractionModel`, 10ff0b1a1d). Extraction is
+// experimental and not part of the stable Provider contract: the resolved
+// provider must additionally implement provider.ExtractionModelProvider. A
+// provider without it, or a factory that returns no model, is a
+// NoSuchModelError for the full registry ID; the model's specification
+// version is checked.
+func (r *Registry) ResolveExtractionModel(model string) (provider.ExtractionModel, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if target, ok := r.aliases[model]; ok {
+		model = target
+	}
+	providerName, modelID, err := parseModelString(model, r.separator, "extractionModel")
+	if err != nil {
+		return nil, err
+	}
+	p, ok := r.providers[providerName]
+	if !ok {
+		return nil, r.noSuchProviderLocked(providerName, "extractionModel")
+	}
+	factory, ok := p.(provider.ExtractionModelProvider)
+	if !ok {
+		return nil, noSuchRegistryModel(model, "extractionModel")
+	}
+	resolved, err := factory.ExtractionModel(modelID)
+	if err != nil {
+		return nil, err
+	}
+	if resolved == nil {
+		return nil, noSuchRegistryModel(model, "extractionModel")
+	}
+	return ai.ResolveExtractionModel(resolved)
+}
+
 func (r *Registry) Files(providerID string) (provider.FilesAPI, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -680,6 +716,12 @@ func ResolveVideoModel(model string) (provider.VideoModelV3, error) {
 // global registry.
 func ResolveDecisionModel(model string) (provider.DecisionModel, error) {
 	return globalRegistry.ResolveDecisionModel(model)
+}
+
+// ResolveExtractionModel resolves an extraction model string using the
+// global registry.
+func ResolveExtractionModel(model string) (provider.ExtractionModel, error) {
+	return globalRegistry.ResolveExtractionModel(model)
 }
 
 // ResolveEvaluationModel is the deprecated form of ResolveDecisionModel.
