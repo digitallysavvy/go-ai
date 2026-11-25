@@ -775,6 +775,9 @@ type ResponsesAPIResponse struct {
 	Model                  string          `json:"model"`
 	ServiceTier            string          `json:"service_tier,omitempty"`
 	PromptCacheDiagnostics json.RawMessage `json:"prompt_cache_diagnostics,omitempty"` // TS 5a645e92d2
+	// InputTransformations lists the input items the API changed before
+	// running the request (TS 1a7440bcde): [{id?, type, action, reason}].
+	InputTransformations json.RawMessage `json:"input_transformations,omitempty"`
 
 	// PromptCacheKey and SafetyIdentifier are echoed back verbatim when the
 	// request set them (xAI Responses API; row 0a5dd0f9c3).
@@ -1115,6 +1118,7 @@ type ResponseCompletedEvent struct {
 		IncompleteDetails      *IncompleteDetails      `json:"incomplete_details,omitempty"`
 		ServiceTier            string                  `json:"service_tier,omitempty"`
 		PromptCacheDiagnostics json.RawMessage         `json:"prompt_cache_diagnostics,omitempty"` // TS 5a645e92d2
+		InputTransformations   json.RawMessage         `json:"input_transformations,omitempty"`    // TS 1a7440bcde
 		PromptCacheKey         string                  `json:"prompt_cache_key,omitempty"`
 		SafetyIdentifier       string                  `json:"safety_identifier,omitempty"`
 		Reasoning              *ResponsesReasoningInfo `json:"reasoning,omitempty"`
@@ -1128,6 +1132,7 @@ type ResponseFailedEvent struct {
 		ID                     string             `json:"id"`
 		ServiceTier            string             `json:"service_tier,omitempty"`
 		PromptCacheDiagnostics json.RawMessage    `json:"prompt_cache_diagnostics,omitempty"` // TS 5a645e92d2
+		InputTransformations   json.RawMessage    `json:"input_transformations,omitempty"`    // TS 1a7440bcde
 		Usage                  *ResponsesAPIUsage `json:"usage,omitempty"`
 		Error                  *struct {
 			Code    string `json:"code,omitempty"`

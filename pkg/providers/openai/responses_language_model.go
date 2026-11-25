@@ -2357,6 +2357,10 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 	if d := responsesPromptCacheDiagnostics(resp.PromptCacheDiagnostics); d != nil {
 		meta["promptCacheDiagnostics"] = d
 	}
+	// TS 1a7440bcde: input_transformations != null (generate and batch).
+	if t := responsesInputTransformations(resp.InputTransformations); t != nil {
+		meta["inputTransformations"] = t
+	}
 	result.ProviderMetadata = map[string]interface{}{providerName: meta}
 
 	return result, nil
@@ -3169,6 +3173,9 @@ type responsesStream struct {
 	// failed prompt_cache_diagnostics (TS `?? undefined`: a frame without
 	// it clears it).
 	promptCacheDiagnostics interface{}
+	// inputTransformations is the last completed / incomplete / failed
+	// input_transformations (TS 1a7440bcde; same `?? undefined` handling).
+	inputTransformations interface{}
 
 	// tools holds the request's declared tools, used to expand an internal
 	// "parallel" tool call wrapper into its nested recipients (row 6be0f51).
@@ -3449,6 +3456,9 @@ func (s *responsesStream) queueEOFFinish() {
 	}
 	if s.promptCacheDiagnostics != nil {
 		fields["promptCacheDiagnostics"] = s.promptCacheDiagnostics
+	}
+	if s.inputTransformations != nil {
+		fields["inputTransformations"] = s.inputTransformations
 	}
 	meta, _ := jsonstr.Marshal(map[string]interface{}{s.providerName: fields})
 	usage := convertResponsesUsage(s.finishUsage)
@@ -4414,6 +4424,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			}
 			s.finishUsage = e.Response.Usage
 			s.promptCacheDiagnostics = responsesPromptCacheDiagnostics(e.Response.PromptCacheDiagnostics)
+			s.inputTransformations = responsesInputTransformations(e.Response.InputTransformations)
 			// TS typeof service_tier === 'string' / reasoning.context != null:
 			// a present "" is reported; an absent one keeps the last value.
 			tier, ctx := responsesEchoes([]byte(event.Data), true)
@@ -4444,6 +4455,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				return nil, s.err
 			}
 			s.promptCacheDiagnostics = responsesPromptCacheDiagnostics(e.Response.PromptCacheDiagnostics)
+			s.inputTransformations = responsesInputTransformations(e.Response.InputTransformations)
 			// No error object: TS keeps peeking past this chunk, so the stream is
 			// handed out with everything held and the raw chunk first.
 			s.markOutputStarted()
@@ -5422,4 +5434,30 @@ func responsesPromptCacheDiagnostics(raw json.RawMessage) interface{} {
 		return picked
 	}
 	return nil
+}
+
+// responsesInputTransformations is the zod output of TS
+// openaiResponsesInputTransformationSchema (1a7440bcde): an array of
+// {id?, type, action, reason} objects (id nullish and kept as given, unknown
+// keys stripped), nil when absent or null. An empty array stays an empty
+// array.
+func responsesInputTransformations(raw json.RawMessage) interface{} {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	var v interface{}
+	if jsonexact.Unmarshal(raw, &v) != nil {
+		return nil
+	}
+	list, ok := v.([]interface{})
+	if !ok {
+		return nil
+	}
+	out := make([]interface{}, 0, len(list))
+	for _, item := range list {
+		if picked := providerutils.PickSchemaKeys(item, "id", "type", "action", "reason"); picked != nil {
+			out = append(out, picked)
+		}
+	}
+	return out
 }
