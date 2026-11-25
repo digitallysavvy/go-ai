@@ -24,9 +24,16 @@ var discoveredTool = map[string]interface{}{
 
 // TS #23291: an additional_tools item follows the function_call_output.
 func TestConvertToolItems_AdditionalToolsFollowResult(t *testing.T) {
+	// TS 5aa836fe1d: the entry selects a registered tool and the definition
+	// sent is derived from it.
+	registered := types.Tool{
+		Name: "linear__list_issues", Description: "List Linear issues.",
+		Parameters:      map[string]interface{}{"type": "object", "properties": map[string]interface{}{}, "additionalProperties": false},
+		ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"omitFromRequestTools": true}},
+	}
 	items, err := convertToolItems(additionalToolsResult(map[string]interface{}{
 		"openai": map[string]interface{}{"additionalTools": []interface{}{discoveredTool}},
-	}))
+	}), ConvertOptions{FindAdditionalToolDefinition: portprovbResolver([]types.Tool{registered}, "")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +44,7 @@ func TestConvertToolItems_AdditionalToolsFollowResult(t *testing.T) {
 		t.Fatalf("items[0] = %T", items[0])
 	}
 	raw, _ := json.Marshal(items[1])
-	want := `{"type":"additional_tools","role":"developer","tools":[{"type":"function","name":"linear__list_issues","description":"List Linear issues.","parameters":{"additionalProperties":false,"properties":{},"type":"object"}}]}`
+	want := `{"type":"additional_tools","role":"developer","tools":[{"type":"function","name":"linear__list_issues","description":"List Linear issues.","parameters":{"additionalProperties":false,"properties":{},"type":"object"},"strict":false}]}`
 	if string(raw) != want {
 		t.Fatalf("additional_tools = %s\nwant %s", raw, want)
 	}

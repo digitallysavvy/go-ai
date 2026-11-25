@@ -57,14 +57,12 @@ type MCPServerOptions struct {
 //	    },
 //	})
 func MCPServer(config MCPServerConfig) types.Tool {
-	// TS xai mcpServer: inputSchema z.object({}). The server URL, allowed
+	// TS xai mcpServer: inputSchema z.looseObject({}) (6f56c29ff6: the model's
+	// tool-call arguments stay in the input). The server URL, allowed
 	// tools, headers and authorization are tool args (ProviderOptions), not
 	// model input, so they are not in the input schema (provider tool calls
 	// are validated against it, and its defaults would be merged into them).
-	parameters := map[string]interface{}{
-		"type":       "object",
-		"properties": map[string]interface{}{},
-	}
+	parameters := xaiSchema(xaiLooseInputSchemaJSON)
 
 	args := map[string]interface{}{"serverUrl": config.ServerURL}
 	if config.ServerLabel != "" {

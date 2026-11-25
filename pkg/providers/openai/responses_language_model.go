@@ -361,6 +361,7 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 	var contextManagement []map[string]interface{}
 	contextManagementExplicit := false
 	var allowedToolNames []string
+	allowedToolsPresent := false
 	var allowedToolsMode string
 	providerOptionsName := m.provider.responsesProviderOptionsName()
 	var openaiOpts map[string]interface{}
@@ -501,6 +502,7 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 				contextManagement = responsesContextManagement(openaiOpts["contextManagement"])
 			}
 			if raw, ok := openaiOpts["allowedTools"].(map[string]interface{}); ok {
+				allowedToolsPresent = true
 				allowedToolNames = stringSliceFromInterface(raw["toolNames"])
 				allowedToolsMode, _ = raw["mode"].(string)
 			}
@@ -611,6 +613,43 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		includeWebSearchSources = false
 	}
 
+	// Prompts can contain client-supplied conversation history. Only the tools
+	// registered for this request may be loaded from such history through
+	// additionalTools; each entry resolves to the definition derived from its
+	// registered tool. The resolutions are cached because replayed history can
+	// repeat an entry (TS findAdditionalToolForRequest).
+	type additionalToolResolution struct {
+		resolution *responses.AdditionalToolResolution
+		err        error
+	}
+	additionalToolResolutions := map[string]additionalToolResolution{}
+	var additionalAllowedToolNames map[string]bool
+	if allowedToolsPresent {
+		providerToolNames := openAIProviderToolNames(opts.Tools)
+		additionalAllowedToolNames = map[string]bool{}
+		for _, name := range allowedToolNames {
+			if mapped, ok := providerToolNames[name]; ok {
+				name = mapped
+			}
+			additionalAllowedToolNames[name] = true
+		}
+	}
+	findAdditionalToolForRequest := func(ref responses.AdditionalToolRef) (*responses.AdditionalToolResolution, error) {
+		key := ref.Type + ":" + ref.Name
+		if cached, ok := additionalToolResolutions[key]; ok {
+			return cached.resolution, cached.err
+		}
+		resolution, err := responses.FindAdditionalToolDefinition(responses.FindAdditionalToolOptions{
+			Tools:               opts.Tools,
+			ProviderOptionsName: providerOptionsName,
+			Ref:                 ref,
+			AllowedToolNames:    additionalAllowedToolNames,
+			NormalizeSchema:     NormalizeOpenAISchemaValue,
+		})
+		additionalToolResolutions[key] = additionalToolResolution{resolution, err}
+		return resolution, err
+	}
+
 	// Convert prompt to Responses API input format.
 	input, inputWarnings, err := responses.ConvertPromptToInputWithOptions(opts.Prompt, systemMsgMode, responses.ConvertOptions{
 		PassThroughUnsupportedFiles:          passThroughUnsupportedFiles,
@@ -633,6 +672,7 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		NormalizeTextFormatSchema:            NormalizeOpenAISchemaValue,
 		IsReasoningModel:                     isReasoning,
 		WebSearchToolName:                    responsesWebSearchToolName(opts.Tools),
+		FindAdditionalToolDefinition:         findAdditionalToolForRequest,
 	})
 	if err != nil {
 		return nil, store, warnings, err
@@ -750,7 +790,7 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 
 	// TS reports the GPT-6 promptCacheRetention removal before the
 	// reasoning-model warnings.
-	if promptCacheRetention != "" && modelCapabilities.SupportsConfigurationUpdate {
+	if promptCacheRetention != "" && !modelCapabilities.SupportsPromptCacheRetention {
 		// GPT-6+ models do not support promptCacheRetention; use
 		// promptCacheOptions instead.
 		warnings = append(warnings, types.Warning{
@@ -880,9 +920,8 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 			})
 		}
 		// GPT-6+ models do not support logprobs while reasoning is active
-		// (TS endpoints.responses.logprobsRequireNonReasoning;
-		// SupportsConfigurationUpdate is the same GPT-6+ test).
-		if modelCapabilities.SupportsConfigurationUpdate && (topLogprobs != nil || sliceHas(includeFields, "message.output_text.logprobs")) {
+		// (TS endpoints.responses.logprobsRequireNonReasoning).
+		if modelCapabilities.ResponsesLogprobsRequireNonReasoning && (topLogprobs != nil || sliceHas(includeFields, "message.output_text.logprobs")) {
 			topLogprobs = nil
 			filtered := includeFields[:0:0]
 			for _, v := range includeFields {
@@ -1007,7 +1046,7 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 	}
 	if promptCacheRetention != "" {
 		// GPT-6+ drops it (warned about above).
-		if !modelCapabilities.SupportsConfigurationUpdate {
+		if modelCapabilities.SupportsPromptCacheRetention {
 			body["prompt_cache_retention"] = promptCacheRetention
 		}
 	} else if hasNilProviderOption(openaiOpts, "promptCacheRetention") {
@@ -2317,6 +2356,10 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 	if d := responsesPromptCacheDiagnostics(resp.PromptCacheDiagnostics); d != nil {
 		meta["promptCacheDiagnostics"] = d
 	}
+	// TS 1a7440bcde: input_transformations != null (generate and batch).
+	if t := responsesInputTransformations(resp.InputTransformations); t != nil {
+		meta["inputTransformations"] = t
+	}
 	result.ProviderMetadata = map[string]interface{}{providerName: meta}
 
 	return result, nil
@@ -3129,6 +3172,9 @@ type responsesStream struct {
 	// failed prompt_cache_diagnostics (TS `?? undefined`: a frame without
 	// it clears it).
 	promptCacheDiagnostics interface{}
+	// inputTransformations is the last completed / incomplete / failed
+	// input_transformations (TS 1a7440bcde; same `?? undefined` handling).
+	inputTransformations interface{}
 
 	// tools holds the request's declared tools, used to expand an internal
 	// "parallel" tool call wrapper into its nested recipients (row 6be0f51).
@@ -3409,6 +3455,9 @@ func (s *responsesStream) queueEOFFinish() {
 	}
 	if s.promptCacheDiagnostics != nil {
 		fields["promptCacheDiagnostics"] = s.promptCacheDiagnostics
+	}
+	if s.inputTransformations != nil {
+		fields["inputTransformations"] = s.inputTransformations
 	}
 	meta, _ := jsonstr.Marshal(map[string]interface{}{s.providerName: fields})
 	usage := convertResponsesUsage(s.finishUsage)
@@ -4374,6 +4423,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			}
 			s.finishUsage = e.Response.Usage
 			s.promptCacheDiagnostics = responsesPromptCacheDiagnostics(e.Response.PromptCacheDiagnostics)
+			s.inputTransformations = responsesInputTransformations(e.Response.InputTransformations)
 			// TS typeof service_tier === 'string' / reasoning.context != null:
 			// a present "" is reported; an absent one keeps the last value.
 			tier, ctx := responsesEchoes([]byte(event.Data), true)
@@ -4404,6 +4454,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				return nil, s.err
 			}
 			s.promptCacheDiagnostics = responsesPromptCacheDiagnostics(e.Response.PromptCacheDiagnostics)
+			s.inputTransformations = responsesInputTransformations(e.Response.InputTransformations)
 			// No error object: TS keeps peeking past this chunk, so the stream is
 			// handed out with everything held and the raw chunk first.
 			s.markOutputStarted()
@@ -5382,4 +5433,30 @@ func responsesPromptCacheDiagnostics(raw json.RawMessage) interface{} {
 		return picked
 	}
 	return nil
+}
+
+// responsesInputTransformations is the zod output of TS
+// openaiResponsesInputTransformationSchema (1a7440bcde): an array of
+// {id?, type, action, reason} objects (id nullish and kept as given, unknown
+// keys stripped), nil when absent or null. An empty array stays an empty
+// array.
+func responsesInputTransformations(raw json.RawMessage) interface{} {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	var v interface{}
+	if jsonexact.Unmarshal(raw, &v) != nil {
+		return nil
+	}
+	list, ok := v.([]interface{})
+	if !ok {
+		return nil
+	}
+	out := make([]interface{}, 0, len(list))
+	for _, item := range list {
+		if picked := providerutils.PickSchemaKeys(item, "id", "type", "action", "reason"); picked != nil {
+			out = append(out, picked)
+		}
+	}
+	return out
 }

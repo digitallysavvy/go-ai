@@ -556,14 +556,18 @@ func TestChatO4MiniStillClearsTemperatureWhenReasoningNone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildRequestBodyWithWarnings: %v", err)
 	}
-	if body["reasoning_effort"] != "none" {
-		t.Fatalf("reasoning_effort = %#v, want none", body["reasoning_effort"])
+	// TS c3ee424a70: o4-mini does not accept none, so the lowest supported
+	// effort is sent, with a compatibility warning before the temperature one.
+	if body["reasoning_effort"] != "low" {
+		t.Fatalf("reasoning_effort = %#v, want low", body["reasoning_effort"])
 	}
 	if _, ok := body["temperature"]; ok {
 		t.Fatalf("temperature should be stripped for o4-mini, got %#v", body["temperature"])
 	}
-	if len(warnings) != 1 || warnings[0].Feature != "temperature" {
-		t.Fatalf("warnings = %#v, want a single temperature warning", warnings)
+	if len(warnings) != 2 || warnings[0].Type != "compatibility" || warnings[0].Feature != "reasoning" ||
+		warnings[0].Details != `reasoning "none" is not directly supported by this model. mapped to effort "low".` ||
+		warnings[1].Feature != "temperature" || warnings[1].Details != "temperature is not supported for reasoning models" {
+		t.Fatalf("warnings = %#v, want the reasoning compatibility warning then the temperature warning", warnings)
 	}
 }
 

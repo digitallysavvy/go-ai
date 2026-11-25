@@ -36,7 +36,7 @@ func TestMCPServer(t *testing.T) {
 			t.Error("expected non-empty description")
 		}
 
-		assertXAIEmptyInputSchema(t, tool)
+		assertXAILooseInputSchema(t, tool)
 		if got, ok := tool.ProviderOptions.(MCPServerOptions); !ok || got.ServerURL != config.ServerURL || got.Authorization != config.Authorization {
 			t.Errorf("ProviderOptions = %#v, want the config", tool.ProviderOptions)
 		}
@@ -70,7 +70,7 @@ func TestMCPServer(t *testing.T) {
 			t.Error("expected ProviderExecuted to be true")
 		}
 
-		assertXAIEmptyInputSchema(t, tool)
+		assertXAILooseInputSchema(t, tool)
 		if got, ok := tool.ProviderOptions.(MCPServerOptions); !ok || got.ServerURL != serverURL {
 			t.Errorf("ProviderOptions = %#v, want server URL %s", tool.ProviderOptions, serverURL)
 		}
@@ -90,7 +90,7 @@ func TestMCPServer(t *testing.T) {
 		}
 
 		// The token stays in the tool args, never in the input schema.
-		assertXAIEmptyInputSchema(t, tool)
+		assertXAILooseInputSchema(t, tool)
 		if got, ok := tool.ProviderOptions.(MCPServerOptions); !ok || got.Authorization != auth {
 			t.Errorf("ProviderOptions = %#v, want authorization", tool.ProviderOptions)
 		}
@@ -134,11 +134,26 @@ func TestMCPServer(t *testing.T) {
 }
 
 func TestMCPServer_ParameterSchema(t *testing.T) {
-	assertXAIEmptyInputSchema(t, MCPServer(MCPServerConfig{
+	assertXAILooseInputSchema(t, MCPServer(MCPServerConfig{
 		ServerURL:     "https://api.example.com/mcp",
 		AllowedTools:  []string{"search"},
 		Authorization: "Bearer test_token",
 		Headers:       map[string]string{"X-API-Version": "v1"},
 	}))
-	assertXAIEmptyInputSchema(t, MCPServer(MCPServerConfig{ServerURL: "https://api.example.com/mcp"}))
+	assertXAILooseInputSchema(t, MCPServer(MCPServerConfig{ServerURL: "https://api.example.com/mcp"}))
+}
+
+// assertXAILooseInputSchema checks z.looseObject({}) (TS 6f56c29ff6 mcp,
+// 61ce23efab x_search): the model's tool-call arguments stay in the input.
+func assertXAILooseInputSchema(t *testing.T, tool types.Tool) {
+	t.Helper()
+	params, ok := tool.Parameters.(map[string]interface{})
+	if !ok {
+		t.Fatalf("Parameters = %T, want map", tool.Parameters)
+	}
+	props, ok := params["properties"].(map[string]interface{})
+	extra, hasExtra := params["additionalProperties"].(map[string]interface{})
+	if params["type"] != "object" || !ok || len(props) != 0 || !hasExtra || len(extra) != 0 || params["required"] != nil || len(params) != 3 {
+		t.Errorf("Parameters = %#v, want {type: object, properties: {}, additionalProperties: {}}", params)
+	}
 }

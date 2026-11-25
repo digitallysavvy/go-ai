@@ -14,13 +14,21 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
-// TS xai-model-catalog.ts modelsWithoutNoneReasoningEffort, evaluated by
-// Node 24 at 30548ee7f9 (true = "none" is accepted).
+// TS supports-reasoning-effort.ts (supportsNoneReasoningEffort and
+// supportsReasoningEffort over the xai-model-catalog.ts matrix), evaluated by
+// Node 24 at a457990a33 (TS 565db6d2c8; stripTypeScriptTypes). true =
+// "none" is accepted / portable reasoning is sent.
 func TestR85provbSupportsNoneReasoningEffortMatchesNode(t *testing.T) {
-	want := map[string]bool{"grok-4": true, "grok-4.5": false, "grok-4.6": false, "grok-4.7": false, "grok-4.9-fast": false, "grok-4.20": true, "grok-4.20-reasoning": true, "grok-4.55": true, "grok-4.5x": false, "grok-5": false, "grok-5-mini": false, "grok-5.1": false, "grok-50": false, "grok-10": false, "grok-1": true, "grok-3-mini": true, "grok-0": true, "grok-5x": true, "grok-4-1-fast-reasoning": true, "grok-code-fast-1": true, "grok-4.6-2026": false, "grok-09": true}
-	for id, w := range want {
+	none := map[string]bool{"grok-4": true, "grok-4.5": false, "grok-4.6": false, "grok-4.7": false, "grok-4.9-fast": false, "grok-4.20": true, "grok-4.20-reasoning": false, "grok-4.55": true, "grok-4.5x": false, "grok-5": false, "grok-5-mini": false, "grok-5.1": false, "grok-50": false, "grok-10": false, "grok-1": true, "grok-3-mini": true, "grok-0": true, "grok-5x": true, "grok-4-1-fast-reasoning": true, "grok-code-fast-1": true, "grok-4.6-2026": false, "grok-09": true, "grok-4.3": true, "grok-latest": true, "grok-4.20-multi-agent": true, "grok-4.20-non-reasoning": false, "grok-4.20-0309-reasoning": false, "grok-4-1": true, "grok-3": true}
+	any := map[string]bool{"grok-4": true, "grok-4.5": true, "grok-4.6": true, "grok-4.7": true, "grok-4.9-fast": true, "grok-4.20": true, "grok-4.20-reasoning": false, "grok-4.55": true, "grok-4.5x": true, "grok-5": true, "grok-5-mini": true, "grok-5.1": true, "grok-50": true, "grok-10": true, "grok-1": true, "grok-3-mini": true, "grok-0": true, "grok-5x": true, "grok-4-1-fast-reasoning": true, "grok-code-fast-1": true, "grok-4.6-2026": true, "grok-09": true, "grok-4.3": true, "grok-latest": true, "grok-4.20-multi-agent": true, "grok-4.20-non-reasoning": false, "grok-4.20-0309-reasoning": false, "grok-4-1": true, "grok-3": true}
+	for id, w := range none {
 		if got := supportsNoneReasoningEffort(id); got != w {
 			t.Errorf("supportsNoneReasoningEffort(%q) = %v, want %v", id, got, w)
+		}
+	}
+	for id, w := range any {
+		if got := supportsReasoningEffort(id); got != w {
+			t.Errorf("supportsReasoningEffort(%q) = %v, want %v", id, got, w)
 		}
 	}
 }

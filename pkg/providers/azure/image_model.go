@@ -103,7 +103,22 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 			headers:    m.provider.maiAPIHeaders,
 			httpClient: m.provider.speechHTTPClient(),
 		}
-		return mai.doGenerate(ctx, opts, azureOpts)
+		// `background` is shared with the OpenAI API; the MAI API only
+		// takes 'transparent' and 'opaque' (TS 3a48c5dca4).
+		if azureOpts.Background != "auto" {
+			return mai.doGenerate(ctx, opts, azureOpts)
+		}
+		azureOpts.Background = ""
+		result, err := mai.doGenerate(ctx, opts, azureOpts)
+		if err != nil {
+			return nil, err
+		}
+		result.Warnings = append(result.Warnings, types.Warning{
+			Type:    "unsupported",
+			Feature: "providerOptions.azure.background",
+			Details: "The MAI image API supports 'transparent' and 'opaque' backgrounds.",
+		})
+		return result, nil
 	}
 
 	result, err := m.doGenerateOpenAI(ctx, opts)

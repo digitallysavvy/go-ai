@@ -8,7 +8,6 @@ import (
 	"io"
 	"math"
 	"net/http"
-	"regexp"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
@@ -81,31 +80,6 @@ type XAIResponsesProviderOptions struct {
 
 	// ServiceTier selects the processing tier: "default" or "priority".
 	ServiceTier string `json:"serviceTier,omitempty"`
-}
-
-// modelsWithoutReasoningEffortRe matches grok-4.20 reasoning/non-reasoning
-// models (including dated variants like grok-4.20-0309-reasoning), which
-// reject the reasoning effort parameter for every value, including "none".
-// Mirrors TS supports-reasoning-effort.ts.
-var modelsWithoutReasoningEffortRe = regexp.MustCompile(`^grok-4\.20(-\d{4})?-(non-)?reasoning$`)
-
-// supportsReasoningEffort reports whether modelID accepts the reasoning
-// effort parameter at all.
-func supportsReasoningEffort(modelID string) bool {
-	return !modelsWithoutReasoningEffortRe.MatchString(modelID)
-}
-
-// modelsWithoutNoneReasoningEffortRe matches Grok 4.5 and later, which
-// always reason and reject reasoning effort "none" (TS xai-model-catalog.ts
-// modelsWithoutNoneReasoningEffort,
-// /^grok-(?:4\.[5-9](?!\d)|(?:[5-9]|[1-9]\d+)(?:[.-]|$))/; the lookahead is
-// written as "a non-digit or the end"). 4.20 predates 4.5 despite its
-// version number.
-var modelsWithoutNoneReasoningEffortRe = regexp.MustCompile(`^grok-(?:4\.[5-9](?:[^0-9]|$)|(?:[5-9]|[1-9][0-9]+)(?:[.-]|$))`)
-
-// supportsNoneReasoningEffort ports TS supportsNoneReasoningEffort.
-func supportsNoneReasoningEffort(modelID string) bool {
-	return !modelsWithoutNoneReasoningEffortRe.MatchString(modelID)
 }
 
 // ResponsesLanguageModel implements provider.LanguageModel using xAI's Responses API
@@ -557,29 +531,25 @@ func (m *ResponsesLanguageModel) buildRequestBody(opts *provider.GenerateOptions
 
 	// TS resolves reasoning after the input and tool warnings. A provider
 	// option effort is sent unchanged; otherwise the top-level reasoning is
-	// mapped (TS 61a315e333) onto {none (models that accept it), low,
-	// medium, high, xhigh (grok-4.6 only)} with
+	// mapped (TS 61a315e333) onto the model's portable efforts (TS 565db6d2c8:
+	// the model's matrix row, family rules for an unlisted ID) with
 	// providerutils.MapReasoningToProviderEffort: Grok 4.5+ map "none" to
 	// "low" with a compatibility warning instead of sending a value they
 	// reject. grok-4.20-(non-)reasoning models reject the reasoning effort
 	// parameter entirely (row 8e006de).
 	effort := xaiOpts.ReasoningEffort
 	if effort == "" && providerutils.IsCustomReasoning(opts.Reasoning) {
-		if !supportsReasoningEffort(m.modelID) {
+		portableEfforts := xaiPortableEfforts(m.modelID)
+		if len(portableEfforts) == 0 {
 			warnings = append(warnings, types.Warning{
 				Type:    "unsupported",
 				Feature: "reasoning",
 				Details: fmt.Sprintf("reasoning \"%s\" is not supported by this model.", string(*opts.Reasoning)),
 			})
 		} else {
-			effortMap := map[types.ReasoningLevel]string{
-				types.ReasoningLow: "low", types.ReasoningMedium: "medium", types.ReasoningHigh: "high",
-			}
-			if supportsNoneReasoningEffort(m.modelID) {
-				effortMap[types.ReasoningNone] = "none"
-			}
-			if m.modelID == "grok-4.6" {
-				effortMap[types.ReasoningXHigh] = "xhigh"
+			effortMap := make(map[types.ReasoningLevel]string, len(portableEfforts))
+			for _, e := range portableEfforts {
+				effortMap[types.ReasoningLevel(e)] = e
 			}
 			effort, _ = providerutils.MapReasoningToProviderEffort(opts.Reasoning, effortMap, nil, &warnings)
 		}
@@ -2086,7 +2056,7 @@ func isXAIProviderExecutedItem(t string) bool {
 // provider-executed output items (web/x search, code execution, file search,
 // image generation, custom and MCP tools): on the first sighting of an item
 // it streams tool-input-start / delta / end followed by the tool-call, and on
-// done it adds the tool-result. custom_tool_call is only emitted on done.
+// done it adds the tool-result. custom_tool_call and mcp_call are only emitted on done.
 func (s *xaiResponsesStream) queueProviderExecutedItem(itemType string, raw json.RawMessage, done bool) {
 	var item struct {
 		ID        string          `json:"id"`
@@ -2132,7 +2102,9 @@ func (s *xaiResponsesStream) queueProviderExecutedItem(itemType string, raw json
 		}
 	}
 	emit := !s.seenToolCalls[item.ID]
-	if itemType == "custom_tool_call" {
+	// TS 6f56c29ff6: an mcp_call, like a custom_tool_call, is emitted when
+	// it is done, so the tool call carries its arguments.
+	if itemType == "custom_tool_call" || itemType == "mcp_call" {
 		emit = emit && done
 	}
 	if emit {
