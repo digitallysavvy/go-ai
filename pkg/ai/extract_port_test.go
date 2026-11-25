@@ -538,8 +538,8 @@ func port2genURLFile(data types.FileContent) []provider.DecisionStatePart {
 func TestPort2genExtractRejectsRemoteFileStateWithoutDownloadHook(t *testing.T) {
 	const url = "https://attacker.example/invoice.pdf"
 	forms := map[string]types.FileContent{
-		"tagged url":      {FileData: types.FileData{Type: types.FileDataTypeURL, URL: url}},
-		"legacy url":      {URL: url},
+		"tagged url": {FileData: types.FileData{Type: types.FileDataTypeURL, URL: url}},
+		"legacy url": {URL: url},
 	}
 	for name, file := range forms {
 		model := port2genExtractModelAnswers(map[string]provider.ExtractionAnswer{"invoiceNumber": {Type: "text", Value: "INV-2041"}})
