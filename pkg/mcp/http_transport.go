@@ -897,18 +897,23 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 			defer resp.Body.Close() //nolint:errcheck
 			body = readErrorBody(resp.Body)
 		}
-		// Matches TS send(): when the failed response to a request carries a
-		// JSON-RPC error, deliver it as the request's response (a null id is
-		// filled in with the request id) instead of an HTTP transport error.
-		// TS parses the body as one JSON-RPC message (parseJSONRPCMessage), so
-		// an array body is an HTTP error.
+		// Matches TS send() (d55f3cfc45): when the failed response to a
+		// request carries a JSON-RPC error, the send rejects with an
+		// MCPClientError carrying that error (code, data, cause) and the HTTP
+		// status, URL and body. It is the caller's rejection, so it is not
+		// reported through OnError. TS parses the body as one JSON-RPC message
+		// (parseJSONRPCMessage), so an array body is an HTTP error.
 		if message.ID != nil && len(body) > 0 {
 			if msg, perr := parseMCPMessage(bytes.TrimSpace(body)); perr == nil && msg.Error != nil {
-				if msg.ID == nil {
-					msg.ID = message.ID
+				return &MCPClientError{
+					Message:      msg.Error.Message,
+					Code:         msg.Error.Code,
+					Data:         msg.Error.Data,
+					StatusCode:   resp.StatusCode,
+					URL:          t.url,
+					ResponseBody: string(body),
+					Cause:        msg.Error,
 				}
-				t.queueReceivedMessages([]*MCPMessage{msg})
-				return nil
 			}
 		}
 		errMessage := fmt.Sprintf("MCP HTTP Transport Error: POSTing to endpoint (HTTP %d): %s", resp.StatusCode, string(body))

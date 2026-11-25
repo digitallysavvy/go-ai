@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -78,5 +79,27 @@ func TestPortToolsHTTPSSEMatchingResponseSuppressesEndError(t *testing.T) {
 	}
 	if len(all) != 1 || all[0].Error != nil {
 		t.Fatalf("messages = %+v", all)
+	}
+}
+
+// TS d55f3cfc45 (mcp-http-transport.test.ts "preserve a version error"): the
+// discovery guidance error keeps the HTTP status and URL of the failed POST.
+func TestPortToolsDiscoveryGuidanceErrorKeepsHTTPStatusAndURL(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"error":{"code":-32022,"message":"Unsupported protocol version","data":{"requested":"2026-07-28","supported":["2025-11-25"]}}}`)
+	}))
+	defer srv.Close()
+	c := NewMCPClient(NewHTTPTransport(HTTPTransportConfig{URL: srv.URL, OnError: func(error) {}}), MCPClientConfig{})
+	err := c.Connect(t.Context())
+	defer c.Close() //nolint:errcheck
+	var ce *MCPClientError
+	if !errors.As(err, &ce) || ce.Code != -32022 || ce.StatusCode != 400 || ce.URL != srv.URL || !strings.Contains(ce.Message, "protocolVersionDiscovery: false") {
+		t.Fatalf("err = %#v", err)
 	}
 }

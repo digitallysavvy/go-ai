@@ -109,6 +109,10 @@ type MCPError struct {
 	Data    interface{} `json:"data,omitempty"`
 }
 
+// Error returns the error message, so a JSON-RPC error body can be the Cause
+// of an MCPClientError (TS `cause: jsonRpcMessage.error`).
+func (e *MCPError) Error() string { return e.Message }
+
 // Standard JSON-RPC 2.0 error codes
 const (
 	ErrorCodeParseError     = -32700
