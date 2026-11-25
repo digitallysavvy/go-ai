@@ -300,7 +300,8 @@ type GenerateTextOptions struct {
 	ToolApproval types.ToolApprovalConfig
 
 	// ExperimentalToolApprovalSecret signs server-issued approval requests so
-	// resumed approval responses can be verified before execution.
+	// resumed approval responses can be verified before execution. Approval
+	// requests of automatically denied tool calls are not signed.
 	ExperimentalToolApprovalSecret []byte
 
 	// MaxSteps is a convenience shorthand for StopWhen{StepCountIs(N)}.
@@ -1857,9 +1858,12 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			// An approved local call that did not run (no Execute, or a finish
 			// reason that blocks execution) still records its approval
 			// request and response, as TS does.
-			attachToolApprovalSignatures(toolResults, opts.ExperimentalToolApprovalSecret)
+			attachSignaturesToIssuedApprovals(toolResults, opts.ExperimentalToolApprovalSecret)
 			contentResults := invalidToolErrorsFirst(withApprovedUnexecutedCalls(toolResults, toolsToExecute, stepExecutionTools, preApprovals), toolsToExecute)
-			stepResult.Content = append(stepResult.Content, attachInputSchemaInputs(toolResultsToContentParts(contentResults, opts.ExperimentalToolApprovalSecret), inputSchemaInputs(preRefinementCalls, genResult.ToolCalls))...)
+			// Signed here, not by toolResultsToContentParts, so that an
+			// automatic denial stays unsigned (TS 63593a7f6a).
+			attachSignaturesToIssuedApprovals(contentResults, opts.ExperimentalToolApprovalSecret)
+			stepResult.Content = append(stepResult.Content, attachInputSchemaInputs(toolResultsToContentParts(contentResults), inputSchemaInputs(preRefinementCalls, genResult.ToolCalls))...)
 			stepResult.Performance = finishStepPerformance(stepResult.Performance, stepStart, toolCallbacks.toolExecutionMs)
 			result.ToolResults = append(result.ToolResults, publicResults...)
 			result.StaticToolResults = filterStaticToolResults(result.ToolResults)

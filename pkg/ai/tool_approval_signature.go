@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
 // toolApprovalPayloadVersion is the domain-separation prefix of the injective
@@ -370,4 +372,22 @@ func nextUTF16Unit(s string, i int, pending uint16) (unit uint16, nextPending ui
 		return uint16(0xD800 + (r >> 10)), uint16(0xDC00 + (r & 0x3FF)), i + size, true
 	}
 	return uint16(r), 0, i + size, true
+}
+
+// attachSignaturesToIssuedApprovals signs the approval requests that GenerateText
+// issues, except those of tool calls that the approval policy denied
+// automatically (TS 63593a7f6a). A signature lets a later request execute a
+// tool call by replaying the approval from client-supplied history, and the
+// signature does not bind the decision, so a denied call never gets one: an
+// approved response to its request fails with a missing signature.
+func attachSignaturesToIssuedApprovals(results []types.ToolResult, secret []byte) {
+	if secret == nil {
+		return
+	}
+	for i := range results {
+		if results[i].ApprovalStatus == types.ToolApprovalStatusDenied {
+			continue
+		}
+		attachToolApprovalSignatures(results[i:i+1], secret)
+	}
 }

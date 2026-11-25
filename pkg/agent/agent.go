@@ -653,6 +653,7 @@ type AgentConfig struct {
 	// ExperimentalToolApprovalSecret signs issued tool approval requests and
 	// verifies resumed approval responses before tools execute (TS
 	// experimental_toolApprovalSecret). Nil disables signing/verification.
+	// Approval requests of automatically denied tool calls are not signed.
 	ExperimentalToolApprovalSecret []byte
 }
 

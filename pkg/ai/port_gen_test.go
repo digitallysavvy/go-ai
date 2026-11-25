@@ -6,7 +6,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
 func portgenCounterTool(validate func(interface{}) (interface{}, error)) types.Tool {
@@ -204,4 +206,154 @@ func TestPortgenGenerateTextIsolatesInPlaceRefinement(t *testing.T) {
 			}
 		})
 	}
+}
+
+// portgenFindApprovalRequest returns the first approval request in the
+// assistant messages.
+func portgenFindApprovalRequest(msgs []types.Message) (types.ToolApprovalRequestContent, bool) {
+	for _, msg := range msgs {
+		if msg.Role != types.RoleAssistant {
+			continue
+		}
+		for _, part := range msg.Content {
+			switch p := part.(type) {
+			case types.ToolApprovalRequestContent:
+				return p, true
+			case *types.ToolApprovalRequestContent:
+				return *p, true
+			}
+		}
+	}
+	return types.ToolApprovalRequestContent{}, false
+}
+
+type portgenApprovalCall struct {
+	status   func() types.ToolApprovalStatus
+	executed *int
+	messages []types.Message
+}
+
+func portgenCallApprovalTool(c portgenApprovalCall, secret []byte) (*GenerateTextResult, error) {
+	step := 0
+	model := &testutil.MockLanguageModel{
+		ToolSupport: true,
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			step++
+			if step == 1 {
+				return &types.GenerateResult{
+					FinishReason: types.FinishReasonToolCalls,
+					ToolCalls:    []types.ToolCall{{ID: "call-1", ToolName: "tool1", Arguments: map[string]interface{}{"value": "test"}}},
+				}, nil
+			}
+			return &types.GenerateResult{Text: "done", Content: []types.ContentPart{types.TextContent{Text: "done"}}, FinishReason: types.FinishReasonStop}, nil
+		},
+	}
+	messages := c.messages
+	if messages == nil {
+		messages = []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "test"}}}}
+	}
+	return GenerateText(context.Background(), GenerateTextOptions{
+		Model: model,
+		Tools: []types.Tool{{
+			Name:       "tool1",
+			Parameters: valueStringSchema(),
+			Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+				*c.executed++
+				return "result1", nil
+			},
+		}},
+		ToolApproval: map[string]interface{}{"tool1": types.GenericToolApprovalFunc(func(types.ToolApprovalOptions) types.ToolApprovalResult {
+			return types.ToolApprovalResult{Status: c.status()}
+		})},
+		ExperimentalToolApprovalSecret: secret,
+		StopWhen:                       []StopCondition{StepCountIs(3)},
+		Messages:                       messages,
+	})
+}
+
+// Port of generate-text.test.ts 'should sign the approval request when the
+// tool approval status is %s' and 'should not sign the approval request when
+// the tool call is denied automatically' (TS 63593a7f6a).
+func TestPortgenGenerateTextSignsApprovalsExceptAutomaticDenials(t *testing.T) {
+	secret := []byte("test-hmac-secret-do-not-use-in-production")
+	for _, status := range []types.ToolApprovalStatus{types.ToolApprovalStatusUserApproval, types.ToolApprovalStatusApproved, types.ToolApprovalStatusDenied} {
+		t.Run(string(status), func(t *testing.T) {
+			executed := 0
+			result, err := portgenCallApprovalTool(portgenApprovalCall{status: func() types.ToolApprovalStatus { return status }, executed: &executed}, secret)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request, ok := portgenFindApprovalRequest(result.ResponseMessages)
+			if !ok {
+				t.Fatalf("no approval request in %+v", result.ResponseMessages)
+			}
+			if status == types.ToolApprovalStatusDenied {
+				if request.Signature != "" || !request.IsAutomatic || request.ToolCallID != "call-1" {
+					t.Fatalf("request = %+v, want an automatic unsigned request", request)
+				}
+				return
+			}
+			want, err := SignToolApproval(secret, request.ApprovalID, "call-1", "tool1", map[string]interface{}{"value": "test"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if request.Signature != want {
+				t.Fatalf("signature = %q, want %q", request.Signature, want)
+			}
+		})
+	}
+}
+
+// Port of 'should reject an approved response to a tool call that was denied
+// automatically' and 'should continue a conversation that ends with an
+// automatic denial'.
+func TestPortgenGenerateTextAutomaticDenialReplay(t *testing.T) {
+	secret := []byte("test-hmac-secret-do-not-use-in-production")
+	user := types.Message{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "test"}}}
+	t.Run("approved replay is rejected", func(t *testing.T) {
+		executed := 0
+		status := types.ToolApprovalStatusDenied
+		result, err := portgenCallApprovalTool(portgenApprovalCall{status: func() types.ToolApprovalStatus { return status }, executed: &executed}, secret)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request, _ := portgenFindApprovalRequest(result.ResponseMessages)
+		// The client omits the history that caused the denial, so the policy
+		// no longer denies the call when the approval is checked again.
+		status = types.ToolApprovalStatusNotApplicable
+		_, err = portgenCallApprovalTool(portgenApprovalCall{
+			status:   func() types.ToolApprovalStatus { return status },
+			executed: &executed,
+			messages: []types.Message{
+				user,
+				result.ResponseMessages[0],
+				{Role: types.RoleTool, Content: []types.ContentPart{types.ToolApprovalResponseContent{ApprovalID: request.ApprovalID, Approved: true}}},
+			},
+		}, secret)
+		if err == nil || !IsInvalidToolApprovalSignatureError(err) || !strings.Contains(err.Error(), "missing signature") {
+			t.Fatalf("err = %v, want a missing signature error", err)
+		}
+		if executed != 0 {
+			t.Fatalf("executed = %d, want 0", executed)
+		}
+	})
+	t.Run("denied conversation continues", func(t *testing.T) {
+		executed := 0
+		denied := func() types.ToolApprovalStatus { return types.ToolApprovalStatusDenied }
+		result, err := portgenCallApprovalTool(portgenApprovalCall{status: denied, executed: &executed}, secret)
+		if err != nil {
+			t.Fatal(err)
+		}
+		continued, err := portgenCallApprovalTool(portgenApprovalCall{
+			status:   denied,
+			executed: &executed,
+			messages: append([]types.Message{user}, result.ResponseMessages[0], result.ResponseMessages[1]),
+		}, secret)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if continued.Text != "done" || executed != 0 {
+			t.Fatalf("text=%q executed=%d", continued.Text, executed)
+		}
+	})
 }

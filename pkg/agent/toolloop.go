@@ -3370,7 +3370,9 @@ func agentToolResultsToContentParts(results []types.ToolResult, secret []byte) [
 				Dynamic:             result.Dynamic,
 			}
 			signature := ""
-			if secret != nil {
+			// An automatically denied call is never signed (TS 63593a7f6a): a
+			// signature would let a client replay the request as approved.
+			if secret != nil && result.ApprovalStatus != types.ToolApprovalStatusDenied {
 				signature, _ = ai.SignToolApproval(secret, agentApprovalID(result), result.ToolCallID, result.ToolName, result.Input)
 			}
 			approvalRequest := types.ToolApprovalRequestContent{
