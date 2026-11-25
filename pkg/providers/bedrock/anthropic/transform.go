@@ -68,8 +68,8 @@ func (s *betaOrderedSet) add(v string) {
 //   - drops "model" and "stream" (the URL and Accept header carry those);
 //   - collapses tool_choice to {type, name?}, dropping disable_parallel_tool_use
 //     (Bedrock rejects it on tool_choice);
-//   - renames thinking.block_binding.prefix_mismatch_behavior to
-//     thinking.block_binding.mismatch_behavior;
+//   - passes thinking through unchanged (block_binding.prefix_mismatch_behavior
+//     is the field Bedrock accepts in every region);
 //   - strips each tool's eager_input_streaming, adding the
 //     fine-grained-tool-streaming-2025-05-14 beta when it was true;
 //   - upgrades tool versions/names/betas via the maps above;
@@ -78,7 +78,7 @@ func transformRequestBodyWithBetas(body map[string]interface{}, betas []string, 
 	out := make(map[string]interface{}, len(body)+2)
 	for k, v := range body {
 		switch k {
-		case "model", "stream", "tool_choice", "thinking", "tools":
+		case "model", "stream", "tool_choice", "tools":
 			continue
 		default:
 			out[k] = v
@@ -96,10 +96,6 @@ func transformRequestBodyWithBetas(body map[string]interface{}, betas []string, 
 		out["tool_choice"] = tc
 	}
 
-	if thinking, ok := body["thinking"].(map[string]interface{}); ok && thinking != nil {
-		out["thinking"] = transformThinkingForBedrock(thinking)
-	}
-
 	if tools, ok := body["tools"].([]map[string]interface{}); ok && tools != nil {
 		out["tools"] = transformToolsForBedrock(tools, &requiredBetas)
 	}
@@ -108,25 +104,6 @@ func transformRequestBodyWithBetas(body map[string]interface{}, betas []string, 
 		out["anthropic_beta"] = requiredBetas.list
 	}
 	out["anthropic_version"] = AnthropicVersion
-	return out
-}
-
-// transformThinkingForBedrock renames block_binding.prefix_mismatch_behavior
-// to block_binding.mismatch_behavior. Bedrock's Messages schema does not
-// recognize the Anthropic API's field name; some regions (us-east-1) alias it
-// automatically, but others (eu-central-1) reject the request outright.
-func transformThinkingForBedrock(thinking map[string]interface{}) map[string]interface{} {
-	blockBinding, ok := thinking["block_binding"].(map[string]interface{})
-	if !ok || blockBinding == nil {
-		return thinking
-	}
-	out := make(map[string]interface{}, len(thinking))
-	for k, v := range thinking {
-		out[k] = v
-	}
-	out["block_binding"] = map[string]interface{}{
-		"mismatch_behavior": blockBinding["prefix_mismatch_behavior"],
-	}
 	return out
 }
 
