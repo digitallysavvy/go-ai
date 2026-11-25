@@ -100,7 +100,7 @@ func isUnlistedReasoningModelID(modelID string) bool {
 	if err != nil && !math.IsInf(major, 0) {
 		return false
 	}
-	return major >= 5 && !(m[2] == "" && strings.HasPrefix(m[3], "chat"))
+	return major >= 5 && (m[2] != "" || !strings.HasPrefix(m[3], "chat"))
 }
 
 // languageModelRow resolves a model ID to its matrix row (TS

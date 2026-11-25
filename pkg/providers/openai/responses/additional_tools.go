@@ -89,7 +89,7 @@ func isAdditionalFunctionTool(t types.Tool) bool {
 // then output schema) are appended to toolWarnings.
 func prepareAdditionalFunctionTool(t types.Tool, normalize func(interface{}) (interface{}, []types.Warning, error), toolWarnings *[]types.Warning) (AdditionalToolDef, error) {
 	parameters := defaultFunctionParameters(t.Parameters)
-	if normalize != nil && parameters != nil {
+	if normalize != nil {
 		normalized, warnings, err := normalize(parameters)
 		if err != nil {
 			return AdditionalToolDef{}, err

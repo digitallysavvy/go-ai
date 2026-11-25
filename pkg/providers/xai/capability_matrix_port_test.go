@@ -114,7 +114,7 @@ func TestPortprovbXAIPortableEfforts(t *testing.T) {
 		"grok-4-1":                 {"none", "low", "medium", "high"},
 	}
 	for id, want := range cases {
-		if got := xaiPortableEfforts(id); !reflect.DeepEqual(got, want) && !(len(got) == 0 && len(want) == 0) {
+		if got := xaiPortableEfforts(id); !reflect.DeepEqual(got, want) && (len(got) != 0 || len(want) != 0) {
 			t.Errorf("%s: efforts = %v, want %v", id, got, want)
 		}
 	}
