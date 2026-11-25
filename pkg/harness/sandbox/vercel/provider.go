@@ -142,12 +142,13 @@ type CreateSessionOptions struct {
 
 	Template *Template
 	// TemplateName names the reusable template (TS `templateName`,
-	// 8956ca55ed). Empty keeps the name derived from the template identity and
-	// the sandbox source. A template that already exists under the name is
-	// reused as is, so change the name when the identity or source changes.
-	// SandboxID and Name still name the forked live sandbox. Without a
-	// Template it has no effect.
-	TemplateName string
+	// 8956ca55ed). Nil keeps the name derived from the template identity and
+	// the sandbox source; a pointer to "" is a name like any other (TS `??`
+	// replaces only an absent name), so it replaces the derived name. A
+	// template that already exists under the name is reused as is, so change
+	// the name when the identity or source changes. SandboxID and Name still
+	// name the forked live sandbox. Without a Template it has no effect.
+	TemplateName *string
 }
 
 // CreateNetworkSandboxSession creates a fresh sandbox (or forks one from a
@@ -204,8 +205,8 @@ func CreateNetworkSandboxSession(ctx context.Context, opts CreateSessionOptions)
 	}
 
 	templateName := deriveTemplateName(opts.Template.Identity, baseParams)
-	if opts.TemplateName != "" {
-		templateName = opts.TemplateName
+	if opts.TemplateName != nil {
+		templateName = *opts.TemplateName
 	}
 	snapshotID, err := ensureTemplateSnapshot(ctx, client, baseParams, templateName, nil, func(ctx context.Context, sbx *Sandbox) error {
 		return opts.Template.Prepare(ctx, NewSession(sbx))
