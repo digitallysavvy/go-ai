@@ -314,6 +314,21 @@ func (p *Provider) DecisionModel(modelID string) (provider.DecisionModel, error)
 	}, nil
 }
 
+// ExtractionModel returns an experimental typed field extraction model backed
+// by Gemini structured output. Mirrors TypeScript's
+// GoogleProvider.extractionModel (6d5094711e): an ExtractionLanguageModel over
+// the chat model, reported as `<providerName minus .generative-ai>.extraction`.
+func (p *Provider) ExtractionModel(modelID string) (provider.ExtractionModel, error) {
+	lm, err := p.LanguageModel(modelID)
+	if err != nil {
+		return nil, err
+	}
+	return providerutils.NewExtractionLanguageModel(providerutils.ExtractionLanguageModelOptions{
+		Model:    lm,
+		Provider: strings.TrimSuffix(p.Name(), ".generative-ai") + ".extraction",
+	})
+}
+
 // EvaluationModel is the deprecated form of DecisionModel.
 //
 // Deprecated: Use DecisionModel instead.
