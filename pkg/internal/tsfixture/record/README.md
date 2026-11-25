@@ -48,6 +48,15 @@ elevenlabs, gateway, heygen, perplexity, cerebras, quiverai and topaz at
 `google-auth-library`, which that checkout does not install, so they are not
 in the recording (the suite skips them anyway).
 
+Port wave 1 (2026-11-25) re-recorded every suite at `a457990a33`
+(ai@7.0.181) the same way, adding `liquid` and `scaledown`. The TS run was
+not clean in a few packages (anthropic 11, openai 21, xai 5, deepseek 3,
+google 1 failing tests: truncated stream fixtures and snapshot drift in the
+borrowed `node_modules`); the recording keeps what each test did, and the Go
+replay passes on it with the skips listed in the suites. Earlier fal recordings had
+reached the real fal hosts (the test ran with network access); the new ones
+replay the mocked responses.
+
 `finish.py` gzips with a fixed mtime (reproducible bytes) and splits a package
 into `<pkg>__<test-file>.jsonl.gz` when one file would exceed ~900 KB.
 

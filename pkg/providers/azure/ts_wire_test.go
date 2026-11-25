@@ -25,7 +25,9 @@ func TestTSWire(t *testing.T) {
 	tsfixture.RunWire(t, "../testdata/tswire/azure.jsonl.gz", tsfixture.WireSuite{
 		SkipLanguage: true,
 		Skip: map[string]string{
-			"speech > doGenerate > should use correct URL format": "the TS test serves a Uint8Array-shaped JSON body as audio; the recording cannot carry it",
+			"speech > doGenerate > should use correct URL format":            "the TS test serves a Uint8Array-shaped JSON body as audio; the recording cannot carry it",
+			"~custom fetch > token authentication > keeps credentials off":   "TS sends image downloads through the caller fetch; Go keeps the validated, DNS-pinned download transport (known difference: DNS protection on by default, S2), so the files.example.com downloads do not reach the replay server; credential stripping is covered by the azure image unit tests",
+			"~custom fetch > api-key authentication > keeps credentials off": "TS sends image downloads through the caller fetch; Go keeps the validated, DNS-pinned download transport (known difference: DNS protection on by default, S2), so the files.example.com downloads do not reach the replay server; credential stripping is covered by the azure image unit tests",
 		},
 		Provider: func(base string, m tsfixture.WireModel) (provider.Provider, error) {
 			srv := base

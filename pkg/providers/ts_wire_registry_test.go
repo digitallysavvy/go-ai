@@ -37,6 +37,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providers/gladia"
 	"github.com/digitallysavvy/go-ai/pkg/providers/groq"
 	"github.com/digitallysavvy/go-ai/pkg/providers/hume"
+	"github.com/digitallysavvy/go-ai/pkg/providers/liquid"
 	"github.com/digitallysavvy/go-ai/pkg/providers/luma"
 	"github.com/digitallysavvy/go-ai/pkg/providers/mistral"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
@@ -44,6 +45,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providers/prodia"
 	"github.com/digitallysavvy/go-ai/pkg/providers/replicate"
 	"github.com/digitallysavvy/go-ai/pkg/providers/revai"
+	"github.com/digitallysavvy/go-ai/pkg/providers/scaledown"
 	"github.com/digitallysavvy/go-ai/pkg/providers/together"
 	"github.com/digitallysavvy/go-ai/pkg/providers/topaz"
 	"github.com/digitallysavvy/go-ai/pkg/providers/voyage"
@@ -154,7 +156,7 @@ var wireSuites = map[string]tsfixture.WireSuite{
 		return perplexity.New(perplexity.Config{APIKey: k, BaseURL: b, Headers: h})
 	})},
 	"baseten": {Provider: simple(func(b, k string, h map[string]string) provider.Provider {
-		return baseten.New(baseten.Config{APIKey: k, ModelURL: b, Headers: h})
+		return baseten.New(baseten.Config{APIKey: k, BaseURL: b, ModelURL: b, Headers: h})
 	})},
 	"togetherai": {LanguageResults: true, GoAdds: "/v1", RootBase: true, Provider: simple(func(b, k string, h map[string]string) provider.Provider {
 		return together.New(together.Config{APIKey: k, BaseURL: b, Headers: h})
@@ -177,7 +179,9 @@ var wireSuites = map[string]tsfixture.WireSuite{
 	"luma": {Provider: simple(func(b, k string, h map[string]string) provider.Provider {
 		return luma.New(luma.Config{APIKey: k, BaseURL: b, Headers: h})
 	})},
-	"prodia": {Provider: simple(func(b, k string, h map[string]string) provider.Provider {
+	"prodia": {Skip: map[string]string{
+		"ProdiaVideoModel > doGenerate - img2vid > downloads a public image URL and sends it as multipart form-data": "TS downloads the image through the caller fetch; Go keeps the validated, DNS-pinned download transport (known difference: DNS protection on by default, S2), so cdn.example.com does not resolve; the img2vid multipart body is covered by the prodia video unit tests",
+	}, Provider: simple(func(b, k string, h map[string]string) provider.Provider {
 		return prodia.New(prodia.Config{APIKey: k, BaseURL: b, Headers: h})
 	})},
 	"replicate": {Skip: map[string]string{
@@ -224,7 +228,7 @@ var wireSuites = map[string]tsfixture.WireSuite{
 		return hume.New(hume.Config{APIKey: k, BaseURL: b, Headers: h})
 	})},
 	"assemblyai": {GoPrefix: func(string) string { return "/v2" }, Provider: simple(func(b, k string, h map[string]string) provider.Provider {
-		return assemblyai.New(assemblyai.Config{APIKey: k, BaseURL: b, Headers: h})
+		return assemblyai.New(assemblyai.Config{APIKey: k, BaseURL: b, SpeechBaseURL: strings.TrimSuffix(b, "/v2"), Headers: h})
 	})},
 	"gladia": {GoPrefix: func(string) string { return "/v2" }, Skip: map[string]string{
 		"forwards transcriptionModel alias ID future-gladia-model":                 "known difference (round 88 ruling, S6): a model ID other than default / solaria-* is not sent and warns",
@@ -295,7 +299,7 @@ var wireSuites = map[string]tsfixture.WireSuite{
 		return klingai.New(klingai.Config{APIKey: wireAPIKey(m), BaseURL: b, Headers: wireHeaders(m)})
 	}},
 	"minimax": {Provider: simple(func(b, k string, h map[string]string) provider.Provider {
-		return minimax.New(minimax.Config{APIKey: k, BaseURL: b, VideoBaseURL: b, Headers: h})
+		return minimax.New(minimax.Config{APIKey: k, BaseURL: b, VideoBaseURL: b, ImageBaseURL: b, Headers: h})
 	})},
 	"heygen": {Provider: simple(func(b, k string, h map[string]string) provider.Provider {
 		return heygen.New(heygen.Config{APIKey: k, BaseURL: b, Headers: h, PollIntervalMillis: 1, PollTimeoutMillis: 5000})
@@ -312,6 +316,17 @@ var wireSuites = map[string]tsfixture.WireSuite{
 		"lazy schema initialization > defers schema construction until first use and caches the validator": "Known difference: TS-only lazy zod construction; Go validates with static code",
 	}, Provider: simple(func(b, k string, h map[string]string) provider.Provider {
 		return typesafeai.New(typesafeai.Config{APIKey: k, BaseURL: b, Headers: h})
+	})},
+	// Liquid and ScaleDown (tools, TS cf5fe9a223 / c6db718176), recorded at
+	// a457990a33.
+	"liquid": {Provider: simple(func(b, k string, h map[string]string) provider.Provider {
+		return liquid.New(liquid.Config{APIKey: k, BaseURL: b, Headers: h})
+	})},
+	"scaledown": {Skip: map[string]string{
+		"passes custom settings, call headers, abort signal, and model ID":             "the TS test passes the API key as the apiKey setting (x-api-key custom-key), which the recorded model config does not carry; replayed natively by scaledown TestPassesCustomSettingsCallHeadersAndModelID",
+		"restores workflow configuration and falls back to environment authentication": "depends on SCALEDOWN_API_KEY set by the TS test (known difference: Go serializes no API key, the restored model reads the environment); replayed natively by scaledown TestRestoresWorkflowConfigurationAndFallsBackToEnvironmentAuthentication",
+	}, Provider: simple(func(b, k string, h map[string]string) provider.Provider {
+		return scaledown.New(scaledown.Config{APIKey: k, BaseURL: b, Headers: h})
 	})},
 	"quiverai": {Provider: simple(func(b, k string, h map[string]string) provider.Provider {
 		return quiverai.New(quiverai.Config{APIKey: k, BaseURL: b, Headers: h})
