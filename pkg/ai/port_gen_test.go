@@ -2,7 +2,9 @@ package ai
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"reflect"
 	"strings"
 	"testing"
@@ -10,6 +12,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/schema"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
@@ -659,4 +662,207 @@ func TestPortgenGenerateTextSteeringAfterFailureAndAbort(t *testing.T) {
 			t.Fatalf("queue outcome = %+v, want aborted", o)
 		}
 	})
+}
+
+// ---- batch structured output (TS 3bea041f28) ----
+
+func portgenBatchOutput() Output[map[string]interface{}, map[string]interface{}] {
+	return ObjectOutput[map[string]interface{}](ObjectOutputOptions{
+		Schema: schema.NewSimpleJSONSchema(map[string]interface{}{
+			"type":                 "object",
+			"properties":           map[string]interface{}{"text": map[string]interface{}{"type": "string"}},
+			"required":             []interface{}{"text"},
+			"additionalProperties": false,
+		}),
+	})
+}
+
+func portgenBatchRecorder(requests *[]provider.BatchV4Request) *mockBatchV4 {
+	return &mockBatchV4{
+		providerName: "mock.batch",
+		startFn: func(_ context.Context, opts provider.BatchV4StartOptions) (*provider.BatchV4StartResult, error) {
+			*requests = append(*requests, opts.Requests...)
+			return &provider.BatchV4StartResult{BatchID: "batch-123", BatchV4Status: provider.BatchV4Status{Status: "pending"}}, nil
+		},
+	}
+}
+
+// Port of batch.test.ts 'sends the response format of the output
+// specification with every text request'.
+func TestPortgenStartBatchSendsOutputResponseFormat(t *testing.T) {
+	var requests []provider.BatchV4Request
+	_, err := ExperimentalStartBatch(context.Background(), StartBatchOptions{
+		Provider: portgenBatchRecorder(&requests),
+		Output:   portgenBatchOutput(),
+		Requests: []BatchRequest{
+			textBatchRequest("request-1", "mock-model-id"),
+			textBatchRequest("request-2", "mock-model-id"),
+			{Image: &BatchImageRequest{ID: "request-3", Model: "mock-image-model-id", Prompt: "a cat"}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(requests) != 3 {
+		t.Fatalf("requests = %d", len(requests))
+	}
+	for _, request := range requests[:2] {
+		format := request.Text.Options.ResponseFormat
+		if format == nil || format.Type != "json" {
+			t.Fatalf("response format = %+v", format)
+		}
+		raw, err := json.Marshal(format.Schema)
+		if err != nil || !strings.Contains(string(raw), `"properties":{"text":{"type":"string"}}`) || !strings.Contains(string(raw), `"type":"object"`) {
+			t.Fatalf("schema = %s (%v)", raw, err)
+		}
+	}
+	if requests[2].Image == nil {
+		t.Fatal("third request is not an image request")
+	}
+}
+
+// Port of 'does not send a response format without an output specification'.
+func TestPortgenStartBatchWithoutOutputSendsNoResponseFormat(t *testing.T) {
+	var requests []provider.BatchV4Request
+	if _, err := ExperimentalStartBatch(context.Background(), StartBatchOptions{
+		Provider: portgenBatchRecorder(&requests),
+		Requests: []BatchRequest{textBatchRequest("request-1", "mock-model-id")},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if format := requests[0].Text.Options.ResponseFormat; format != nil {
+		t.Fatalf("response format = %+v", format)
+	}
+}
+
+func TestPortgenStartBatchRejectsANonOutputSpecification(t *testing.T) {
+	var requests []provider.BatchV4Request
+	_, err := ExperimentalStartBatch(context.Background(), StartBatchOptions{
+		Provider: portgenBatchRecorder(&requests),
+		Output:   "not an output",
+		Requests: []BatchRequest{textBatchRequest("request-1", "mock-model-id")},
+	})
+	if !isInvalidArgumentError(err) || len(requests) != 0 {
+		t.Fatalf("err = %v, requests = %d", err, len(requests))
+	}
+}
+
+func portgenTextBatchItem(id string, result types.GenerateResult) provider.BatchV4ItemResult {
+	if result.FinishReason == "" {
+		result.FinishReason = types.FinishReasonStop
+	}
+	if result.Usage.InputTokens == nil {
+		three := int64(3)
+		result.Usage.InputTokens = &three
+	}
+	return provider.BatchV4ItemResult{Type: provider.BatchRequestTypeText, ID: id, Status: provider.BatchItemSucceeded, TextResult: &result}
+}
+
+func portgenCollectBatch(t *testing.T, items []provider.BatchV4ItemResult, output interface{}) []*BatchItemResult {
+	t.Helper()
+	api := &mockBatchV4{
+		providerName: "mock.batch",
+		resultsFn: func(context.Context, provider.BatchV4OperationOptions) (provider.BatchV4ItemResultStream, error) {
+			return &mockBatchItemStream{items: items}, nil
+		},
+	}
+	stream, err := ExperimentalGetBatchResults(context.Background(), GetBatchResultsOptions{
+		Provider:   api,
+		Batch:      BatchReference{Version: 2, ID: "batch-123", Provider: "mock.batch"},
+		MaxRetries: intPtr(0),
+		Output:     output,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	var out []*BatchItemResult
+	for {
+		item, err := stream.Next()
+		if errors.Is(err, io.EOF) {
+			return out
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, item)
+	}
+}
+
+// Ports of the getBatchResults 'output' describe block in batch.test.ts.
+func TestPortgenGetBatchResultsParsesOutput(t *testing.T) {
+	t.Run("parses and validates the text of successful items", func(t *testing.T) {
+		results := portgenCollectBatch(t, []provider.BatchV4ItemResult{
+			portgenTextBatchItem("ok", types.GenerateResult{Text: `{"text":"hello"}`}),
+		}, portgenBatchOutput())
+		if len(results) != 1 || results[0].Text.Text != `{"text":"hello"}` || !reflect.DeepEqual(results[0].Output, map[string]interface{}{"text": "hello"}) || results[0].OutputError != nil {
+			t.Fatalf("results = %+v", results)
+		}
+	})
+	t.Run("reports parse failures per item without dropping text and usage", func(t *testing.T) {
+		results := portgenCollectBatch(t, []provider.BatchV4ItemResult{
+			portgenTextBatchItem("not-json", types.GenerateResult{Text: "oops"}),
+			portgenTextBatchItem("wrong-shape", types.GenerateResult{Text: `{"text":1}`}),
+			portgenTextBatchItem("ok", types.GenerateResult{Text: `{"text":"fine"}`}),
+		}, portgenBatchOutput())
+		if len(results) != 3 {
+			t.Fatalf("results = %d", len(results))
+		}
+		if r := results[0]; r.Text.Text != "oops" || r.Text.Usage.InputTokens == nil || *r.Text.Usage.InputTokens != 3 || r.Output != nil ||
+			r.OutputError == nil || r.OutputError.Type != "AI_NoObjectGeneratedError" || r.OutputError.Message != "No object generated: could not parse the response." {
+			t.Errorf("not-json = %+v / %+v", r, r.OutputError)
+		}
+		if r := results[1]; r.OutputError == nil || r.OutputError.Type != "AI_NoObjectGeneratedError" || r.OutputError.Message != "No object generated: response did not match schema." {
+			t.Errorf("wrong-shape = %+v / %+v", r, r.OutputError)
+		}
+		if r := results[2]; r.OutputError != nil || !reflect.DeepEqual(r.Output, map[string]interface{}{"text": "fine"}) {
+			t.Errorf("ok = %+v", r)
+		}
+	})
+	t.Run("prefers structuredOutputText for JSON output", func(t *testing.T) {
+		structured := `{"text":"final"}`
+		results := portgenCollectBatch(t, []provider.BatchV4ItemResult{
+			portgenTextBatchItem("structured", types.GenerateResult{Text: `draft {"text":"final"}`, StructuredOutputText: &structured}),
+		}, portgenBatchOutput())
+		if !reflect.DeepEqual(results[0].Output, map[string]interface{}{"text": "final"}) {
+			t.Fatalf("output = %+v / %+v", results[0].Output, results[0].OutputError)
+		}
+	})
+	t.Run("reports an output error when the item did not finish with a response", func(t *testing.T) {
+		results := portgenCollectBatch(t, []provider.BatchV4ItemResult{
+			portgenTextBatchItem("tool-call", types.GenerateResult{
+				FinishReason: types.FinishReasonToolCalls,
+				ToolCalls:    []types.ToolCall{{ID: "call-1", ToolName: "weather", Arguments: map[string]interface{}{}, RawArguments: "{}"}},
+			}),
+		}, portgenBatchOutput())
+		if r := results[0]; r.OutputError == nil || r.OutputError.Type != "AI_NoOutputGeneratedError" || r.OutputError.Message != "No output generated." {
+			t.Fatalf("result = %+v / %+v", r, r.OutputError)
+		}
+	})
+	t.Run("does not parse failed items or add fields without output", func(t *testing.T) {
+		items := []provider.BatchV4ItemResult{
+			{Type: provider.BatchRequestTypeText, ID: "failed", Status: provider.BatchItemFailed, Error: &provider.BatchError{Message: "boom"}},
+			portgenTextBatchItem("plain", types.GenerateResult{Text: `{"text":"x"}`}),
+		}
+		withOutput := portgenCollectBatch(t, items, portgenBatchOutput())
+		if withOutput[0].Output != nil || withOutput[0].OutputError != nil || withOutput[0].Error == nil {
+			t.Fatalf("failed item = %+v", withOutput[0])
+		}
+		withoutOutput := portgenCollectBatch(t, items, nil)
+		if withoutOutput[1].Output != nil || withoutOutput[1].OutputError != nil {
+			t.Fatalf("plain item = %+v", withoutOutput[1])
+		}
+	})
+}
+
+func TestPortgenGetBatchResultsRejectsANonOutputSpecification(t *testing.T) {
+	api := &mockBatchV4{providerName: "mock.batch"}
+	_, err := ExperimentalGetBatchResults(context.Background(), GetBatchResultsOptions{
+		Provider: api,
+		Batch:    BatchReference{Version: 2, ID: "batch-123", Provider: "mock.batch"},
+		Output:   42,
+	})
+	if !isInvalidArgumentError(err) {
+		t.Fatalf("err = %v", err)
+	}
 }
