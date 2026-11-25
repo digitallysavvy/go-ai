@@ -2984,6 +2984,13 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 	if err := w.standardizeWorkflowPrompt(opts.Prompt, opts.Messages, workflowAllowSystem(prepared, w.AllowSystemInMessages, opts.AllowSystemInMessages), opts.System, opts.Instructions, early); err != nil {
 		return nil, err
 	}
+	// TS resolveTimeoutSettings runs after standardizePrompt and before any
+	// model call; a total deadline that has passed ends the run as timed out.
+	callTimeout := workflowCallTimeout(w.Timeout, opts.Timeout, prepared)
+	if err := validateWorkflowTimeout(callTimeout); err != nil {
+		return nil, err
+	}
+	ctx, _ = workflowExpiredTotalContext(ctx, callTimeout)
 	callID := newWorkflowCallID()
 	var initialResponseMessages []types.Message
 	opts.Messages, _, err = processWorkflowApprovalResume(ctx, workflowApprovalResumeOptions{
@@ -3273,6 +3280,13 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 	// Every root event carries the run's call ID (TS callId): each
 	// integration finds its own root span by it, not through ctx, which holds
 	// only the last integration's span.
+	// TS resolveTimeoutSettings runs after standardizePrompt and before any
+	// model call; a total deadline that has passed ends the run as timed out.
+	callTimeout := workflowCallTimeout(w.Timeout, opts.Timeout, prepared)
+	if err := validateWorkflowTimeout(callTimeout); err != nil {
+		return nil, err
+	}
+	ctx, _ = workflowExpiredTotalContext(ctx, callTimeout)
 	callID := newWorkflowCallID()
 	var prefixChunks []provider.StreamChunk
 	opts.Messages, prefixChunks, err = processWorkflowApprovalResume(ctx, workflowApprovalResumeOptions{
