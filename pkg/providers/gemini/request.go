@@ -162,16 +162,15 @@ func (m *LanguageModel) buildRequest(ctx context.Context, opts *provider.Generat
 		}
 	}
 
-	gemma := isGemmaModel(m.modelID)
-	isGemini25DeveloperAPI := !isVertex && isGemini25Model(m.modelID)
-	if isGemini25DeveloperAPI && opts.FrequencyPenalty != nil {
+	caps := LanguageModelCapabilitiesFor(m.modelID)
+	systemInstructionAsUser := caps.SystemInstructionAsUser
+	unsupportedPenalties := !isVertex && caps.PenaltiesVertexOnly
+	if unsupportedPenalties && opts.FrequencyPenalty != nil {
 		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "frequencyPenalty", Message: "frequencyPenalty"})
 	}
-	if isGemini25DeveloperAPI && opts.PresencePenalty != nil {
+	if unsupportedPenalties && opts.PresencePenalty != nil {
 		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "presencePenalty", Message: "presencePenalty"})
 	}
-
-	caps := GetModelCapabilities(m.modelID)
 
 	// Prompt conversion.
 	var messages []types.Message
@@ -181,7 +180,7 @@ func (m *LanguageModel) buildRequest(ctx context.Context, opts *provider.Generat
 		messages = prompt.SimpleTextToMessages(opts.Prompt.Text)
 	}
 	var supportedFunctionResponseURLs map[string][]string
-	if caps.UsesGemini3Features && m.cfg.SupportsGoogleCloudStorageUrls {
+	if caps.FunctionResponseParts && m.cfg.SupportsGoogleCloudStorageUrls {
 		supportedFunctionResponseURLs = googleCloudStorageFunctionResponseURLs
 	}
 	if m.cfg.ToolResultDownloadMaxBytes > 0 {
@@ -197,10 +196,10 @@ func (m *LanguageModel) buildRequest(ctx context.Context, opts *provider.Generat
 	}
 	converted, err := prompt.ConvertToGoogleMessages(messages, prompt.GoogleMessagesOptions{
 		System:                        opts.Prompt.System,
-		IsGemmaModel:                  gemma,
-		IsGemini3Model:                caps.UsesGemini3Features,
+		IsGemmaModel:                  systemInstructionAsUser,
+		IsGemini3Model:                caps.ThoughtSignatures,
 		ProviderOptionsNames:          m.providerOptionsNames(),
-		SupportsFunctionResponseParts: caps.UsesGemini3Features,
+		SupportsFunctionResponseParts: caps.FunctionResponseParts,
 		IncludeFunctionCallIDs:        !isVertex,
 		SupportedFunctionResponseURLs: supportedFunctionResponseURLs,
 	})
@@ -209,7 +208,7 @@ func (m *LanguageModel) buildRequest(ctx context.Context, opts *provider.Generat
 	}
 	warnings = append(warnings, converted.Warnings...)
 	body["contents"] = converted.Contents
-	if converted.SystemInstruction != nil && !gemma {
+	if converted.SystemInstruction != nil && !systemInstructionAsUser {
 		body["systemInstruction"] = converted.SystemInstruction
 	}
 
@@ -252,10 +251,10 @@ func (m *LanguageModel) buildRequest(ctx context.Context, opts *provider.Generat
 	if opts.TopP != nil {
 		genConfig["topP"] = *opts.TopP
 	}
-	if opts.FrequencyPenalty != nil && !isGemini25DeveloperAPI {
+	if opts.FrequencyPenalty != nil && !unsupportedPenalties {
 		genConfig["frequencyPenalty"] = *opts.FrequencyPenalty
 	}
-	if opts.PresencePenalty != nil && !isGemini25DeveloperAPI {
+	if opts.PresencePenalty != nil && !unsupportedPenalties {
 		genConfig["presencePenalty"] = *opts.PresencePenalty
 	}
 	if opts.StopSequences != nil {

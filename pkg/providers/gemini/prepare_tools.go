@@ -55,7 +55,7 @@ func prepareTools(tools []types.Tool, toolChoice types.ToolChoice, modelID strin
 	if len(tools) == 0 {
 		return out
 	}
-	caps := GetModelCapabilities(modelID)
+	caps := LanguageModelCapabilitiesFor(modelID)
 
 	hasFunctionTools, hasProviderTools := false, false
 	for _, t := range tools {
@@ -66,7 +66,7 @@ func prepareTools(tools []types.Tool, toolChoice types.ToolChoice, modelID strin
 		}
 	}
 
-	if hasFunctionTools && hasProviderTools && !caps.UsesGemini3Features {
+	if hasFunctionTools && hasProviderTools && !caps.Mixed {
 		out.warnings = append(out.warnings, unsupportedToolWarning("combination of function and provider-defined tools", ""))
 	}
 
@@ -77,7 +77,7 @@ func prepareTools(tools []types.Tool, toolChoice types.ToolChoice, modelID strin
 				continue
 			}
 			feature := "provider-defined tool " + t.ProviderID
-			gate, details := caps.SupportsGemini2Tools, ""
+			gate, details := caps.ProviderTools, ""
 			switch t.ProviderID {
 			case "google.google_search":
 				details = "Google Search requires Gemini 2.0 or newer."
@@ -88,7 +88,7 @@ func prepareTools(tools []types.Tool, toolChoice types.ToolChoice, modelID strin
 			case "google.code_execution":
 				details = "The code execution tool is not supported with other Gemini models than Gemini 2."
 			case "google.file_search":
-				gate = caps.SupportsFileSearch
+				gate = caps.FileSearch
 				details = "The file search tool is only supported with Gemini 2.5 models and Gemini 3 models."
 			case "google.vertex_rag_store":
 				details = "The RAG store tool is not supported with other Gemini models than Gemini 2."
@@ -107,7 +107,7 @@ func prepareTools(tools []types.Tool, toolChoice types.ToolChoice, modelID strin
 			}
 		}
 
-		if hasFunctionTools && caps.UsesGemini3Features && len(googleTools) > 0 {
+		if hasFunctionTools && caps.Mixed && len(googleTools) > 0 {
 			var decls []map[string]interface{}
 			for _, t := range tools {
 				if t.Type != "provider" {

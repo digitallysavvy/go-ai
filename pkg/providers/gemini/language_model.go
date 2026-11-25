@@ -6,7 +6,6 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"regexp"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
@@ -232,14 +231,10 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	return streaming.NewWarningsStream(textStream, warnings), nil
 }
 
-// jsonResponseToolModelPattern is TS getArgs' /(^|\/)gemini-/i: unlike the
-// capability patterns it does not treat a "." as a prefix separator, so an id
-// such as "eu.gemini-2.0-flash" is not rewritten to use a JSON response tool.
-var jsonResponseToolModelPattern = regexp.MustCompile(`(?i)(^|/)gemini-`)
-
 // withJSONResponseTool returns opts rewritten to request structured output
 // through a synthetic JSON response tool when the model cannot combine a JSON
-// response format with function tools, plus the tool's name ("" when no
+// response format with function tools (LanguageModelCapabilities
+// JSONResponseTool / WithResponseSchema), plus the tool's name ("" when no
 // rewrite is needed). Gemini models before Gemini 3 reject JSON response
 // formatting together with function tools; Gemini 3 supports the combination
 // only with automatic tool choice, so a forced tool choice (required / a
@@ -253,11 +248,12 @@ func (m *LanguageModel) withJSONResponseTool(opts *provider.GenerateOptions) (*p
 	if opts.ToolChoice.Type == types.ToolChoiceNone {
 		tools = functionToolsOnly(tools)
 	}
-	if !providerutils.NeedsJSONResponseTool(opts.ResponseFormat, tools) || !jsonResponseToolModelPattern.MatchString(m.modelID) {
+	caps := LanguageModelCapabilitiesFor(m.modelID)
+	if !providerutils.NeedsJSONResponseTool(opts.ResponseFormat, tools) || !caps.JSONResponseTool {
 		return opts, ""
 	}
 	forced := opts.ToolChoice.Type == types.ToolChoiceRequired || opts.ToolChoice.Type == types.ToolChoiceTool
-	if GetModelCapabilities(m.modelID).UsesGemini3Features && !forced {
+	if caps.WithResponseSchema && !forced {
 		return opts, ""
 	}
 	responseTool := providerutils.NewJSONResponseTool(opts.ResponseFormat, tools)
