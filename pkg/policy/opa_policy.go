@@ -69,45 +69,30 @@ type OPAApproval struct {
 	variants map[types.ToolApprovalStatus]*OPAApproval
 }
 
-// approvalFallbackKey is the ToolsContext key under which WrapMCPTools hands
-// its fallback to a plain approval function. A Go func value carries no hidden
-// property the way TS's symbol-keyed hook does, so the fallback travels in the
-// options of the call instead: only the functions OPAPolicy and Shadow return
-// read it, and they remove it before anything else (the policy input, a custom
-// ToInput, the wrapped approval of a Shadow that is not OPA) sees the options.
-const approvalFallbackKey = "\x00go-ai/policy.approvalFallback"
-
+// approvalFallbackCarrier is how WrapMCPTools hands its fallback to a plain
+// approval function. A Go func value carries no hidden property the way TS's
+// symbol-keyed hook does, so the fallback travels in the unexported hidden
+// value of the call's options (types.ToolApprovalOptions.WithHidden): only
+// the functions OPAPolicy and Shadow return read it, and they clear it before
+// anything else (the policy input, a custom ToInput, the wrapped approval of
+// a Shadow that is not OPA) gets the options. The type is unexported, so no
+// other package can forge a fallback, and a custom approval function sees no
+// extra ToolsContext key.
 type approvalFallbackCarrier struct{ fallback types.ToolApprovalStatus }
 
 // withApprovalFallback returns args carrying fallback; the caller's
 // ToolsContext map is not modified.
 func withApprovalFallback(args types.ToolApprovalOptions, fallback types.ToolApprovalStatus) types.ToolApprovalOptions {
-	ctx := make(map[string]interface{}, len(args.ToolsContext)+1)
-	for k, v := range args.ToolsContext {
-		ctx[k] = v
-	}
-	ctx[approvalFallbackKey] = approvalFallbackCarrier{fallback: fallback}
-	args.ToolsContext = ctx
-	return args
+	return args.WithHidden(approvalFallbackCarrier{fallback: fallback})
 }
 
 // takeApprovalFallback removes the carrier from args.
 func takeApprovalFallback(args types.ToolApprovalOptions) (types.ToolApprovalOptions, types.ToolApprovalStatus, bool) {
-	c, ok := args.ToolsContext[approvalFallbackKey].(approvalFallbackCarrier)
+	c, ok := args.Hidden().(approvalFallbackCarrier)
 	if !ok {
 		return args, "", false
 	}
-	ctx := make(map[string]interface{}, len(args.ToolsContext))
-	for k, v := range args.ToolsContext {
-		if k != approvalFallbackKey {
-			ctx[k] = v
-		}
-	}
-	if len(ctx) == 0 {
-		ctx = nil
-	}
-	args.ToolsContext = ctx
-	return args, c.fallback, true
+	return args.WithHidden(nil), c.fallback, true
 }
 
 // forFallback is the approval that applies fallback to every evaluation. Each

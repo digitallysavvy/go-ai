@@ -46,7 +46,24 @@ type ToolApprovalOptions struct {
 	// Messages are the messages sent to the model (excluding system prompt and
 	// the assistant response that contained the tool call).
 	Messages []Message
+
+	// hidden carries a value from the SDK to its own approval functions (the
+	// pkg/policy WrapMCPTools fallback). It is unexported, so callers never
+	// see it in the fields, in JSON or in a custom approval's ToolsContext.
+	hidden interface{}
 }
+
+// WithHidden returns a copy of o carrying v for an SDK approval function.
+// A value is only meaningful to the package that defined its (unexported)
+// type; other packages cannot construct or read it. Application code has no
+// use for this method.
+func (o ToolApprovalOptions) WithHidden(v interface{}) ToolApprovalOptions {
+	o.hidden = v
+	return o
+}
+
+// Hidden returns the value set by WithHidden, or nil.
+func (o ToolApprovalOptions) Hidden() interface{} { return o.hidden }
 
 // GenericToolApprovalFunc is the options-based approval function that mirrors
 // the TypeScript SDK's GenericToolApprovalFunction signature.
