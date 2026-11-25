@@ -1026,7 +1026,7 @@ func (i OpenTelemetry) OnLanguageModelCallEnd(ctx context.Context, e LanguageMod
 			attrs = append(attrs, attribute.String("gen_ai.output.messages", string(b)))
 		}
 	} else if recordOutputs && e.Content != nil {
-		if b, err := jsonstr.Marshal(formatOutputMessagesFromContent(content, e.FinishReason)); err == nil {
+		if b, err := jsonstr.Marshal(formatOutputContent(content, e.FinishReason)); err == nil {
 			attrs = append(attrs, attribute.String("gen_ai.output.messages", string(b)))
 		}
 	}
@@ -1660,6 +1660,10 @@ func (i OpenTelemetry) endSupplementalAttrs(e TelemetryFinishEvent) []attribute.
 // the way TS onGenerateEnd does: final-step reasoning and text, then the tool
 // calls and results and the files of every step.
 func formatOutputMessagesFromFinish(e TelemetryFinishEvent) []semConvOutputMessage {
+	// TS 71410a4755: event.content (every step's content, in order).
+	if e.Content != nil {
+		return formatOutputContent(e.Content, e.FinishReason)
+	}
 	return FormatOutputMessages(FormatOutputMessagesOptions{
 		Text:         e.Text,
 		Reasoning:    e.ReasoningParts,

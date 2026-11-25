@@ -4,13 +4,14 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
-	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
+	"fmt"
 	"sort"
 	"strings"
 
-	"github.com/digitallysavvy/go-ai/pkg/internal/intsafe"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jscase"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // This file is the Go port of TS's otel/src/gen-ai-format-messages.ts: it
@@ -34,7 +35,7 @@ type semConvPart = SemConvPart
 // {type, content}, {type, id, name, arguments}, {type, id, response},
 // {type, modality, mime_type, uri|content}, {type, approval_id, approved,
 // reason} and {type, kind} all follow it.
-var semConvPartKeyOrder = []string{"type", "id", "name", "arguments", "response", "modality", "mime_type", "uri", "content", "approval_id", "approved", "reason", "kind"}
+var semConvPartKeyOrder = []string{"type", "id", "name", "arguments", "response", "modality", "mime_type", "uri", "content", "approval_id", "tool_call_id", "approved", "reason", "kind"}
 
 // MarshalJSON writes the part's keys in TS literal order; keys outside that
 // order follow, sorted.
@@ -366,8 +367,7 @@ func convertImagePartToSemConv(img types.ImageContent) semConvPart {
 // string prompt, first, as a user message) into the gen_ai.input.messages
 // SemConv format, mirroring TS formatModelMessages /
 // convertModelMessageToSemConv. Unlike formatInputMessages (the language
-// model prompt), a part the TS ModelMessage converter does not map (for
-// example an assistant file or custom part, or a tool approval response) is
+// model prompt), a part the TS ModelMessage converter does not map is
 // reported by its type only.
 func formatModelMessages(prompt string, messages []types.Message) []semConvInputMessage {
 	result := make([]semConvInputMessage, 0, len(messages)+1)
@@ -408,11 +408,22 @@ func convertModelPartToSemConv(role types.MessageRole, part types.ContentPart) s
 			return semConvPart{"type": "text", "content": p.Text}
 		case types.ReasoningContent:
 			return semConvPart{"type": "reasoning", "content": p.Text}
+		case types.FileContent:
+			return convertFilePartToSemConv(p)
+		case types.GeneratedFileContent:
+			return fileLikeToSemConv(p.MediaType, p.FileData, p.Data, p.URL)
+		case types.ReasoningFileContent:
+			return fileLikeToSemConv(p.MediaType, p.FileData, p.Data, "")
+		case types.CustomContent:
+			return semConvPart{"type": "custom", "kind": p.Kind}
+		case types.ToolApprovalRequestContent:
+			return toolApprovalRequestToSemConv(p)
 		case types.ToolCallContent, types.ToolResultContent:
 			return convertMessagePartToSemConv(p)
 		}
 	case types.RoleTool:
-		if p, ok := part.(types.ToolResultContent); ok {
+		switch p := part.(type) {
+		case types.ToolResultContent, types.ToolApprovalResponseContent:
 			return convertMessagePartToSemConv(p)
 		}
 	}
@@ -456,7 +467,7 @@ func convertMessagePartToSemConv(part types.ContentPart) semConvPart {
 	case types.CustomContent:
 		return semConvPart{"type": "custom", "kind": p.Kind}
 	case types.ReasoningFileContent:
-		return semConvPart{"type": "reasoning-file"}
+		return fileLikeToSemConv(p.MediaType, p.FileData, p.Data, "")
 	default:
 		return semConvPart{"type": part.ContentType()}
 	}
@@ -540,57 +551,106 @@ func generatedFileToSemConv(f types.GeneratedFileContent) semConvPart {
 	return semConvPart{"type": "blob", "modality": modalityForMediaType(mediaType), "mime_type": mediaType, "content": content}
 }
 
-// formatOutputMessagesFromContent converts an ordered content-part list (as
-// carried on LanguageModelCallEndEvent.Content / GenerateResult.Content) into
-// the gen_ai.output.messages SemConv format, mirroring TS's
-// formatOutputMessages. Unlike TS (whose caller pre-buckets by type before
-// calling formatOutputMessages), go-ai's content list interleaves types, so
-// this function does the bucketing itself; the resulting bucket order
-// (reasoning, text, tool calls, tool results, files) matches TS exactly.
-func formatOutputMessagesFromContent(content []types.ContentPart, finishReason string) []semConvOutputMessage {
-	var textBuilder strings.Builder
-	var reasoningParts, toolCallParts, toolResultParts, fileParts []semConvPart
+// fileLikeToSemConv is TS convertFileDataToSemConv for a Go file-shaped
+// part (a generated file, a reasoning file): a url as a "uri" part, bytes as
+// base64 "blob" content. These parts always carry a media type in TS, so
+// mime_type is the media type as given.
+func fileLikeToSemConv(mediaType string, data types.FileData, raw []byte, url string) semConvPart {
+	part := convertFilePartToSemConv(types.FileContent{MediaType: mediaType, FileData: data, Data: raw, URL: url})
+	part["mime_type"] = mediaType
+	return part
+}
 
+// toolErrorText is TS getErrorMessage(part.error) for a tool error.
+func toolErrorText(p types.ToolErrorContent) string {
+	if p.ErrorText != "" {
+		return p.ErrorText
+	}
+	switch e := p.Error.(type) {
+	case string:
+		return e
+	case error:
+		return e.Error()
+	case nil:
+		return "unknown error"
+	default:
+		if b, err := jsonstr.Marshal(e); err == nil {
+			return string(b)
+		}
+		return fmt.Sprint(e)
+	}
+}
+
+// toolApprovalRequestToSemConv is the TS tool_approval_request part
+// ({approval_id, tool_call_id, reason}); an unset reason is left out.
+func toolApprovalRequestToSemConv(p types.ToolApprovalRequestContent) semConvPart {
+	part := semConvPart{
+		"type":         "tool_approval_request",
+		"approval_id":  p.ApprovalID,
+		"tool_call_id": firstNonEmptyStr(p.ToolCall.ID, p.ToolCallID),
+	}
+	if p.Reason != "" {
+		part["reason"] = p.Reason
+	}
+	return part
+}
+
+// formatOutputContent converts the content parts a model call or step
+// produced into the gen_ai.output.messages SemConv format in one pass, in the
+// order they were produced (TS formatOutputContent, 71410a4755): text blocks
+// are not merged, and file, reasoning-file, custom, tool-error and tool
+// approval parts are kept.
+func formatOutputContent(content []types.ContentPart, finishReason string) []semConvOutputMessage {
+	parts := make([]semConvPart, 0, len(content))
 	for _, c := range content {
 		switch p := c.(type) {
 		case types.TextContent:
-			textBuilder.WriteString(p.Text)
-		case types.ReasoningContent:
-			if p.Text != "" {
-				reasoningParts = append(reasoningParts, semConvPart{"type": "reasoning", "content": p.Text})
+			// An empty text without provider metadata is skipped, as in
+			// response messages.
+			if p.Text != "" || len(p.ProviderMetadata) > 0 {
+				parts = append(parts, semConvPart{"type": "text", "content": p.Text})
 			}
+		case types.ReasoningContent:
+			parts = append(parts, semConvPart{"type": "reasoning", "content": p.Text})
+		case types.GeneratedFileContent:
+			parts = append(parts, fileLikeToSemConv(p.MediaType, p.FileData, p.Data, p.URL))
+		case types.ReasoningFileContent:
+			parts = append(parts, fileLikeToSemConv(p.MediaType, p.FileData, p.Data, ""))
+		case types.CustomContent:
+			parts = append(parts, semConvPart{"type": "custom", "kind": p.Kind})
 		case types.ToolCallContent:
-			// TS formatOutputMessages: `id: tc.toolCallId`, as given.
-			toolCallParts = append(toolCallParts, semConvPart{
+			// TS: `id: part.toolCallId`, as given.
+			parts = append(parts, semConvPart{
 				"type":      "tool_call",
 				"id":        p.ToolCallID,
 				"name":      p.ToolName,
 				"arguments": toolCallArgumentsValue(p),
 			})
 		case types.ToolResultContent:
-			toolResultParts = append(toolResultParts, semConvPart{
+			if p.Preliminary {
+				continue
+			}
+			parts = append(parts, semConvPart{
 				"type":     "tool_call_response",
 				"id":       p.ToolCallID,
 				"response": toolResultResponseValue(p),
 			})
-		case types.GeneratedFileContent:
-			fileParts = append(fileParts, generatedFileToSemConv(p))
+		case types.ToolErrorContent:
+			var response interface{} = toolErrorText(p)
+			if p.ProviderExecuted {
+				response = p.Error
+			}
+			parts = append(parts, semConvPart{"type": "tool_call_response", "id": p.ToolCallID, "response": response})
+		case types.ToolApprovalRequestContent:
+			parts = append(parts, toolApprovalRequestToSemConv(p))
+		case types.ToolApprovalResponseContent:
+			parts = append(parts, convertMessagePartToSemConv(p))
+		case types.SourceContent:
+			// Sources are response metadata, not message parts.
+		default:
+			parts = append(parts, semConvPart{"type": c.ContentType()})
 		}
 	}
-
-	partsCap := intsafe.AddCap(len(reasoningParts), 1)
-	partsCap = intsafe.AddCap(partsCap, len(toolCallParts))
-	partsCap = intsafe.AddCap(partsCap, len(toolResultParts))
-	partsCap = intsafe.AddCap(partsCap, len(fileParts))
-	parts := make([]semConvPart, 0, partsCap)
-	parts = append(parts, reasoningParts...)
-	if textBuilder.Len() > 0 {
-		parts = append(parts, semConvPart{"type": "text", "content": textBuilder.String()})
-	}
-	parts = append(parts, toolCallParts...)
-	parts = append(parts, toolResultParts...)
-	parts = append(parts, fileParts...)
-
 	return []semConvOutputMessage{{
 		Role:         "assistant",
 		Parts:        parts,
