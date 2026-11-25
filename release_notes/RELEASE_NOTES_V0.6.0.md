@@ -4,7 +4,7 @@ Release date: set at tag time.
 
 ## Overview
 
-v0.6.0 tracks TypeScript AI SDK parity target **`ai@7.0.170`** (TS `2ebc78b654`; up from
+v0.6.0 tracks TypeScript AI SDK parity target **`ai@7.0.181`** (TS `a457990a33`; up from
 `ai@7.0.127` in v0.5.x). It is built on v0.5.3 and includes every fix
 shipped there.
 
@@ -167,6 +167,7 @@ Also new:
 - **Core API** (review round 92): `providerutils.ZodURLValue`, the zod `z.url()` output of an option value; `telemetry.TelemetryToolCallStartEvent.ArgsText`, the tool call's raw input text; `internal/jsdate` (Go-internal) is the shared `Date.parse` port behind `harnessutil.ParseJSDate`.
 - **Bridges pinned at ai@7.0.170** (TS 2ebc78b654): acp 1.0.121, claude-code 1.0.185, codex 1.0.183, deepagents 1.0.181, github-copilot 1.0.78, grok-build 1.0.120, opencode 1.0.184, cursor 1.0.96 (review round 91).
 - **Streamed array output is parsed incrementally** (TS 91a67c2f56): `StreamText` ArrayOutput and `StreamObject` array mode validate each element once instead of reparsing the whole text per chunk (review round 91).
+- **TS ai@7.0.181 port, wave 1** (TS `2ebc78b654..a457990a33`): Liquid (`pkg/providers/liquid`) and ScaleDown (`pkg/providers/scaledown`) decision providers; Baseten `DecisionModel`, AssemblyAI `assemblyai-stt-3-7` and `assemblyai-tts-1` (`SpeechModel`), HeyGen decision models, Perplexity grounded decisions; `google.MCPServerTool` (Interactions remote MCP servers, header values redacted in telemetry); `gateway` `GatewayAccessPolicyDeniedError` and regenerated model IDs; Gemini 4 Hydrogen / Neon reasoning levels, Google file inspection options and live transcription VAD; OpenAI per-model capability table, Responses `inputTransformations` and registered `additionalTools`; Azure MAI-Image-2.7 with `background`; xAI per-model reasoning table; `GenerateTextOptions.OnWarning` / `StreamTextOptions.OnWarning`, `StoppedBy` on results and end events (`provider.StreamChunk.StoppedBy` declared), steering end reasons and `WithSteerInterrupt`, `DecideOptions.ExperimentalDownload`; the experimental extraction model spec (`provider.ExtractionModel`, `providerutils.ExtractionLanguageModel`, `testutil.MockExtractionModel`); `UIMessageStreamResultOptions.RedactToolErrors`; `mcp.CreateMCPTools`; `SandboxProcessOptions.MaxOutputLength`; `vercel.CreateSessionOptions.TemplateName`; ACP `Settings.WriteProtectedPaths` and `harnessutil.IsSandboxWriteProtectedPath`; `bridge.ChannelOptions.KeepAlive` and `claudecode.Settings.KeepAlive`; `ai.RealtimeConnectionsProvider` / `RealtimeConversationProvider`; `WorkflowAgent.ToolApproval` / `ToolOrder`. Bridges pinned at ai@7.0.181: acp 1.0.133, claude-code 1.0.197, codex 1.0.195, deepagents 1.0.193, github-copilot 1.0.90, grok-build 1.0.132, opencode 1.0.196, cursor 1.0.108.
 - OpenAI Responses: `promptCacheOptions` 12h TTL and prewarm, shell tool
   `timeoutMs`/`maxOutputLength`, `additionalTools` and
   `omitFromRequestTools`. Azure `ToolSearch` and per-deployment model
@@ -372,6 +373,8 @@ search for and ends with a checklist for coding agents. Entries marked
 - **Output and LangGraph round 97 details** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#gen-r97-details)
 - **Tool errors, LangGraph events and object metadata round 98 details** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#gen-r98-details)
 - **Tool-call replay, approvals and LangGraph round 99 details** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#gen-r99-details)
+- **Step warnings include the prompt warnings** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#step-prompt-warnings)
+- **Approval messages, warning text and stream content port details** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#gen-port1-details)
 
 #### Prompts and validation
 
@@ -464,7 +467,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **Resumed approval results carry their model output** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-resumed-output)
 - **WorkflowAgent PrepareStep overrides carry over to later steps** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-preparestep-carryover)
 - **A failed WorkflowAgent Stream run fires OnEnd** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-stream-failed-onend)
-- **WorkflowAgent Stream usage is input + output summed over the steps** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-stream-usage)
+- **WorkflowAgent Stream usage sums the steps like core** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-stream-usage)
 - **The WorkflowAgent Stream root span ends with the run** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-stream-root-span-end)
 - **WorkflowAgent.Stream has no default step limit** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-stream-no-step-limit)
 - **The WorkflowAgent root span is ai.workflowAgent.stream for Generate too** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-root-span)
@@ -502,6 +505,11 @@ search for and ends with a checklist for coding agents. Entries marked
 - **Struct-literal WorkflowAgent stream has no 20-step default** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-literal-stream-steps)
 - **WorkflowAgent stream skips OnStepEnd for a paused step** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-stream-paused-step-end)
 - **WorkflowAgent OnAbort gets full step results** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-onabort-full-steps)
+- **Approval requests of automatically denied tool calls are not signed** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#automatic-denial-unsigned)
+- **Approval replays ignore in-place edits by validators** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#approval-replay-in-place-edits)
+- **WorkflowAgent PrepareStep overrides apply to one step** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-preparestep-one-step)
+- **WorkflowAgent timeouts are validated before the first model call** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-timeout-validation)
+- **WorkflowAgent port details** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-port1-details)
 
 #### UI message streams
 
@@ -542,6 +550,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **UI message stream round 97 details** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#stream-r97-details)
 - **StreamText provider metadata round 98 details** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#stream-r98-details)
 - **External streams and UI message stream round 99 details** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#stream-r99-details)
+- **UI streams carry the model's tool error text** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-tool-error-text)
 
 #### Telemetry and events
 
@@ -593,6 +602,8 @@ search for and ends with a checklist for coding agents. Entries marked
 - **GetBaseAttributes skips credential headers in any case** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#telemetry-base-attributes-credential-headers)
 - **Telemetry tool-call inputs keep the model's key order** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#telemetry-tool-input-key-order)
 - **Speech and transcription end events carry the model's provider metadata** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#audio-end-event-provider-metadata)
+- **gen_ai.output.messages keeps the order the model produced** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#gen-ai-messages-order)
+- **Telemetry port details** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#telemetry-port1-details)
 
 #### Errors
 
@@ -974,6 +985,13 @@ search for and ends with a checklist for coding agents. Entries marked
 - **OpenAI, Azure, xAI and OpenAI-compatible round 99 details** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#provb-r99-details)
 - **Media provider round 99 details** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#provc-r99-details)
 - **Google, Gateway, Groq and Mistral round 99 details** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#provg-r99-details)
+- **Gateway access policy denials have their own error** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#gateway-access-policy-denied)
+- **Google Interactions sends tool results as top-level function results** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#google-interactions-function-result)
+- **Google batches reject a response schema** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#google-batch-response-schema)
+- **OpenAI reasoning and service-tier support follow the TS model table** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#openai-capability-matrix)
+- **AssemblyAI uses assemblyai-stt-3-7** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#assemblyai-stt-3-7)
+- **AssemblyAI SpeechModel returns a model** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#assemblyai-speech-model)
+- **Provider port details** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#providers-port1-details)
 
 #### MCP
 
@@ -999,6 +1017,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **MCP OAuth discovery sends the latest protocol version** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#mcp-oauth-latest-protocol-version)
 - **MCP, Vercel Sandbox and Prodia round 98 details** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#tools-r98-details)
 - **MCP, Vercel Sandbox and tool-area provider round 99 details** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#tools-r99-details)
+- **MCP HTTP transport rejects a failed POST with a JSON-RPC error** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#mcp-failed-post-error)
 
 #### Code mode
 
@@ -1085,6 +1104,12 @@ search for and ends with a checklist for coding agents. Entries marked
 - **Workflow, harness and schema round 97 details** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#carry-r97-details)
 - **Harness, bridge and workflow round 98 details** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#carry-r98-details)
 - **Harness and bridge round 99 details** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#carry-r99-details)
+- **A failing host tool streams as a tool-error part** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#harness-failed-host-tool-error)
+- **A HarnessAgent without telemetry settings reaches registered integrations** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#harness-global-telemetry)
+- **Bridge channels ping every 20 seconds** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#bridge-keepalive)
+- **Harness writes to agent config directories need approval** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#write-protected-paths)
+- **The terminal UI shows the input each approval applies to** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#tui-approval-input)
+- **Harness port details** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#harness-port1-details)
 
 #### Policy
 
@@ -2175,6 +2200,12 @@ Notable ones:
 - **Bedrock SigV4 credential fallbacks**: without credentials in the options or environment, Bedrock reads the shared credentials file and then IMDSv2, as v0.5.2; TS fails (S6) (round 99).
 - **ElevenLabs realtime transcription field types**: a non-string partial text, language code or word text reads as a string; TS passes the value through (S1) (round 99).
 - **TS test replays skipped in round 99**: the Fireworks mock null-body 200 case (S3) (round 99).
+- **Decision model serialization drops the API key**: Liquid, ScaleDown and Baseten decision models restore their key from the environment (S2) (port wave 1).
+- **Gateway BYOK redaction by body shape**: any telemetry request body with `providerOptions.gateway.byok` is redacted (S2) (port wave 1).
+- **DownloadError in telemetry drops the wrapping error** (S2) (port wave 1).
+- **Harness bridge heartbeat settings**: `KeepAlive` is a `time.Duration` (zero = 20 s default, negative = off); informational (port wave 1).
+- **MCP tools from CreateMCPTools are a slice**: informational (port wave 1).
+- **TS test replays skipped in port wave 1**: caller-fetch downloads (Azure, Prodia; S2), random Google batch display names, the fal doubled content-type and `doStatus` without a `submitUrl`, ScaleDown key settings, one Interactions rejects case; informational (port wave 1).
 - **Realtime transcription WebSocket hint**: widened to ElevenLabs, xAI, Vertex Gemini and the AI Gateway (S3) (round 91).
 - **TS test replays skipped in round 91**: the Google Decisions warnings order (Go map order) and the Vertex caller-fetch download tests (DNS protection stays on) (round 91).
 - **TS test replays skipped in round 88**: Replicate cancel timing, a Gladia pre-aborted call, DeepInfra and Google tests with injected functions (round 88).

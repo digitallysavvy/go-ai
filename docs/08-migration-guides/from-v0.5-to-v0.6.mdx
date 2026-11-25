@@ -5,7 +5,7 @@ description: "Migration guide for upgrading Go AI SDK apps from v0.5.x to v0.6.0
 
 # Migrate Go AI SDK v0.5.x to v0.6.0
 
-v0.6.0 catches up with the TypeScript AI SDK `ai@7.0.170`. Read this page if
+v0.6.0 catches up with the TypeScript AI SDK `ai@7.0.181`. Read this page if
 you upgrade an application from any v0.5.x release (v0.5.0 to v0.5.3).
 
 Most v0.5.x code compiles unchanged. A few struct fields changed type, and
@@ -118,7 +118,7 @@ already, you can skip them.
 | `.Result` on `ResponseMessages[0]` after an approval resume | Use `Output` | silent behavior change | Read `Output` | [Resumed approval output](#workflow-resumed-output) |
 | `workflow.LanguageModelCallOptions` hooks that change a value for one step | Overrides carry over | silent behavior change | Reset the value on later steps | [WorkflowAgent PrepareStep](#workflow-preparestep-carryover) |
 | `OnEnd:` / `OnError:` on `WorkflowAgent.Stream` | Failed run fires `OnEnd` after `OnError` | silent behavior change | Check the outcome in `OnEnd` | [WorkflowAgent Stream failures](#workflow-stream-failed-onend) |
-| `OnEnd:` usage or `.Usage()` on `WorkflowAgent.Stream` | Input + output summed over steps; counts always set | silent behavior change | Check for 0, not nil | [WorkflowAgent Stream usage](#workflow-stream-usage) |
+| `OnEnd:` usage or `.Usage()` on `WorkflowAgent.Stream` | Step usages added like core; unreported counts nil; token details kept | silent behavior change | Keep nil checks | [WorkflowAgent Stream usage](#workflow-stream-usage) |
 | `ai.workflowAgent.stream` root span of `Stream` runs | Ends with the run, with usage, errors and aborts | wire/protocol change | Expect the full run duration | [WorkflowAgent Stream root span](#workflow-stream-root-span-end) |
 | `WorkflowAgent.Stream` without `StopWhen` | No default step limit | silent behavior change | Set `StopWhen` | [WorkflowAgent Stream limit](#workflow-stream-no-step-limit) |
 | `ai.workflowAgent.generate` in queries or dashboards | Root span is `ai.workflowAgent.stream` | wire/protocol change | Update queries | [WorkflowAgent root span](#workflow-root-span) |
@@ -831,6 +831,30 @@ already, you can skip them.
 | Google realtime custom `rawType`; Groq empty reason phrase and transcription warnings; Mistral null usage keys and non-object frames; Google replay metadata with `1e400` | Follow TS | silent behavior change | None | [Google, Gateway, Groq and Mistral round 99 details](#provg-r99-details) |
 | Vercel Sandbox responses outside the API schema; MCP final result-schema error text; QuiverAI / MiniMax / Parallel / Topaz large numbers | Follow TS | silent behavior change | Complete sandbox fixtures | [MCP, Vercel Sandbox and tool-area provider round 99 details](#tools-r99-details) |
 | Harness `stream-start` warning keys; bridge inbound frames with null optionals or invalid enums | Follow TS | silent behavior change | None | [Harness and bridge round 99 details](#carry-r99-details) |
+| `Warnings` on `StepResult` / `GenerateTextResult`; StreamText step warnings | Prompt-conversion warnings come first | silent behavior change | Filter by `Type` / `Setting` | [Step warnings include the prompt warnings](#step-prompt-warnings) |
+| `ToolApprovalOptions.Messages` identity; `file-url` warning text; preliminary provider tool results in step content | Follow TS | silent behavior change | None | [Approval messages, warning text and stream content port details](#gen-port1-details) |
+| `ExperimentalToolApprovalSecret` with automatically denied calls | Their approval requests are unsigned; approving one fails | wire/protocol change | None | [Approval requests of automatically denied tool calls are not signed](#automatic-denial-unsigned) |
+| `ValidateInput` / `ExperimentalRefineToolInput` that edit the input map in place | Approval replay rejects the edited input | silent behavior change | Return a new map | [Approval replays ignore in-place edits by validators](#approval-replay-in-place-edits) |
+| `PrepareStep:` on `WorkflowAgent` returning `Model`, `ToolChoice`, `ActiveTools`, settings or `Headers` | Applies to one step; headers merge | silent behavior change | Return the override every step | [WorkflowAgent PrepareStep overrides apply to one step](#workflow-preparestep-one-step) |
+| `Timeout:` on `WorkflowAgent` with negative or huge values | InvalidArgumentError / TimeoutError before the first model call | silent behavior change | Use 0..2147483647 ms | [WorkflowAgent timeouts are validated before the first model call](#workflow-timeout-validation) |
+| `WorkflowAgent` default step limit; resumed refined approvals; `OnInputAvailable` | Follow TS | silent behavior change | None | [WorkflowAgent port details](#workflow-port1-details) |
+| `ToUIMessageStream`, `ToUIMessageStreamResponse`, `ToUIMessageChunk` without `OnError` | Tool errors carry the model's error text, not `An error occurred.` | wire/protocol change | Set `RedactToolErrors: &true` | [UI streams carry the model's tool error text](#ui-tool-error-text) |
+| `gen_ai.output.messages` / `gen_ai.input.messages` span attributes | Content order kept; more part types | silent behavior change | Parse by part type | [gen_ai.output.messages keeps the order the model produced](#gen-ai-messages-order) |
+| Open chat span on a repeated call start; `DownloadError` in telemetry; gateway `byok` and Google MCP headers in telemetry | Follow TS | silent behavior change | None | [Telemetry port details](#telemetry-port1-details) |
+| `GatewayInternalServerError` for gateway 403 responses | `GatewayAccessPolicyDeniedError` for `access_policy_denied` | silent behavior change | Match with `errors.As` | [Gateway access policy denials have their own error](#gateway-access-policy-denied) |
+| Interactions request bodies with tool results; per-file `processing` / `resolution` options | Top-level `function_result`; invalid options fail | wire/protocol change | Fix the options | [Google Interactions sends tool results as top-level function results](#google-interactions-function-result) |
+| Google `StartBatch` with a response schema | UnsupportedFunctionalityError unless `structuredOutputs` is false | silent behavior change | Disable `structuredOutputs` | [Google batches reject a response schema](#google-batch-response-schema) |
+| OpenAI `Reasoning` / service tier on o-series, `*-pro`, `*-chat-latest`, unlisted `gpt-4*` | Mapped per the TS model table, with warnings | silent behavior change | None | [OpenAI reasoning and service-tier support follow the TS model table](#openai-capability-matrix) |
+| `assemblyai.ModelBest`, `ModelUniversal3Pro`, `TranscriptionModel("")` | Deprecated; empty ID selects `assemblyai-stt-3-7` | silent behavior change | Use `ModelAssemblyAISTT37` | [AssemblyAI uses assemblyai-stt-3-7](#assemblyai-stt-3-7) |
+| `assemblyai` `SpeechModel` expecting `NoSuchModelError` | Returns `assemblyai-tts-1` | silent behavior change | Check the model ID | [AssemblyAI SpeechModel returns a model](#assemblyai-speech-model) |
+| Bedrock `block_binding`; fable thinking; xAI `xhigh`, `x_search` / `mcp`; Together `json_schema`; AssemblyAI `AudioBase64`; Google `videoMetadata` errors; gateway IDs | Follow TS | wire/protocol change | None | [Provider port details](#providers-port1-details) |
+| `mcp.HTTPTransport.Send` / `Receive` with a failed POST | Error from `Send` with HTTP status, URL and body | silent behavior change | Handle the `Send` error | [MCP HTTP transport rejects a failed POST with a JSON-RPC error](#mcp-failed-post-error) |
+| HarnessAgent failed host tool results | `tool-error` part, not `tool-result` | silent behavior change | Handle `tool-error` | [A failing host tool streams as a tool-error part](#harness-failed-host-tool-error) |
+| HarnessAgent with `Telemetry` nil and registered integrations | Integrations observe the turn | silent behavior change | Disable per call | [A HarnessAgent without telemetry settings reaches registered integrations](#harness-global-telemetry) |
+| Bridge WebSocket channels; `claudecode.Settings.KeepAlive` | 20 s ping; reconnect after two misses | wire/protocol change | None | [Bridge channels ping every 20 seconds](#bridge-keepalive) |
+| Harness `allow-edits` writes to `.cursor`, `.grok`, `.github`, `.agents/skills`, `.fx` | Need approval | silent behavior change | Approve or use `allow-all` | [Harness writes to agent config directories need approval](#write-protected-paths) |
+| `pkg/tui` approval prompts and tool sections | Input always shown; Cf escaped; no markdown | silent behavior change | Update snapshots | [The terminal UI shows the input each approval applies to](#tui-approval-input) |
+| HarnessAgent tool-context validation failure text | "Tool context validation failed." | silent behavior change | Read `OnToolExecutionEnd` | [Harness port details](#harness-port1-details) |
 
 ## Compile-time changes {#compile-time-changes}
 
@@ -2213,6 +2237,42 @@ res, err := ai.StreamText(ctx, ai.StreamTextOptions{
 - **What changed:** In v0.5, `ElementStream` and `ElementStreamWithOutput` read the result's shared `Stream()` cursor. In v0.6 each element stream reads its own cursor, which replays the stream from the start, as each TS `elementStream` access is its own tee of the stream. Element streams over a harness result now follow the turn's first text block, as TS `HarnessStreamTextResult.elementStream` does, and are not reset at step boundaries (review round 93).
 - **Am I affected?** You are affected if you call `ElementStream` or `ElementStreamWithOutput` and also read `result.Stream()`, `FullStream()` or `Chunks()` on the same result, or if you build element streams from `harness.Agent` stream results.
 - **What to do:** No action is needed unless you relied on the element stream consuming chunks from the shared `Stream()` cursor. Each reader now sees every chunk.
+- **Kind:** silent behavior change
+
+
+### Step warnings include the prompt warnings {#step-prompt-warnings}
+
+- **What changed:** `StepResult.Warnings`, `GenerateTextResult.Warnings` and
+  the `StreamText` step warnings (also the `start-step` part) now start with
+  the warnings of the step's prompt conversion (deprecated `image` parts,
+  legacy tool-result content types), followed by the model's warnings. A
+  step's prompt warnings are logged as one batch without provider or model,
+  repeated on every step. TS d834c5bb35. The new per-call
+  `GenerateTextOptions.OnWarning` / `StreamTextOptions.OnWarning` replaces the
+  global logger for the call (nil keeps it).
+- **Am I affected?** Code that reads `step.Warnings` / `result.Warnings` and
+  expects model warnings only, or counts logged warning batches.
+- **What to do:** No action unless you count warnings; filter by `Type` or
+  `Setting` if you need the model's warnings only.
+- **Kind:** silent behavior change
+
+
+### Approval messages, warning text and stream content port details {#gen-port1-details}
+
+- **What changed:** The `Messages` that `ToolApproval` functions and tools
+  receive is a copy per step, shared by every tool call of that step and never
+  the slice `PrepareStep` or `PrepareCall` returned (TS 0b8cbfadb8; the OPA
+  policy tells responses apart by it). The deprecation warning of a
+  `file-url` tool-result part without a media type no longer contains the URL
+  (it can be a signed link, and warnings reach step results and telemetry; TS
+  d834c5bb35). Preliminary results of provider-executed tools stay out of the
+  step content and the streamed results (TS 6815153d64).
+  `NoObjectGeneratedError` reports the error name `AI_NoObjectGeneratedError`,
+  so a tool error built from it shows the TS name (port wave 1).
+- **Am I affected?** Approval functions that compare or keep the `Messages`
+  slice, code that parses the `file-url` warning text, or code that reads
+  preliminary provider results from step content.
+- **What to do:** No action.
 - **Kind:** silent behavior change
 
 ## Prompts and validation {#prompts-and-validation}
@@ -3719,21 +3779,20 @@ These entries apply to the `Execute`, `ExecuteWithMessages` and
   before you treat `OnEnd` as success.
 - **Kind:** silent behavior change
 
-#### WorkflowAgent Stream usage is input + output summed over the steps {#workflow-stream-usage}
+#### WorkflowAgent Stream usage sums the steps like core {#workflow-stream-usage}
 
 - **What changed:** in `WorkflowAgent.Stream` / `StreamWithOptions`, the
   `OnEnd` `Usage` and `TotalUsage`, the result's `Usage()` / `TotalUsage()`
-  and the telemetry end usage are TS stream mode's `aggregateUsage`: input and
-  output tokens summed over the steps with a missing count as 0, and
-  `TotalTokens` = input + output. The three counts are always set (v0.5: nil
-  when no step reported them), and a provider's own total is not used. A
-  transformed `finish` part does not change the total. Token details are still
-  summed. `Generate` is unchanged.
+  and the telemetry end usage add the step usages the way core does (TS
+  `addLanguageModelUsage`, 1876747927): each count is the sum over the steps
+  that reported it and stays nil when no step did (a run with no steps
+  reports all-nil usage), `TotalTokens` is the sum of the step totals, and
+  token details are kept. A provider's own total is not replaced by input +
+  output. A transformed `finish` part does not change the total. `Generate`
+  is unchanged.
 - **Am I affected?** `OnEnd:` on `WorkflowAgent.Stream` or `.Usage()` on a
-  `WorkflowStreamResult` that checks `InputTokens == nil` or reads
-  `TotalTokens`.
-- **What to do:** no action unless you rely on nil counts; check for 0
-  instead.
+  `WorkflowStreamResult` that reads the counts or `TotalTokens`.
+- **What to do:** no action; keep the nil checks.
 - **Kind:** silent behavior change
 
 #### The WorkflowAgent Stream root span ends with the run {#workflow-stream-root-span-end}
@@ -4155,6 +4214,80 @@ These entries apply to the `Execute`, `ExecuteWithMessages` and
 - **What changed:** When a `WorkflowAgent` run was cancelled after one or more steps finished, `OnAbort` (and the abort telemetry) received those steps without content, sources, provider metadata, request, response, performance data, steering messages or contexts. v0.6 passes the full `types.StepResult` of each finished step, as TS `onAbort({steps})` receives the finished `StepResult`s (review round 96).
 - **Am I affected?** `OnAbort` callbacks of a `workflow.WorkflowAgent` that read the steps.
 - **What to do:** No action; the fields are now filled.
+- **Kind:** silent behavior change
+
+
+### Approval requests of automatically denied tool calls are not signed {#automatic-denial-unsigned}
+
+- **What changed:** With `ExperimentalToolApprovalSecret`, an approval request
+  for a tool call that the approval policy denied automatically (status
+  `denied`) carries no `Signature`. An approved response to such a request
+  fails with `InvalidToolApprovalSignatureError` ("missing signature"), so a
+  client cannot turn an automatic denial into an execution. Requests for
+  `user-approval` and `approved` calls are signed as before. TS 63593a7f6a
+  (security).
+- **Am I affected?** Clients that replay approval requests of automatically
+  denied calls, or tests that expect every approval request to be signed.
+- **What to do:** No action. Signatures issued earlier stay valid until you
+  rotate the secret.
+- **Kind:** wire/protocol change
+
+
+### Approval replays ignore in-place edits by validators {#approval-replay-in-place-edits}
+
+- **What changed:** When a signed approval is replayed, the tool input is
+  revalidated on a snapshot: a `ValidateInput` or
+  `ExperimentalRefineToolInput` function that edits its input map in place no
+  longer changes what was approved, and such a replay is reported as an
+  invalid approval ("Approved tool input does not match the validated schema
+  output."). TS 3c09e0011c (security).
+- **Am I affected?** Validators or refiners that mutate the input map instead
+  of returning a new one.
+- **What to do:** Return the refined input from `ExperimentalRefineToolInput`
+  instead of editing the map you receive.
+- **Kind:** silent behavior change
+
+
+### WorkflowAgent PrepareStep overrides apply to one step {#workflow-preparestep-one-step}
+
+- **What changed:** In `WorkflowAgent`, the model, tool choice, active tools,
+  generation settings and headers a `PrepareStep` returns apply to that step
+  only, as in core; headers it returns merge over the call's headers. Tool
+  `Execute`, approval functions and tool callbacks get the core conversation:
+  they no longer see the system message or the assistant message of the
+  current step. `WorkflowAgent` also takes `ToolApproval` and `ToolOrder`, and
+  server tool fields survive a resume. TS ec23d2d15c, f6809e38ef, 2559173ea7,
+  b9f6c82f0e, 7655f47e91, b3588dc10b, c591e12cfe.
+- **Am I affected?** `WorkflowAgent` `PrepareStep` functions that return an
+  override once and expect it to stick, or tools that read the system message
+  from `ToolExecutionOptions.Messages`.
+- **What to do:** Return the override from every `PrepareStep` call that
+  needs it.
+- **Kind:** silent behavior change
+
+
+### WorkflowAgent timeouts are validated before the first model call {#workflow-timeout-validation}
+
+- **What changed:** A negative `PerStep`, `FirstChunk` or `PerChunk` timeout,
+  or any value above 2147483647 ms, returns an `InvalidArgumentError` before
+  the first model call; a `Total` of zero or less ends the run as timed out
+  (`TimeoutError`) before any model call. TS f1de9cb61f.
+- **Am I affected?** `WorkflowAgent` callers that pass out-of-range timeouts.
+- **What to do:** Pass timeouts between 0 and 2147483647 ms.
+- **Kind:** silent behavior change
+
+
+### WorkflowAgent port details {#workflow-port1-details}
+
+- **What changed:** `WorkflowAgent.Generate` with the default step limit logs
+  the "default stopWhen condition" warning when the limit stops the loop
+  (TS f43ee39373). An approved tool call resumed with
+  `ExperimentalRefineToolInput` runs with the refined input; it was rejected
+  as not matching (TS 9307549d51). `Tool.OnInputAvailable` fires for a tool
+  call the provider sends without streaming its input (TS 453d8804a7).
+- **Am I affected?** Code that counts warnings, or relied on the rejection of
+  refined approved calls.
+- **What to do:** No action.
 - **Kind:** silent behavior change
 
 ## UI message streams {#ui-message-streams}
@@ -4808,6 +4941,31 @@ These entries apply to the `Execute`, `ExecuteWithMessages` and
 - **What to do:** No action.
 - **Kind:** silent behavior change
 
+
+### UI streams carry the model's tool error text {#ui-tool-error-text}
+
+- **What changed:** `tool-output-error` and `tool-input-error` chunks of
+  tools that are not provider-executed carried `OnError`'s result, `An error
+  occurred.` by default. They now carry the error text the model received
+  (for example `Error: weather backend timeout`). Stream `error` chunks are
+  unchanged. `UIMessageStreamResultOptions.RedactToolErrors *bool` restores
+  the replacement: nil means true when `OnError` is set (so existing `OnError`
+  callers see no change) and false otherwise. Affects
+  `StreamTextResult.ToUIMessageStream`, `ToUIMessageStreamResponse`,
+  `PipeUIMessageStreamToResponse`, `ai.ToUIMessageStream`,
+  `ai.ToUIMessageChunk` and the agent UI helpers. TS 1a94af38c7 (#24980).
+- **Am I affected?** UI streams built without `OnError` that send tool
+  errors to browsers, where the error text can hold internal details.
+- **What to do:** Set `RedactToolErrors`, or return safe errors from the
+  tool's `Execute`:
+
+  ```go
+  redact := true
+  opts := ai.UIMessageStreamResultOptions{RedactToolErrors: &redact}
+  _ = opts
+  ```
+- **Kind:** wire/protocol change
+
 ## Telemetry and events {#telemetry-and-events}
 
 The [telemetry recording change](#telemetry-record-pointers) is listed under
@@ -5423,6 +5581,37 @@ compile-time changes.
 - **What changed:** The telemetry end event (`TelemetryFinishEvent.ProviderMetadata`) of `GenerateSpeech`, `Transcribe` and `ExperimentalStreamTranscribe` held the result's `{}` default when the model reported no provider metadata, so the OTel integrations recorded `ai.response.providerMetadata: "{}"`. v0.6 passes the model's own value (nil when it reported none), and no attribute is recorded then, as TS passes `result.providerMetadata`; the results still default to `{}` (review round 93).
 - **Am I affected?** Custom telemetry integrations that read `TelemetryFinishEvent.ProviderMetadata` of these operations, or span queries on `ai.response.providerMetadata`.
 - **What to do:** Treat a nil map as no metadata.
+- **Kind:** silent behavior change
+
+
+### gen_ai.output.messages keeps the order the model produced {#gen-ai-messages-order}
+
+- **What changed:** The OpenTelemetry `gen_ai.output.messages` attribute keeps
+  the order the model produced content in, over every step on the root span
+  (`TelemetryFinishEvent.Content`). Text blocks are no longer merged into one
+  part, empty reasoning is emitted, and file, reasoning-file, custom,
+  tool-error and tool approval parts are included. `gen_ai.input.messages`
+  also maps reasoning-file, assistant file / custom / approval-request and
+  tool approval-response parts (they were reported by type only). TS
+  71410a4755.
+- **Am I affected?** Anything that parses these span attributes.
+- **What to do:** Parse by part type and expect several text parts.
+- **Kind:** silent behavior change
+
+
+### Telemetry port details {#telemetry-port1-details}
+
+- **What changed:** A `LanguageModelCallStart` for a call ID whose chat span
+  is still open ends that span with an error status (a retried or
+  interrupted call; TS e4039889ba). An error that wraps a `DownloadError`
+  reaches telemetry as a redacted `DownloadError` (URL `[redacted]`, message
+  "Failed to download a file."; the wrapper is dropped, `errors.As` still
+  works; TS 15bfd6b262). The values of a Google `mcp_server` tool's headers
+  and of `providerOptions.gateway.byok` in request bodies are `[redacted]` in
+  telemetry copies (TS b0fccbda62, 83026e8e0f, security).
+- **Am I affected?** Telemetry subscribers that read these spans, errors or
+  request bodies.
+- **What to do:** No action.
 - **Kind:** silent behavior change
 
 ## Errors {#errors}
@@ -9307,6 +9496,126 @@ model, _ = google.New(google.Config{}).DecisionModel(google.ModelGeminiDecision1
 - **What to do:** No action.
 - **Kind:** silent behavior change
 
+
+### Gateway access policy denials have their own error {#gateway-access-policy-denied}
+
+- **What changed:** An AI Gateway HTTP 403 with type `access_policy_denied`
+  returns `*errors.GatewayAccessPolicyDeniedError` (type
+  `access_policy_denied`, not retryable, with `PolicyIDs`, `RemovedModels`
+  and `RemovedProviders`); it was a `*GatewayInternalServerError`. TS
+  b8c01eb49d.
+- **Am I affected?** Code that matches gateway errors by type.
+- **What to do:** Match with `errors.As`:
+
+  ```go
+  import gatewayerrors "github.com/digitallysavvy/go-ai/pkg/providers/gateway/errors"
+
+  var denied *gatewayerrors.GatewayAccessPolicyDeniedError
+  if errors.As(err, &denied) {
+      fmt.Println(denied.PolicyIDs)
+  }
+  ```
+- **Kind:** silent behavior change
+
+
+### Google Interactions sends tool results as top-level function results {#google-interactions-function-result}
+
+- **What changed:** Google Interactions requests send tool results as
+  top-level `function_result` inputs (documents nest inside them) instead of
+  inside a `user_input` turn. Invalid per-file `processing` or `resolution`
+  options fail with a validation error instead of a warning, and the call's
+  `mediaResolution` also applies to documents. TS afb4e69924.
+- **Am I affected?** Proxies or tests that inspect Interactions request
+  bodies, or calls with invalid per-file options.
+- **What to do:** Fix invalid per-file options; no other action.
+- **Kind:** wire/protocol change
+
+
+### Google batches reject a response schema {#google-batch-response-schema}
+
+- **What changed:** A Google batch text request with a response JSON schema
+  fails with `UnsupportedFunctionalityError` unless the `structuredOutputs`
+  provider option is false (JSON mode without a schema is still sent). TS
+  3bea041f28, fe1b382b8e.
+- **Am I affected?** `StartBatch` on Google with an `Output` schema.
+- **What to do:** Set `structuredOutputs: false` to send JSON mode without
+  the schema, or use a non-batch call.
+- **Kind:** silent behavior change
+
+
+### OpenAI reasoning and service-tier support follow the TS model table {#openai-capability-matrix}
+
+- **What changed:** OpenAI model capabilities are declared per model ID, as
+  the TS table. o3, o4-mini, o3-mini and the `*-pro`, codex and
+  `*-chat-latest` models map reasoning `none` / `minimal` / `xhigh` to an
+  effort they support, with a compatibility warning. `*-chat-latest`,
+  `*-pro` and unlisted `gpt-5.99` no longer accept effort `none` for
+  temperature / topP / logprobs; unlisted IDs starting with `gpt-4` no longer
+  allow service tier `priority`; unlisted `gpt-99-nano` allows it. TS
+  c3ee424a70, ed981f8be6.
+- **Am I affected?** OpenAI calls that set reasoning or service tier on
+  those model IDs.
+- **What to do:** Read the compatibility warnings; no other action.
+- **Kind:** silent behavior change
+
+
+### AssemblyAI uses assemblyai-stt-3-7 {#assemblyai-stt-3-7}
+
+- **What changed:** `assemblyai-stt-3-7` is the flagship transcription model,
+  and `TranscriptionModel("")` selects it (it was `best`).
+  `assemblyai.ModelBest` and `assemblyai.ModelUniversal3Pro` are deprecated
+  (they compile and are sent as given). `best`, `slam-1` and
+  `universal-3-pro` go through `speech_models` like any other ID, with no
+  special handling or warning, and AssemblyAI rejects the ones it no longer
+  accepts. `universal-3-5-pro` returns a deprecation warning; the
+  `universal-2` warning text changed. TS e6ad3867b8.
+- **Am I affected?** `assemblyai.ModelBest`, `ModelUniversal3Pro`,
+  `TranscriptionModel("best")` or `TranscriptionModel("")`.
+- **What to do:**
+
+  ```go
+  // Before: provider.TranscriptionModel(assemblyai.ModelBest)
+  model, err := provider.TranscriptionModel(assemblyai.ModelAssemblyAISTT37)
+  _, _ = model, err
+  ```
+- **Kind:** silent behavior change
+
+
+### AssemblyAI SpeechModel returns a model {#assemblyai-speech-model}
+
+- **What changed:** `assemblyai.Provider.SpeechModel` returns the
+  `assemblyai-tts-1` text-to-speech model; it returned `NoSuchModelError`.
+  TS e6ad3867b8.
+- **Am I affected?** Code that relied on the error to detect a missing
+  capability.
+- **What to do:** Check the model ID instead of the error.
+- **Kind:** silent behavior change
+
+
+### Provider port details {#providers-port1-details}
+
+- **What changed:** Bedrock Anthropic sends
+  `thinking.block_binding.prefix_mismatch_behavior` as given (no longer
+  renamed to `mismatch_behavior`; TS bd4d721190). `claude-fable-5`, `-5-1`
+  and `-5-2` reject thinking disabled with effort xhigh or max like the other
+  always-adaptive models (TS ad5f2ad965). xAI maps portable reasoning
+  `xhigh` / `max` to `xhigh` for the listed models that accept it (grok-4.7,
+  4.5, 4.3, grok-4-fast, grok-4-1-fast and others; unlisted IDs unchanged;
+  TS 565db6d2c8); its `x_search` / `mcp` tool parameters carry
+  `additionalProperties: {}` and a streamed `mcp_call` is emitted at
+  `output_item.done` (TS 61ce23efab, 6f56c29ff6). Together sends
+  `json_schema` for the 8 listed models (TS 146396263d). AssemblyAI decodes
+  `AudioBase64` before the upload, and malformed base64 fails before any
+  request (TS dd89e17ab2). Google file-part option errors for videoMetadata
+  carry the path `videoMetadata.fps` (TS afb4e69924);
+  `gemini-nano-banana-2.1` accepts no mixed function / provider tools and no
+  JSON response tool (TS catalog). 17 gateway model IDs left the suggested
+  lists; their constants still compile as deprecated (TS gateway catalog).
+- **Am I affected?** Proxies and tests that inspect these request bodies,
+  or code that matches these error texts.
+- **What to do:** No action.
+- **Kind:** wire/protocol change
+
 ## MCP {#mcp}
 
 ### MCP OAuth rejects unbound pre-registered confidential credentials {#mcp-oauth-issuer}
@@ -9489,6 +9798,22 @@ model, _ = google.New(google.Config{}).DecisionModel(google.ModelGeminiDecision1
 - **What changed:** The Vercel Sandbox client validates every API response, command record and log line against the @vercel/sandbox schemas: a response outside the API contract fails with `Response JSON is not valid: <ZodError>` (an APIError carrying the session) instead of reading missing fields as zero values, and an empty stdin response is invalid. MCP modern-era `tools/call`, `prompts/get` and `resources/read` report a final result-schema failure as `Failed to process server response` (TS's request loop) instead of `Failed to parse server response`. A QuiverAI error `status` beyond the safe-integer range fails the error schema (status text, no data), and QuiverAI SVG integers decode as int64. MiniMax image token counts, Parallel decision usage and the Topaz derived `frameCount` are JS numbers or clamped instead of wrapping (review round 99).
 - **Am I affected?** Vercel Sandbox mocks or proxies that send incomplete responses; code that matches MCP error texts; QuiverAI, MiniMax, Parallel and Topaz edge values.
 - **What to do:** No action unless your sandbox mock sends incomplete responses; complete the fixtures.
+- **Kind:** silent behavior change
+
+
+### MCP HTTP transport rejects a failed POST with a JSON-RPC error {#mcp-failed-post-error}
+
+- **What changed:** A non-2xx reply to a request whose body is a JSON-RPC
+  error used to be queued as the request's response.
+  `HTTPTransport.Send` now returns an `*mcp.MCPClientError` with `Code`,
+  `Data`, `StatusCode`, `URL`, `ResponseBody` and `Cause` (an `*mcp.MCPError`,
+  which now implements `error`). Client callers see the same code, message
+  and data plus the HTTP fields; code that read the response through
+  `Transport.Receive` no longer gets it. An SSE response that ends before the
+  matching response rejects the pending request. TS d55f3cfc45, 95b78c93e7.
+- **Am I affected?** Custom code on `mcp.HTTPTransport` that reads JSON-RPC
+  error responses through `Receive`.
+- **What to do:** Handle the error returned by `Send`.
 - **Kind:** silent behavior change
 
 ## Code mode {#code-mode}
@@ -10179,6 +10504,87 @@ model, _ = google.New(google.Config{}).DecisionModel(google.ModelGeminiDecision1
 - **What changed:** A harness `stream-start` warning keeps only the keys of the warning variant that matches, as the zod union (`{"type":"other","message":"m","details":5}` no longer fails the frame, and stray `details` / `setting` / `message` keys no longer reach `types.Warning`). `bridge.DecodeInbound` applies the inbound zod schemas: optional keys sent as `null`, invalid enums (`permissionMode`, `debug.level`, `builtinToolFiltering.mode`, `responseFormat.type`), a non-string tool `name`, `null` string-array elements and non-finite schema values fail; a text `responseFormat` ignores keys zod strips (review round 99).
 - **Am I affected?** Harness adapters or bridge clients that send the frames above.
 - **What to do:** No action.
+- **Kind:** silent behavior change
+
+
+### A failing host tool streams as a tool-error part {#harness-failed-host-tool-error}
+
+- **What changed:** A HarnessAgent host tool that fails streams as a
+  `tool-error` part (`ToolResult.Error` set, not provider-executed) instead of
+  a `tool-result` with an error flag. The error text is the submitted output
+  (`{"error":"Error: ..."}`), and the echo's error flag follows the result the
+  host submitted. TS 7fffff9f02.
+- **Am I affected?** Code that reads failed host tool results from the
+  harness stream as `tool-result` parts.
+- **What to do:** Handle `tool-error` parts.
+- **Kind:** silent behavior change
+
+
+### A HarnessAgent without telemetry settings reaches registered integrations {#harness-global-telemetry}
+
+- **What changed:** A HarnessAgent turn with no `Telemetry` settings is
+  observed by globally registered telemetry integrations, and their
+  `ExecuteTool` wrappers run, as TS. It fired nothing. TS 679b5b55e8.
+- **Am I affected?** Programs that register global integrations and expect
+  harness turns to stay out of them.
+- **What to do:** Set `AgentSettings.Telemetry` with `IsEnabled: telemetry.Bool(false)` to keep a harness out of them.
+- **Kind:** silent behavior change
+
+
+### Bridge channels ping every 20 seconds {#bridge-keepalive}
+
+- **What changed:** Bridge-backed harness channels send a WebSocket ping
+  every 20 s and reconnect after two unanswered pings; any inbound bytes
+  count as an answer. `claudecode.Settings.KeepAlive` sets the interval (zero
+  is the 20 s default, negative disables). After a failed attach, the bridge
+  recorded in `bridge-meta.json` and its children get SIGTERM, then SIGKILL,
+  before the respawn. TS 04a8f3837e, 3334b4d34b, d84bf245a0 (security).
+- **Am I affected?** Proxies that drop WebSocket pings, or custom bridges.
+- **What to do:** No action; set `KeepAlive` to a negative value to disable
+  the heartbeat.
+- **Kind:** wire/protocol change
+
+
+### Harness writes to agent config directories need approval {#write-protected-paths}
+
+- **What changed:** Under `allow-reads` and `allow-edits`, writes to paths
+  that hold agent configuration or skills need host approval: ACP
+  `Settings.WriteProtectedPaths`, with defaults for Cursor (`.cursor`), Grok
+  Build (`.grok`) and GitHub Copilot (`.github/mcp.json` and others), libfx
+  (`.agents/skills`, `.fx`), and the bridge-backed adapters (OpenCode,
+  DeepAgents, Codex, Claude Code) through the resynced bridges. TS
+  6f9d73fd19, 71bef690f9, 7acc5a3f92 (security).
+- **Am I affected?** Harness sessions under `allow-edits` that write those
+  directories without prompting.
+- **What to do:** Expect approval prompts for those writes, or use
+  `allow-all`.
+- **Kind:** silent behavior change
+
+
+### The terminal UI shows the input each approval applies to {#tui-approval-input}
+
+- **What changed:** In `pkg/tui`, a tool call waiting for approval is always
+  shown with its input (in every tools mode), headed `approve? y/n`; `y` is
+  ignored until the end of a tall input was scrolled into view (`n` still
+  denies). Tool, approval and error sections show their text without
+  markdown, Unicode format characters (category Cf) show as `\u{202e}` in
+  those sections and in tool titles, and section headers are laid out by
+  terminal columns. TS 2d2fc466c4, 25972d7857 (security).
+- **Am I affected?** Tests that snapshot the terminal output.
+- **What to do:** Update the snapshots.
+- **Kind:** silent behavior change
+
+
+### Harness port details {#harness-port1-details}
+
+- **What changed:** A failed tool-context validation streams the tool-error
+  text "Tool context validation failed." instead of the validation error,
+  which included the context value; `OnToolExecutionEnd` keeps the detailed
+  error (TS 1a94af38c7, security). The Claude Code bridge records the session
+  ID from the init event (TS 31120c50b0).
+- **Am I affected?** Code that parses the tool-error text of context
+  validation failures.
+- **What to do:** Read the detail in `OnToolExecutionEnd`.
 - **Kind:** silent behavior change
 
 ## Policy {#policy}

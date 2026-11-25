@@ -5,7 +5,7 @@ description: Behavior that is intentionally different in Go, and features that o
 
 # Known differences from the TypeScript AI SDK
 
-The Go AI SDK tracks the TypeScript AI SDK (`ai@7.0.170` as of v0.6.0) closely, but a
+The Go AI SDK tracks the TypeScript AI SDK (`ai@7.0.181` as of v0.6.0) closely, but a
 few areas are intentionally different, either because the Go runtime has no
 equivalent primitive or because a decision was made to diverge. This page is
 the reference for both.
@@ -887,6 +887,24 @@ ElevenLabs realtime transcription reads a partial transcript's `text`, a timesta
 Fireworks "should handle empty response body": the TS mock serves `new Response(null)` with status 200, a null body that real `fetch` gives only to a 204 / 205 (an empty 200 body is an empty stream, so TS returns an empty image, as Go does). The null-body case is covered at 204 by `TestR89provbEmptyImageBodyKeepsHeaders` and `TestR99provbSyncImageEmptyBody` (review round 99).
 
 Reason: S3 (the recording cannot carry the mock's null body on a 200).
+
+## Decision model serialization drops the API key
+The Liquid, ScaleDown and Baseten decision models serialize their base URL and static headers but no API key: the restored model reads `LIQUID_API_KEY`, `SCALEDOWN_API_KEY` or `BASETEN_API_KEY`. TS resolves the provider headers, `Authorization` / `x-api-key` included, into the workflow payload (S2: Go keeps credentials out of serialized state, as for TypeSafe AI and Perplexity; port wave 1).
+
+## Gateway BYOK redaction by body shape
+Telemetry copies redact every value under `providerOptions.gateway.byok` (and each batch request's `options.providerOptions.gateway.byok`) in any request body that has that key. TS redacts only bodies the Gateway provider annotates; Go request bodies carry no annotation, so the rule applies by shape, as the existing OpenAI tool rule does (S2; TS 83026e8e0f; port wave 1).
+
+## DownloadError in telemetry drops the wrapping error
+An error that wraps a `DownloadError` reaches telemetry as the redacted `DownloadError` alone (URL `[redacted]`, "Failed to download a file."). TS rebuilds the `DownloadError` inside `cause` / `errors` / `lastError` and keeps the wrapper; Go drops the wrapper because its text can repeat the URL (S2: credential-bearing URLs stay out of telemetry; `errors.As` on the caller's error is unaffected; TS 15bfd6b262; port wave 1).
+
+## Harness bridge heartbeat settings
+`claudecode.Settings.KeepAlive` and `bridge.ChannelOptions.KeepAlive` are `time.Duration` values where zero is the 20 s default and a negative value disables the heartbeat; TS `keepAliveMs: 0` disables it. Pong frames are not observed separately (`golang.org/x/net/websocket` consumes them), so any inbound bytes reset the unanswered-ping count, which TS also does since 3334b4d34b. Informational: Go API shape, same heartbeat behavior (port wave 1).
+
+## MCP tools from CreateMCPTools are a slice
+`mcp.CreateMCPTools` returns `[]types.Tool` in definition order, the type `GenerateTextOptions.Tools` takes; TS returns a record keyed by tool name. Informational: Go tool sets are ordered slices everywhere (port wave 1).
+
+## TS test replays skipped in port wave 1
+The wire recordings were refreshed at `a457990a33`. Skipped, each with its reason in the suite: the Azure "keeps credentials off ... image downloads" tests and the Prodia img2vid public image download (TS downloads through the caller `fetch`; Go keeps the DNS-pinned transport, see "DNS protection on by default", S2); two Google batch tests whose display name comes from a random TS `generateId`; five fal speech tests where the TS test server doubles the JSON `content-type` header; the fal `doStatus` tests, whose operation has no `submitUrl`, so Go validates the replay server's `127.0.0.1` as an untrusted URL (TS validates the recorded host); two ScaleDown tests that set the API key as a setting or in the environment; and one Google Interactions case file "rejects" test the case runner does not replay. Informational: test-harness limits, each covered by a Go unit test named in the skip (port wave 1).
 
 ## Features that are TypeScript-only (not ported)
 
