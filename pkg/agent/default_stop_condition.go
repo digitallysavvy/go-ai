@@ -7,6 +7,23 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
+// LogDefaultStopConditionWarning logs the warning for the default StopWhen
+// condition: the tool loop stopped because it reached IsStepCount(stepCount).
+// It is the part of createDefaultStopCondition that the WorkflowAgent shares
+// (TS logDefaultStopConditionWarning, exported from ai/internal, f43ee39373).
+func LogDefaultStopConditionWarning(stepCount int, provider, modelID string) {
+	ai.LogWarnings(ai.LogWarningsOptions{
+		Provider: provider,
+		Model:    modelID,
+		Warnings: []types.Warning{{
+			Type: "other",
+			Message: fmt.Sprintf("The tool loop stopped because it reached the default stopWhen condition, IsStepCount(%d). ", stepCount) +
+				"To allow more steps, set StopWhen to IsStepCount(...) with a higher limit or provide a custom stop condition. " +
+				"Learn more: https://ai-sdk.dev/docs/agents/loop-control",
+		}},
+	})
+}
+
 // createDefaultStopCondition returns the agent's default step-limit stop
 // condition. It behaves like ai.IsStepCount(stepCount) and additionally logs a
 // warning when the limit stops a tool loop that could otherwise continue.
@@ -21,16 +38,7 @@ func createDefaultStopCondition(stepCount int) ai.StopCondition {
 			return ""
 		}
 		model := state.Steps[len(state.Steps)-1].Model
-		ai.LogWarnings(ai.LogWarningsOptions{
-			Provider: model.Provider,
-			Model:    model.ModelID,
-			Warnings: []types.Warning{{
-				Type: "other",
-				Message: fmt.Sprintf("The tool loop stopped because it reached the default stopWhen condition, IsStepCount(%d). ", stepCount) +
-					"To allow more steps, set StopWhen to IsStepCount(...) with a higher limit or provide a custom stop condition. " +
-					"Learn more: https://ai-sdk.dev/docs/agents/loop-control",
-			}},
-		})
+		LogDefaultStopConditionWarning(stepCount, model.Provider, model.ModelID)
 		return reason
 	}
 }

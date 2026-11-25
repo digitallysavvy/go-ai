@@ -153,3 +153,21 @@ func TestPortgenGenerateAgentApprovalMessagesSlicePerStep(t *testing.T) {
 		t.Fatalf("identity: 0=1 %v, 2=3 %v, 0=2 %v", same(collected[0], collected[1]), same(collected[2], collected[3]), same(collected[0], collected[2]))
 	}
 }
+
+// TS f43ee39373: logDefaultStopConditionWarning is shared with the
+// WorkflowAgent, so it is exported and logs exactly the default step-limit
+// warning for the given provider and model.
+func TestPortgenLogDefaultStopConditionWarning(t *testing.T) {
+	logged := captureWarnings(t)
+	LogDefaultStopConditionWarning(20, "mock-provider", "mock-model")
+	got := logged()
+	if len(got) != 1 || got[0].Provider != "mock-provider" || got[0].Model != "mock-model" || len(got[0].Warnings) != 1 {
+		t.Fatalf("logged = %+v", got)
+	}
+	want := "The tool loop stopped because it reached the default stopWhen condition, IsStepCount(20). " +
+		"To allow more steps, set StopWhen to IsStepCount(...) with a higher limit or provide a custom stop condition. " +
+		"Learn more: https://ai-sdk.dev/docs/agents/loop-control"
+	if w := got[0].Warnings[0]; w.Type != "other" || w.Message != want {
+		t.Fatalf("warning = %+v", w)
+	}
+}
