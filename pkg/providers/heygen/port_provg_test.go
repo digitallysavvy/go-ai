@@ -195,7 +195,7 @@ func TestPortprovgHeyGenDecisionSendsFilesAsOrderedAssets(t *testing.T) {
 	}
 	// Key order on the wire (TS body literal): model, state, assets, questions.
 	order := []int{strings.Index(h.raw, `"model"`), strings.Index(h.raw, `"state"`), strings.Index(h.raw, `"assets"`), strings.Index(h.raw, `"questions"`)}
-	if !(order[0] == 1 && order[0] < order[1] && order[1] < order[2] && order[2] < order[3]) {
+	if order[0] != 1 || order[0] >= order[1] || order[1] >= order[2] || order[2] >= order[3] {
 		t.Fatalf("key order = %v in %s", order, h.raw)
 	}
 }
