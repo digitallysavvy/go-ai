@@ -64,7 +64,7 @@ func portcarryCharged(in DefaultOPAInput, skipDenied bool) float64 {
 			continue
 		}
 		for _, p := range m.Content {
-			if c, ok := p.(types.ToolCallContent); ok && c.ToolName == "charge" && !(skipDenied && denied[c.ToolCallID]) {
+			if c, ok := p.(types.ToolCallContent); ok && c.ToolName == "charge" && (!skipDenied || !denied[c.ToolCallID]) {
 				total += c.Arguments["amount"].(float64)
 			}
 		}
