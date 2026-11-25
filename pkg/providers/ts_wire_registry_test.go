@@ -169,7 +169,9 @@ var wireSuites = map[string]tsfixture.WireSuite{
 	}, Provider: simple(func(b, k string, h map[string]string) provider.Provider {
 		return deepinfra.New(deepinfra.Config{APIKey: k, BaseURL: b, Headers: h})
 	})},
-	"fireworks": {LanguageResults: true, GoAdds: "/inference/v1", GoPrefix: func(string) string { return "/inference" }, Provider: simple(func(b, k string, h map[string]string) provider.Provider {
+	"fireworks": {LanguageResults: true, Skip: map[string]string{
+		"FireworksImageModel > doGenerate > should handle empty response body": "the TS mock serves new Response(null) with status 200, a null body real fetch gives only a 204 / 205 (an empty 200 body is an empty stream, so TS returns an empty image); the null-body case is covered at 204 by TestR89provbEmptyImageBodyKeepsHeaders and TestR99provbSyncImageEmptyBody (review round 99)",
+	}, GoAdds: "/inference/v1", GoPrefix: func(string) string { return "/inference" }, Provider: simple(func(b, k string, h map[string]string) provider.Provider {
 		return fireworks.New(fireworks.Config{APIKey: k, BaseURL: b, Headers: h, ImagePollIntervalMs: 1, ImagePollTimeoutMs: 5000})
 	})},
 	"luma": {Provider: simple(func(b, k string, h map[string]string) provider.Provider {
