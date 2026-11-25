@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"reflect"
 	"strings"
@@ -1079,4 +1080,84 @@ func port2genJSON(t *testing.T, v interface{}) string {
 		t.Fatal(err)
 	}
 	return string(b)
+}
+
+// TS input validation 'rejects state with array holes' (extract.test.ts 369):
+// Go slices have no holes; the analog is a zero-valued part, which is not a
+// text, file or json part.
+func TestPort2genExtractRejectsStateWithZeroValuedParts(t *testing.T) {
+	model := port2genExtractModel(nil)
+	_, err := port2genExtract(t, ExtractOptions{
+		Model:  model,
+		State:  []provider.DecisionStatePart{{}, provider.DecisionTextPart("b")},
+		Fields: port2genExtractFields(),
+	})
+	var target *providererrors.InvalidArgumentError
+	if !errors.As(err, &target) || len(model.ExtractCalls) != 0 {
+		t.Fatalf("err = %v, calls = %d", err, len(model.ExtractCalls))
+	}
+}
+
+// Go twins of ai/src/error/extraction-refusal-error.test.ts (14, 28, 39, 47)
+// and extraction-unsupported-field-type-error.test.ts (15, 29, 38) through
+// the errors ExperimentalExtract returns.
+func TestPort2genExtractionRefusalErrorFromExtract(t *testing.T) {
+	answers := port2genExtractAnswers()
+	answers["total"] = provider.ExtractionAnswer{Type: "refusal"}
+	model := port2genExtractModelAnswers(answers)
+	model.ProviderName, model.ModelName = "mock-provider", "mock-model-id"
+	// extraction-refusal-error.test.ts 14: identifies the refused fields and model.
+	_, err := port2genExtract(t, ExtractOptions{Model: model, State: port2genExtractState, Fields: port2genExtractFields()})
+	var target *providererrors.ExtractionRefusalError
+	if !errors.As(err, &target) || !reflect.DeepEqual(target.FieldIDs, []string{"total"}) || target.Provider != "mock-provider" || target.ModelID != "mock-model-id" {
+		t.Fatalf("err = %#v", err)
+	}
+	if want := `Extraction model "mock-model-id" from provider "mock-provider" refused field "total".`; err.Error() != want {
+		t.Fatalf("message = %q", err.Error())
+	}
+	// extraction-refusal-error.test.ts 28: lists every refused field.
+	answers["dueDate"] = provider.ExtractionAnswer{Type: "refusal"}
+	_, err = port2genExtract(t, ExtractOptions{
+		Model: port2genExtractModelAnswers(answers), State: port2genExtractState, Fields: port2genExtractFields(),
+		FieldOrder: []string{"total", "dueDate"},
+	})
+	if want := `Extraction model "mock-model-id" from provider "mock-provider" refused fields "total", "dueDate".`; err == nil || !strings.Contains(err.Error(), `refused fields "total", "dueDate".`) {
+		t.Fatalf("message = %v, want %q", err, want)
+	}
+	// extraction-refusal-error.test.ts 39: the marker is recognized through wrapping.
+	if !providererrors.IsExtractionRefusalError(fmt.Errorf("wrapped: %w", err)) {
+		t.Fatal("wrapped refusal error not recognized")
+	}
+	// extraction-refusal-error.test.ts 47: values without the marker.
+	for _, v := range []error{nil, errors.New("Unrelated error"), &providererrors.ExtractionUnsupportedFieldTypeError{}} {
+		if providererrors.IsExtractionRefusalError(v) {
+			t.Fatalf("%v recognized as a refusal error", v)
+		}
+	}
+}
+
+func TestPort2genExtractionUnsupportedFieldTypeErrorFromExtract(t *testing.T) {
+	model := port2genExtractModel(nil)
+	model.ProviderName, model.ModelName = "mock-provider", "mock-model-id"
+	model.FieldTypes = []string{"text"}
+	fields := map[string]provider.ExtractionField{"total": {Type: "number"}}
+	// extraction-unsupported-field-type-error.test.ts 15
+	_, err := port2genExtract(t, ExtractOptions{Model: model, State: port2genExtractState, Fields: fields})
+	var target *providererrors.ExtractionUnsupportedFieldTypeError
+	if !errors.As(err, &target) || target.FieldID != "total" || target.FieldType != "number" || target.Provider != "mock-provider" || target.ModelID != "mock-model-id" {
+		t.Fatalf("err = %#v", err)
+	}
+	if want := `Field "total" has type "number", which is not supported by provider "mock-provider" and model "mock-model-id".`; err.Error() != want {
+		t.Fatalf("message = %q", err.Error())
+	}
+	// extraction-unsupported-field-type-error.test.ts 29: recognized through wrapping.
+	if !providererrors.IsExtractionUnsupportedFieldTypeError(fmt.Errorf("wrapped: %w", err)) {
+		t.Fatal("wrapped error not recognized")
+	}
+	// extraction-unsupported-field-type-error.test.ts 38: values without the marker.
+	for _, v := range []error{nil, errors.New("Unrelated error"), &providererrors.ExtractionRefusalError{}} {
+		if providererrors.IsExtractionUnsupportedFieldTypeError(v) {
+			t.Fatalf("%v recognized", v)
+		}
+	}
 }

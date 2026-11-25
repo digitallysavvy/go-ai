@@ -15,13 +15,15 @@ var defaultProviderState struct {
 
 // SetDefaultProvider sets the provider that resolves string model IDs when a
 // call names no provider of its own: ExperimentalDecide's string Model (when
-// DecideOptions has no DecisionProvider or Provider) and the batch functions
-// (when their Provider is nil). It is the Go form of TS
+// DecideOptions has no DecisionProvider or Provider), ExperimentalExtract's
+// string Model (when ExtractOptions has no ExtractionProvider) and the batch
+// functions (when their Provider is nil). It is the Go form of TS
 // `globalThis.AI_SDK_DEFAULT_PROVIDER`. nil (the default) restores the AI
 // Gateway.
 //
 // For decisions the provider must implement provider.DecisionModelProvider
-// or the deprecated provider.EvaluationModelProvider; for batches a
+// or the deprecated provider.EvaluationModelProvider; for extractions a
+// provider.ExtractionModelProvider; for batches a
 // provider.BatchV4 or provider.BatchProvider. Otherwise those calls fail, as
 // in TS. Safe for concurrent use.
 func SetDefaultProvider(p interface{}) {

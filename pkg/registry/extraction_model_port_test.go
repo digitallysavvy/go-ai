@@ -1,7 +1,9 @@
 package registry
 
 import (
+	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -224,4 +226,51 @@ func TestPort2genResolveExtractionModelReportsMissingModelFromDefaultProvider(t 
 	t.Cleanup(func() { ai.SetDefaultProvider(nil) })
 	_, err := ai.ResolveExtractionModel("missing")
 	port2genNoSuchModel(t, err, "missing", "extractionModel")
+}
+
+// extraction-model.test.ts 287: extracts with string and registry model
+// resolution and forwards options in one call.
+func TestPort2genExtractWithStringAndRegistryModelResolution(t *testing.T) {
+	for _, resolution := range []string{"string", "registry"} {
+		var got provider.ExtractionCallOptions
+		calls := 0
+		in, out := 10, 2
+		model := &testutil.MockExtractionModel{DoExtractFunc: func(_ context.Context, opts provider.ExtractionCallOptions) (*provider.ExtractionResult, error) {
+			calls++
+			got = opts
+			return &provider.ExtractionResult{
+				Answers: map[string]provider.ExtractionAnswer{"total": {Type: "number", Value: 12.0}},
+				Usage:   &provider.ExtractionUsage{InputTokens: &in, OutputTokens: &out},
+			}, nil
+		}}
+		custom := NewCustomProvider(CustomProviderOptions{ExtractionModels: map[string]interface{}{"invoice": model}})
+		ai.SetDefaultProvider(custom)
+		var resolved interface{} = "invoice"
+		if resolution == "registry" {
+			r := NewRegistry()
+			r.RegisterProvider("provider", custom)
+			m, err := r.ResolveExtractionModel("provider:invoice")
+			if err != nil {
+				t.Fatal(err)
+			}
+			resolved = m
+		}
+		fields := map[string]provider.ExtractionField{"total": {Type: "number"}}
+		result, err := ai.ExperimentalExtract(context.Background(), ai.ExtractOptions{
+			Model: resolved, State: "Total: 12", Fields: fields,
+			Headers:         map[string]string{"x-test": "header"},
+			ProviderOptions: map[string]interface{}{"test": map[string]interface{}{"flag": true}},
+		})
+		ai.SetDefaultProvider(nil)
+		if err != nil {
+			t.Fatalf("%s: %v", resolution, err)
+		}
+		if result.Answers["total"].Value != 12.0 || *result.Usage.TotalTokens != 12 {
+			t.Fatalf("%s: result = %+v", resolution, result)
+		}
+		if calls != 1 || !reflect.DeepEqual(got.Fields, fields) || got.Headers["x-test"] != "header" ||
+			!reflect.DeepEqual(got.ProviderOptions, map[string]interface{}{"test": map[string]interface{}{"flag": true}}) {
+			t.Fatalf("%s: calls = %d, options = %+v", resolution, calls, got)
+		}
+	}
 }
