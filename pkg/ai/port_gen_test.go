@@ -504,3 +504,159 @@ func TestPortgenDecideRejectsRemoteFileStateWithoutDownloadHook(t *testing.T) {
 		t.Fatalf("inline data: %v", err)
 	}
 }
+
+// Ports steering.test.ts 'should report why the run ended for messages sent
+// after a run that ended with %s' (TS 28d17e6fec).
+func TestPortgenSteeringReportsWhyTheRunEnded(t *testing.T) {
+	for _, reason := range []SteeringNotDeliveredReason{SteeringFinished, SteeringStopCondition, SteeringWaitingForToolResults, SteeringAborted, SteeringError} {
+		t.Run(string(reason), func(t *testing.T) {
+			steering := NewSteering()
+			run, err := startSteeringRun(steering)
+			if err != nil {
+				t.Fatal(err)
+			}
+			run.end(reason)
+			if o := waitOutcome(t, steering.Steer("steered after the run")); o.Delivered || o.Reason != reason {
+				t.Fatalf("steer outcome = %+v, want %s", o, reason)
+			}
+			if o := waitOutcome(t, steering.Queue("queued after the run")); o.Delivered || o.Reason != reason {
+				t.Fatalf("queue outcome = %+v, want %s", o, reason)
+			}
+		})
+	}
+}
+
+func portgenResolveSteer(t *testing.T, message types.Message, sent types.Message) SteeringOutcome {
+	t.Helper()
+	steering := NewSteering()
+	handle, err := steering.SteerMessage(message)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := startSteeringRun(steering)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.takeMessages()
+	run.resolveTakenMessages(0, []types.Message{sent})
+	return waitOutcome(t, handle)
+}
+
+// Ports steering.test.ts 'should deliver messages whose parts are sent with
+// provider options' and 'should not deliver messages whose text prepareStep
+// changed'. The two TS string-versus-text-part cases collapse in Go, where
+// message content is always a list of parts.
+func TestPortgenSteeringMatchesSentMessagesIgnoringPartProviderOptions(t *testing.T) {
+	user := func(parts ...types.ContentPart) types.Message {
+		return types.Message{Role: types.RoleUser, Content: parts}
+	}
+	hello := user(types.TextContent{Text: "hello"})
+	withOptions := user(types.TextContent{Text: "hello", ProviderOptions: map[string]interface{}{"anthropic": map[string]interface{}{"cacheControl": map[string]interface{}{"type": "ephemeral"}}}})
+	if o := portgenResolveSteer(t, hello, withOptions); !o.Delivered || o.StepNumber != 0 {
+		t.Errorf("sent with provider options: %+v", o)
+	}
+	if o := portgenResolveSteer(t, withOptions, hello); !o.Delivered {
+		t.Errorf("steered with provider options, sent without: %+v", o)
+	}
+	if o := portgenResolveSteer(t, hello, user(types.TextContent{Text: "[12:00] hello"})); o.Delivered || o.Reason != SteeringRemovedByPrepareStep {
+		t.Errorf("changed text: %+v", o)
+	}
+	if o := portgenResolveSteer(t, hello, types.Message{Role: types.RoleAssistant, Content: hello.Content}); o.Delivered {
+		t.Errorf("assistant message with the same content counted as sent: %+v", o)
+	}
+}
+
+// Ports generate-text-steering.test.ts 'should deliver messages that
+// prepareStep turns into text parts with provider options' and the late
+// steer outcomes after an abort and after a failure.
+func TestPortgenGenerateTextSteeringWithPrepareStepProviderOptions(t *testing.T) {
+	steering := NewSteering()
+	var handle *SteerHandle
+	sm := &steerModel{next: func(call int) *types.GenerateResult {
+		if call == 1 {
+			return toolCallResult()
+		}
+		return &types.GenerateResult{Text: "It is sunny in Paris, Texas.", FinishReason: types.FinishReasonStop}
+	}}
+	result, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:  sm.model(),
+		Prompt: "What is the weather in Paris?",
+		Tools: []types.Tool{{
+			Name: "tool1",
+			Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+				handle = steering.Steer("I meant Paris, Texas.")
+				return "sunny", nil
+			},
+		}},
+		StopWhen:             []StopCondition{IsStepCount(5)},
+		ExperimentalSteering: steering,
+		PrepareStep: func(_ context.Context, step PrepareStepOptions) PrepareStepOptions {
+			mapped := make([]types.Message, len(step.Messages))
+			for i, m := range step.Messages {
+				if m.Role == types.RoleUser {
+					parts := make([]types.ContentPart, len(m.Content))
+					for j, p := range m.Content {
+						if tc, ok := p.(types.TextContent); ok {
+							tc.ProviderOptions = map[string]interface{}{"anthropic": map[string]interface{}{"cacheControl": map[string]interface{}{"type": "ephemeral"}}}
+							p = tc
+						}
+						parts[j] = p
+					}
+					m.Content = parts
+				}
+				mapped[i] = m
+			}
+			step.Messages = mapped
+			return step
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o := waitOutcome(t, handle); !o.Delivered || o.StepNumber != 1 {
+		t.Fatalf("outcome = %+v", o)
+	}
+	if len(result.Steps[1].ExperimentalSteeringMessages) != 1 {
+		t.Fatalf("step 1 steering messages = %+v", result.Steps[1].ExperimentalSteeringMessages)
+	}
+	if got := strings.Join(sm.prompts[1], "|"); got != "What is the weather in Paris?|I meant Paris, Texas." {
+		t.Fatalf("second prompt users = %q", got)
+	}
+}
+
+func TestPortgenGenerateTextSteeringAfterFailureAndAbort(t *testing.T) {
+	t.Run("failure", func(t *testing.T) {
+		steering := NewSteering()
+		sm := &steerModel{next: func(int) *types.GenerateResult { return nil }}
+		model := sm.model()
+		model.DoGenerateFunc = func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return nil, errors.New("boom")
+		}
+		if _, err := GenerateText(context.Background(), GenerateTextOptions{Model: model, Prompt: "q", ExperimentalSteering: steering, MaxRetries: intPtr(0)}); err == nil {
+			t.Fatal("expected an error")
+		}
+		if o := waitOutcome(t, steering.Steer("after the failure")); o.Delivered || o.Reason != SteeringError {
+			t.Fatalf("outcome = %+v, want error", o)
+		}
+	})
+	t.Run("abort", func(t *testing.T) {
+		steering := NewSteering()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		sm := &steerModel{next: func(int) *types.GenerateResult { return nil }}
+		model := sm.model()
+		model.DoGenerateFunc = func(ctx context.Context, _ *provider.GenerateOptions) (*types.GenerateResult, error) {
+			cancel()
+			return nil, ctx.Err()
+		}
+		if _, err := GenerateText(ctx, GenerateTextOptions{Model: model, Prompt: "q", ExperimentalSteering: steering, MaxRetries: intPtr(0)}); err == nil {
+			t.Fatal("expected an error")
+		}
+		if o := waitOutcome(t, steering.Steer("after the abort")); o.Delivered || o.Reason != SteeringAborted {
+			t.Fatalf("steer outcome = %+v, want aborted", o)
+		}
+		if o := waitOutcome(t, steering.Queue("queued after the abort")); o.Delivered || o.Reason != SteeringAborted {
+			t.Fatalf("queue outcome = %+v, want aborted", o)
+		}
+	})
+}

@@ -175,8 +175,9 @@ func TestSteering_StopConditionEndsRun(t *testing.T) {
 	if o := waitOutcome(t, handle); o.Delivered || o.Reason != SteeringStopCondition {
 		t.Fatalf("outcome = %+v", o)
 	}
-	// after the run ended a steer resolves as finished right away
-	if o := waitOutcome(t, steering.Steer("late")); o.Delivered || o.Reason != SteeringFinished {
+	// after the run ended a steer resolves right away with the reason the run
+	// ended (TS 28d17e6fec)
+	if o := waitOutcome(t, steering.Steer("late")); o.Delivered || o.Reason != SteeringStopCondition {
 		t.Fatalf("late outcome = %+v", o)
 	}
 }

@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -124,17 +125,20 @@ const (
 // Steering sends user messages to a running generation. It can be used for
 // one generation only. Create it with NewSteering.
 type Steering struct {
-	mu       sync.Mutex
-	state    steeringState
-	pending  []pendingSteer
-	queued   []pendingSteer
-	taken    []pendingSteer
-	outcomes map[string]*SteerHandle
+	mu    sync.Mutex
+	state steeringState
+	// endReason is why the run ended (TS 28d17e6fec): a message sent after
+	// the run reports it as its not-delivered reason.
+	endReason SteeringNotDeliveredReason
+	pending   []pendingSteer
+	queued    []pendingSteer
+	taken     []pendingSteer
+	outcomes  map[string]*SteerHandle
 }
 
 // NewSteering creates a Steering (TS experimental_createSteering). Experimental.
 func NewSteering() *Steering {
-	return &Steering{outcomes: map[string]*SteerHandle{}}
+	return &Steering{outcomes: map[string]*SteerHandle{}, endReason: SteeringFinished}
 }
 
 // Steer adds a user message with the given text to the run at the next step
@@ -193,7 +197,11 @@ func (s *Steering) add(message types.Message, queued bool, opts []SteerOption) (
 	h := &SteerHandle{done: make(chan struct{})}
 	s.outcomes[id] = h
 	if s.state == steeringEnded {
-		h.resolve(SteeringOutcome{ID: id, Message: message, Reason: SteeringFinished})
+		reason := s.endReason
+		if reason == "" {
+			reason = SteeringFinished
+		}
+		h.resolve(SteeringOutcome{ID: id, Message: message, Reason: reason})
 		return h, nil
 	}
 	p := pendingSteer{id: id, message: message, handle: h}
@@ -340,6 +348,7 @@ func (r *steeringRun) end(reason SteeringNotDeliveredReason) {
 	notDelivered := append(append(append([]pendingSteer(nil), r.s.taken...), r.s.pending...), r.s.queued...)
 	r.s.taken, r.s.pending, r.s.queued = nil, nil, nil
 	r.s.state = steeringEnded
+	r.s.endReason = reason
 	r.s.mu.Unlock()
 	for _, p := range notDelivered {
 		p.handle.resolve(SteeringOutcome{ID: p.id, Message: p.message, Reason: reason})
@@ -347,19 +356,43 @@ func (r *steeringRun) end(reason SteeringNotDeliveredReason) {
 }
 
 // steerIsSent reports whether message is part of sentMessages. PrepareStep can
-// map messages to new values (for example to add provider options), so a
-// message also counts as sent when a user message has the same content.
+// map messages to new values, for example to add provider options to parts,
+// so a message also counts as sent when a user message has the same content
+// parts, ignoring the provider options of the parts (TS 28d17e6fec).
 func steerIsSent(message types.Message, sentMessages []types.Message) bool {
-	content, _ := jsonstr.Marshal(message.Content)
+	content := steerNormalizedContent(message.Content)
 	for _, sent := range sentMessages {
 		if sent.Role != types.RoleUser {
 			continue
 		}
-		if sentContent, _ := jsonstr.Marshal(sent.Content); string(sentContent) == string(content) {
+		if steerNormalizedContent(sent.Content) == content {
 			return true
 		}
 	}
 	return false
+}
+
+// steerNormalizedContent is the JSON of the content parts without their
+// providerOptions (TS normalizeContent). Go content is always a list of
+// parts, so TS's text-string form needs no conversion.
+func steerNormalizedContent(parts []types.ContentPart) string {
+	normalized := make([]interface{}, 0, len(parts))
+	for _, part := range parts {
+		raw, err := jsonstr.Marshal(part)
+		if err != nil {
+			normalized = append(normalized, string(raw))
+			continue
+		}
+		var object map[string]interface{}
+		if err := json.Unmarshal(raw, &object); err != nil || object == nil {
+			normalized = append(normalized, json.RawMessage(raw))
+			continue
+		}
+		delete(object, "providerOptions")
+		normalized = append(normalized, object)
+	}
+	out, _ := jsonstr.Marshal(normalized)
+	return string(out)
 }
 
 // steeringEndReasonFor returns the reason a run ended because of err.
