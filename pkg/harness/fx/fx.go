@@ -158,6 +158,10 @@ func BuildConfig(settings Settings) acp.Settings {
 		},
 		Executable: "fx",
 		Args:       []string{"acp"},
+		// fx configuration and skills run code or change the agent's behavior
+		// in later sessions (TS FX_WRITE_PROTECTED_PATHS, 71bef690f9). The ACP
+		// bridge always protects .agents/skills.
+		WriteProtectedPaths: []string{".fx"},
 		ModelMapping: acp.ModelMapping{
 			Type: acp.ModelMappingSessionConfigOption,
 			Path: "model",
