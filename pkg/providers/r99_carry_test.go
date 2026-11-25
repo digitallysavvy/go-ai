@@ -131,23 +131,18 @@ func TestR99carryNullBodySuccessfulResponse(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				// cr-r99-carry-to-integrator.md: the Bedrock raw stream and
-				// the Perplexity status code; the integrator drops these skips
-				// when it applies them.
-				skipStream := name == "bedrock (raw)"
-				skipGenerate := name == "perplexity"
 				stream, err := m.DoStream(context.Background(), opts)
 				if stream != nil {
 					_ = stream.Close()
 				}
 				var pe *providererrors.ProviderError
-				if !skipStream && (!errors.As(err, &pe) || pe.Message != providererrors.FailedToProcessSuccessfulResponseMessage ||
+				if !errors.As(err, &pe) || pe.Message != providererrors.FailedToProcessSuccessfulResponseMessage ||
 					pe.StatusCode != status || !providererrors.IsEmptyResponseBodyError(err) || pe.IsRetryable() ||
-					pe.ResponseHeader("x-request-id") != "r1") {
+					pe.ResponseHeader("x-request-id") != "r1" {
 					t.Fatalf("DoStream err = %v (%+v), want the APICallError Failed to process successful response", err, pe)
 				}
 				_, err = m.DoGenerate(context.Background(), opts)
-				if !skipGenerate && (!errors.As(err, &pe) || pe.Message != providererrors.InvalidJSONResponseMessage || pe.StatusCode != status) {
+				if !errors.As(err, &pe) || pe.Message != providererrors.InvalidJSONResponseMessage || pe.StatusCode != status {
 					t.Fatalf("DoGenerate err = %v, want the APICallError Invalid JSON response", err)
 				}
 			})

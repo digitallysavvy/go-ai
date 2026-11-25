@@ -1428,6 +1428,14 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 		resp.Body.Close() //nolint:errcheck
 		return nil, bedrockAPIErrorText(resp.StatusCode, fileutil.ResponseStatusText(resp), respBody, providerutils.ExtractHeaders(resp.Header))
 	}
+	// fetch gives a 204 / 205 a null body: TS
+	// amazon-bedrock-event-stream-response-handler.ts:19 throws
+	// EmptyResponseBodyError, which postToApi wraps in "Failed to process
+	// successful response".
+	if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusResetContent {
+		resp.Body.Close() //nolint:errcheck
+		return nil, internalhttp.SuccessfulResponseFailure(resp, &providererrors.EmptyResponseBodyError{})
+	}
 
 	stream := &bedrockConverseStream{
 		decoder:              eventstream.NewDecoder(resp.Body),

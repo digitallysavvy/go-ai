@@ -257,7 +257,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	if err := validatePerplexityAgentResponse(resp.Body); err != nil {
 		return nil, &providererrors.ProviderError{
 			Provider:        "perplexity",
-			StatusCode:      200,
+			StatusCode:      resp.StatusCode, // TS APICallError statusCode: response.status
 			Message:         "Invalid JSON response",
 			Cause:           err,
 			ResponseHeaders: responseHeaders,
@@ -269,7 +269,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	if err := jsonexact.Unmarshal(resp.Body, &response); err != nil {
 		return nil, &providererrors.ProviderError{
 			Provider:        "perplexity",
-			StatusCode:      200,
+			StatusCode:      resp.StatusCode, // TS APICallError statusCode: response.status
 			Message:         "Invalid JSON response",
 			Cause:           err,
 			ResponseHeaders: responseHeaders,
