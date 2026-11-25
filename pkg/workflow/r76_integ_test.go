@@ -193,10 +193,10 @@ func r76integRoles(msgs []types.Message) string {
 }
 
 // TS workflow-agent.test.ts "tool execution with messages": a tool's execute
-// gets the iterator's conversation prompt (system instructions first, then
-// the step's assistant message), and onToolExecutionStart gets it without the
-// trailing assistant message (getToolCallbackMessages). The second round sees
-// the first round's tool message. Both modes.
+// and onToolExecutionStart get the conversation like core does, without the
+// system prompt and without the assistant message that holds the call
+// (getToolCallbackMessages, TS c591e12cfe). The second round sees the first
+// round's tool message. Both modes.
 func TestR76Integ_ToolMessagesAreConversationPrompt(t *testing.T) {
 	for _, mode := range []string{"stream", "generate"} {
 		t.Run(mode, func(t *testing.T) {
@@ -241,8 +241,8 @@ func TestR76Integ_ToolMessagesAreConversationPrompt(t *testing.T) {
 				t.Fatal(err)
 			}
 			r76carryRun(t, a, mode)
-			wantExec := []string{"system user assistant[text,tool-call]", "system user assistant[text,tool-call] tool assistant[text,tool-call]"}
-			wantStart := []string{"system user", "system user assistant[text,tool-call] tool"}
+			wantExec := []string{"user", "user assistant[text,tool-call] tool"}
+			wantStart := []string{"user", "user assistant[text,tool-call] tool"}
 			mu.Lock()
 			defer mu.Unlock()
 			if !reflect.DeepEqual(execs, wantExec) {

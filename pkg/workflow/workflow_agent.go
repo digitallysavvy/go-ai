@@ -93,25 +93,29 @@ type LanguageModelCallOptions struct {
 	Messages              []types.Message
 	Tools                 []types.Tool
 	ToolChoice            types.ToolChoice
-	CallOptions           interface{}
-	Temperature           *float64
-	MaxTokens             *int
-	TopP                  *float64
-	TopK                  *int
-	FrequencyPenalty      *float64
-	PresencePenalty       *float64
-	StopSequences         []string
-	Seed                  *int
-	Headers               map[string]string
-	Reasoning             *types.ReasoningLevel
-	SendReasoning         *bool
-	ProviderOptions       map[string]interface{}
-	RuntimeContext        interface{}
-	ToolsContext          map[string]interface{}
-	ExperimentalSandbox   interface{}
-	PreviousSteps         []types.StepResult
-	AccumulatedUsage      types.Usage
-	CustomData            interface{}
+	// ToolOrder is the order in which tools are sent to the provider. A nil
+	// value keeps the current order; a PrepareStep result applies to that
+	// step only.
+	ToolOrder           []string
+	CallOptions         interface{}
+	Temperature         *float64
+	MaxTokens           *int
+	TopP                *float64
+	TopK                *int
+	FrequencyPenalty    *float64
+	PresencePenalty     *float64
+	StopSequences       []string
+	Seed                *int
+	Headers             map[string]string
+	Reasoning           *types.ReasoningLevel
+	SendReasoning       *bool
+	ProviderOptions     map[string]interface{}
+	RuntimeContext      interface{}
+	ToolsContext        map[string]interface{}
+	ExperimentalSandbox interface{}
+	PreviousSteps       []types.StepResult
+	AccumulatedUsage    types.Usage
+	CustomData          interface{}
 
 	// StopWhen, ActiveTools and ExperimentalDownload mirror TS prepareCall's
 	// per-call stopWhen/activeTools/download settings parity (d56638a): a
@@ -225,6 +229,22 @@ type WorkflowAgent struct {
 	// verifies resumed approvals before approved tools execute.
 	ExperimentalToolApprovalSecret []byte
 
+	// ToolApproval configures tool approval for every call: a
+	// types.GenericToolApprovalFunc for all tool calls, or a map from tool name
+	// to a status, a per-tool function or a result. It takes precedence over
+	// a tool's own approval setting, as in ToolLoopAgent. A user-approval
+	// decision pauses the run with an approval request, approved runs the tool
+	// in the same step and denied sends the model an execution-denied result.
+	// A call's ToolApproval replaces the agent's. Mirrors TS WorkflowAgent
+	// `toolApproval` (2559173ea7).
+	ToolApproval types.ToolApprovalConfig
+
+	// ToolOrder is the default order in which tools are sent to the provider.
+	// It can be partial: tools it does not list follow the listed ones. A
+	// call's ToolOrder replaces it. Mirrors TS WorkflowAgent `toolOrder`
+	// (b9f6c82f0e).
+	ToolOrder []string
+
 	// MaxRetries controls transient provider call retries for each model
 	// call, forwarded to agent.AgentConfig.MaxRetries. Defaults to 2 when
 	// nil, matching TS WorkflowAgent's `mergedGenerationSettings.maxRetries
@@ -260,6 +280,10 @@ type WorkflowGenerateOptions struct {
 	Headers          map[string]string
 	Reasoning        *types.ReasoningLevel
 	ProviderOptions  map[string]interface{}
+
+	// ToolApproval and ToolOrder replace the agent's values for this call.
+	ToolApproval types.ToolApprovalConfig
+	ToolOrder    []string
 
 	Prompt                      string
 	Messages                    []types.Message
@@ -338,6 +362,10 @@ type WorkflowStreamOptions struct {
 	Headers          map[string]string
 	Reasoning        *types.ReasoningLevel
 	ProviderOptions  map[string]interface{}
+
+	// ToolApproval and ToolOrder replace the agent's values for this call.
+	ToolApproval types.ToolApprovalConfig
+	ToolOrder    []string
 
 	Prompt                string
 	Messages              []types.Message
@@ -775,6 +803,179 @@ func workflowToolDeclaresApproval(tool *types.Tool) bool {
 	}
 }
 
+// workflowToolCallbackMessages is TS getToolCallbackMessages: the conversation
+// that tools, approval policies and tool callbacks receive. Like generateText
+// and streamText it contains neither the system prompt nor the assistant
+// message with the tool call being handled (TS c591e12cfe, b3588dc10b), so a
+// call of the current response that has not run cannot count as history. The
+// trailing assistant message is dropped only when it holds the call, so a
+// list that core already trimmed passes through unchanged.
+func workflowToolCallbackMessages(messages []types.Message, toolCallID string) []types.Message {
+	if len(messages) == 0 {
+		return messages
+	}
+	end := len(messages)
+	if last := messages[end-1]; last.Role == types.RoleAssistant && workflowMessageHoldsCall(last, toolCallID) {
+		end--
+	}
+	out := make([]types.Message, 0, end)
+	for _, m := range messages[:end] {
+		if m.Role != types.RoleSystem {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+func workflowMessageHoldsCall(m types.Message, toolCallID string) bool {
+	for _, tc := range m.ToolCalls {
+		if tc.ID == toolCallID {
+			return true
+		}
+	}
+	for _, part := range m.Content {
+		switch p := part.(type) {
+		case types.ToolCallContent:
+			if p.ToolCallID == toolCallID {
+				return true
+			}
+		case *types.ToolCallContent:
+			if p != nil && p.ToolCallID == toolCallID {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// workflowApprovalValue wraps one approval function so that it receives the
+// tool callback messages.
+func workflowApprovalValue(value interface{}) interface{} {
+	switch fn := value.(type) {
+	case types.GenericToolApprovalFunc:
+		return types.GenericToolApprovalFunc(func(o types.ToolApprovalOptions) types.ToolApprovalResult {
+			o.Messages = workflowToolCallbackMessages(o.Messages, o.ToolCall.ID)
+			return fn(o)
+		})
+	case func(types.ToolApprovalOptions) types.ToolApprovalResult:
+		return workflowApprovalValue(types.GenericToolApprovalFunc(fn))
+	case types.SingleToolApprovalFunc:
+		return types.SingleToolApprovalFunc(func(args map[string]interface{}, o types.SingleToolApprovalOptions) types.ToolApprovalResult {
+			o.Messages = workflowToolCallbackMessages(o.Messages, o.ToolCallID)
+			return fn(args, o)
+		})
+	case func(map[string]interface{}, types.SingleToolApprovalOptions) types.ToolApprovalResult:
+		return workflowApprovalValue(types.SingleToolApprovalFunc(fn))
+	case types.ToolApprovalFunc: //nolint:staticcheck // legacy function type still accepted for backward compatibility
+		return types.ToolApprovalFunc(func(call types.ToolCall, tools []types.Tool, messages []types.Message, runtimeCtx interface{}, toolsCtx map[string]interface{}) types.ToolApprovalResult { //nolint:staticcheck
+			return fn(call, tools, workflowToolCallbackMessages(messages, call.ID), runtimeCtx, toolsCtx)
+		})
+	}
+	return value
+}
+
+// workflowToolApproval wraps a toolApproval configuration (function or map) so
+// every function in it gets the tool callback messages.
+func workflowToolApproval(cfg types.ToolApprovalConfig) types.ToolApprovalConfig {
+	switch v := cfg.(type) {
+	case nil:
+		return nil
+	case map[string]interface{}:
+		out := make(map[string]interface{}, len(v))
+		for k, e := range v {
+			out[k] = workflowApprovalValue(e)
+		}
+		return out
+	case map[string]types.ToolApprovalValue:
+		out := make(map[string]types.ToolApprovalValue, len(v))
+		for k, e := range v {
+			out[k] = workflowApprovalValue(e)
+		}
+		return out
+	default:
+		return workflowApprovalValue(cfg)
+	}
+}
+
+// workflowToolWithCallbackMessages wraps the tool's own approval function and
+// Execute so they receive the tool callback messages.
+func workflowToolWithCallbackMessages(tool types.Tool) types.Tool {
+	setting := tool.ToolApproval
+	apply := func(v interface{}) interface{} {
+		switch fn := v.(type) {
+		case types.ToolNeedsApprovalFunc:
+			return types.ToolNeedsApprovalFunc(func(ctx context.Context, in map[string]interface{}, o types.ToolNeedsApprovalOptions) bool {
+				o.Messages = workflowToolCallbackMessages(o.Messages, o.ToolCallID)
+				return fn(ctx, in, o)
+			})
+		case func(context.Context, map[string]interface{}, types.ToolNeedsApprovalOptions) bool:
+			return types.ToolNeedsApprovalFunc(func(ctx context.Context, in map[string]interface{}, o types.ToolNeedsApprovalOptions) bool {
+				o.Messages = workflowToolCallbackMessages(o.Messages, o.ToolCallID)
+				return fn(ctx, in, o)
+			})
+		}
+		return v
+	}
+	if setting != nil {
+		tool.ToolApproval = apply(setting)
+	}
+	if tool.NeedsApproval != nil {
+		tool.NeedsApproval = apply(tool.NeedsApproval)
+	}
+	if exec := tool.Execute; exec != nil {
+		tool.Execute = func(ctx context.Context, in map[string]interface{}, o types.ToolExecutionOptions) (interface{}, error) {
+			o.Messages = workflowToolCallbackMessages(o.Messages, o.ToolCallID)
+			return exec(ctx, in, o)
+		}
+	}
+	return tool
+}
+
+// workflowToolStartMessages and workflowToolEndMessages give the tool
+// execution callbacks the tool callback messages (TS c591e12cfe).
+func workflowToolStartMessages(cb ToolExecutionStartCallback) ToolExecutionStartCallback {
+	if cb == nil {
+		return nil
+	}
+	return func(ctx context.Context, e ai.OnToolCallStartEvent) {
+		e.Messages = workflowToolCallbackMessages(e.Messages, e.ToolCall.ID)
+		cb(ctx, e)
+	}
+}
+
+func workflowToolEndMessages(cb ToolExecutionEndCallback) ToolExecutionEndCallback {
+	if cb == nil {
+		return nil
+	}
+	return func(ctx context.Context, e ai.OnToolCallFinishEvent) {
+		e.Messages = workflowToolCallbackMessages(e.Messages, e.ToolCall.ID)
+		cb(ctx, e)
+	}
+}
+
+// workflowWithServerToolFields returns the tool call with the fields the
+// server-side tool defines (ToolMetadata, Dynamic, Title) rebuilt from tool.
+// Tool calls replayed from client-supplied history can omit or alter them,
+// while approval policies read them to decide whether a call is protected;
+// clearing them first makes the current tool definition the only source (TS
+// withServerToolFields).
+func workflowWithServerToolFields(call types.ToolCall, tool *types.Tool) types.ToolCall {
+	call.ToolMetadata, call.Dynamic, call.Title = nil, false, ""
+	if tool == nil {
+		return call
+	}
+	if tool.Metadata != nil {
+		call.ToolMetadata = tool.Metadata
+	}
+	if tool.Type == types.ToolTypeDynamic {
+		call.Dynamic = true
+	}
+	if tool.Title != "" {
+		call.Title = tool.Title
+	}
+	return call
+}
+
 // workflowDefaultModelOutput is the model output of a resumed approved tool's
 // result without ToModelOutput (TS createToolModelOutput: a string is text,
 // anything else JSON).
@@ -798,6 +999,7 @@ type workflowApprovalResumeOptions struct {
 	toolsContext        map[string]interface{}
 	experimentalSandbox interface{}
 	toolApprovalSecret  []byte
+	toolApproval        types.ToolApprovalConfig
 	onToolStart         ToolExecutionStartCallback
 	onToolEnd           ToolExecutionEndCallback
 	// telemetrySettings, when set, dispatches each approved tool's execution
@@ -880,8 +1082,23 @@ func processWorkflowApprovalResume(ctx context.Context, opts workflowApprovalRes
 		if tool == nil || tool.Execute == nil {
 			return approvedOutcome{}
 		}
+		// The fields that identify a protected tool come from the server-side
+		// definition, which the replayed history cannot alter (TS
+		// withServerToolFields, 7655f47e91).
+		call = workflowWithServerToolFields(call, tool)
+		approval.ToolCall = call
+		// Approval responses replayed from client-supplied history are only
+		// accepted for calls that still require approval. The configured
+		// policy takes precedence over the tool's own setting, so a tool
+		// without one can still require approval (TS 2559173ea7).
 		if !workflowToolDeclaresApproval(tool) {
-			return approvedOutcome{result: errorTextResult(call, fmt.Sprintf("Tool \"%s\" does not require approval", call.ToolName))}
+			resolved, rerr := aibridge.ResolveToolApproval(ctx, call, opts.tools, messages, opts.runtimeContext, opts.toolsContext, opts.toolApproval)
+			if rerr != nil {
+				return approvedOutcome{err: rerr}
+			}
+			if resolved.Status == types.ToolApprovalStatusNotApplicable {
+				return approvedOutcome{result: errorTextResult(call, fmt.Sprintf("Tool \"%s\" does not require approval", call.ToolName))}
+			}
 		}
 
 		// Re-validate through the shared core implementation: signature (when
@@ -892,6 +1109,7 @@ func processWorkflowApprovalResume(ctx context.Context, opts workflowApprovalRes
 			ApprovedToolApprovals: []ai.CollectedToolApproval{approval},
 			Tools:                 opts.tools,
 			Messages:              messages,
+			ToolApproval:          opts.toolApproval,
 			ToolsContext:          opts.toolsContext,
 			RuntimeContext:        opts.runtimeContext,
 			ToolApprovalSecret:    opts.toolApprovalSecret,
@@ -1507,6 +1725,9 @@ func (st *prepareCallState) overlay(opts LanguageModelCallOptions) LanguageModel
 	opts.RuntimeContext, opts.ToolsContext, opts.ExperimentalSandbox = p.RuntimeContext, p.ToolsContext, p.ExperimentalSandbox
 	opts.StopWhen, opts.ActiveTools, opts.ExperimentalDownload, opts.MaxRetries, opts.Timeout = p.StopWhen, p.ActiveTools, p.ExperimentalDownload, p.MaxRetries, p.Timeout
 	opts.InstructionMessages, opts.ToolCallConcurrency, opts.Telemetry = p.InstructionMessages, p.ToolCallConcurrency, p.Telemetry
+	if p.ToolOrder != nil {
+		opts.ToolOrder = p.ToolOrder
+	}
 	if len(opts.Messages) >= st.baseMessages {
 		history := opts.Messages[st.baseMessages:]
 		opts.Messages = append(append([]types.Message(nil), p.Messages...), history...)
@@ -1541,7 +1762,7 @@ type prepareCallRunner struct {
 func (r *prepareCallRunner) callOptions(c agent.PrepareCallConfig) LanguageModelCallOptions {
 	pctx := r.pctx
 	return LanguageModelCallOptions{
-		StepNumber: c.StepNumber, Model: c.Model, System: c.System, AllowSystemInMessages: c.AllowSystemInMessages, Messages: c.Messages, Tools: c.Tools, ToolChoice: c.ToolChoice, CallOptions: c.CallOptions,
+		StepNumber: c.StepNumber, Model: c.Model, System: c.System, AllowSystemInMessages: c.AllowSystemInMessages, Messages: c.Messages, Tools: c.Tools, ToolChoice: c.ToolChoice, ToolOrder: c.ToolOrder, CallOptions: c.CallOptions,
 		Temperature: c.Temperature, MaxTokens: c.MaxTokens, TopP: c.TopP, TopK: c.TopK, FrequencyPenalty: c.FrequencyPenalty, PresencePenalty: c.PresencePenalty, StopSequences: c.StopSequences, Seed: c.Seed,
 		Headers: maps.Clone(pctx.baseHeaders), Reasoning: c.Reasoning, SendReasoning: c.SendReasoning, ProviderOptions: maps.Clone(c.ProviderOptions),
 		RuntimeContext: c.RuntimeContext, ToolsContext: maps.Clone(c.ToolsContext), ExperimentalSandbox: c.ExperimentalSandbox,
@@ -1683,6 +1904,9 @@ func (w *WorkflowAgent) makePrepareCall(pctx prepareCallContext, stepsInline boo
 			c.Model = opts.Model
 		}
 		c.System, c.AllowSystemInMessages, c.Messages, c.Tools, c.ToolChoice, c.CallOptions = opts.System, opts.AllowSystemInMessages, opts.Messages, opts.Tools, opts.ToolChoice, opts.CallOptions
+		if opts.ToolOrder != nil {
+			c.ToolOrder = opts.ToolOrder
+		}
 		c.System, c.InstructionMessages, _ = resolveInstructionChange(inSystem, inInstructionMessages, opts.System, opts.InstructionMessages)
 		if opts.ToolCallConcurrency != nil && !pctx.callConcurrencySet {
 			c.ToolCallConcurrency = opts.ToolCallConcurrency
@@ -1749,6 +1973,9 @@ func workflowStepHeaders(headers map[string]string, overridden bool) map[string]
 func keepUnsetHookFields(in, out LanguageModelCallOptions) LanguageModelCallOptions {
 	if out.Model == nil {
 		out.Model = in.Model
+	}
+	if out.ToolOrder == nil {
+		out.ToolOrder = in.ToolOrder
 	}
 	if out.Messages == nil {
 		out.Messages = in.Messages
@@ -1936,7 +2163,7 @@ func (w *WorkflowAgent) makePrepareStep(pctx prepareCallContext, allTools []type
 		}
 		baseHeaders, baseMaxRetries := settings.base(pctx)
 		opts := LanguageModelCallOptions{
-			StepNumber: o.StepNumber, Model: o.Model, System: o.System, AllowSystemInMessages: allowSystem, Messages: o.Messages, Tools: o.Tools, ToolChoice: o.ToolChoice,
+			StepNumber: o.StepNumber, Model: o.Model, System: o.System, AllowSystemInMessages: allowSystem, Messages: o.Messages, Tools: o.Tools, ToolChoice: o.ToolChoice, ToolOrder: o.ToolOrder,
 			Temperature: o.Temperature, MaxTokens: o.MaxOutputTokens, TopP: o.TopP, TopK: o.TopK, FrequencyPenalty: o.FrequencyPenalty, PresencePenalty: o.PresencePenalty,
 			StopSequences: o.StopSequences, Seed: o.Seed, Reasoning: o.Reasoning, ProviderOptions: maps.Clone(o.ProviderOptions), Headers: baseHeaders,
 			RuntimeContext: o.RuntimeContext, ToolsContext: maps.Clone(o.ToolsContext), ExperimentalSandbox: o.ExperimentalSandbox,
@@ -1980,6 +2207,11 @@ func (w *WorkflowAgent) makePrepareStep(pctx prepareCallContext, allTools []type
 		o.Messages = mutated.Messages
 		o.Tools = mutated.Tools
 		o.ToolChoice = mutated.ToolChoice
+		if mutated.ToolOrder != nil {
+			// One step only: the step's order is not carried into the next
+			// hook input (TS currentToolOrder is reset every step).
+			o.ToolOrder = mutated.ToolOrder
+		}
 		o.ProviderOptions = mutated.ProviderOptions
 		o.RuntimeContext, o.ToolsContext, o.ExperimentalSandbox = mutated.RuntimeContext, mutated.ToolsContext, mutated.ExperimentalSandbox
 		o.MaxOutputTokens, o.Temperature, o.TopP, o.TopK = mutated.MaxTokens, mutated.Temperature, mutated.TopP, mutated.TopK
@@ -2103,6 +2335,14 @@ func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenera
 		repairToolCall = ovr.ExperimentalRepairToolCall
 	}
 	approvalSecret := w.effectiveToolApprovalSecret(ovr, govr)
+	toolApproval := w.effectiveToolApproval(ovr, govr)
+	toolOrder := w.ToolOrder
+	if govr.ToolOrder != nil {
+		toolOrder = govr.ToolOrder
+	}
+	if ovr.ToolOrder != nil {
+		toolOrder = ovr.ToolOrder
+	}
 	telemetry := w.Telemetry
 	if govr.Telemetry != nil {
 		telemetry = govr.Telemetry
@@ -2138,6 +2378,13 @@ func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenera
 	}
 	if ovr.Tools != nil || ovr.ToolSet != nil {
 		tools = orderedTools(ovr.Tools, ovr.ToolSet)
+	}
+	// Tools and approval policies get the conversation without the system
+	// prompt and without the response that holds the call (TS c591e12cfe,
+	// b3588dc10b).
+	tools = slices.Clone(tools)
+	for i := range tools {
+		tools[i] = workflowToolWithCallbackMessages(tools[i])
 	}
 	allowSystemInMessages := w.AllowSystemInMessages || govr.AllowSystemInMessages || ovr.AllowSystemInMessages
 	maxRetries := w.MaxRetries
@@ -2346,12 +2593,14 @@ func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenera
 		ExperimentalDownload:           download,
 		RepairToolCall:                 repairToolCall,
 		ExperimentalToolApprovalSecret: approvalSecret,
+		ToolApproval:                   workflowToolApproval(toolApproval),
+		ToolOrder:                      toolOrder,
 		MaxRetries:                     maxRetries,
 		Timeout:                        timeout,
 		OnStart:                        mergeStart(w.OnStart, mergeStart(govr.OnStart, ovr.OnStart)),
 		OnStepStartEvent:               onStepStart,
-		OnToolExecutionStart:           mergeToolStart(w.OnToolExecutionStart, mergeToolStart(govr.OnToolExecutionStart, ovr.OnToolExecutionStart)),
-		OnToolExecutionEnd:             mergeToolEnd(w.OnToolExecutionEnd, mergeToolEnd(govr.OnToolExecutionEnd, ovr.OnToolExecutionEnd)),
+		OnToolExecutionStart:           workflowToolStartMessages(mergeToolStart(w.OnToolExecutionStart, mergeToolStart(govr.OnToolExecutionStart, ovr.OnToolExecutionStart))),
+		OnToolExecutionEnd:             workflowToolEndMessages(mergeToolEnd(w.OnToolExecutionEnd, mergeToolEnd(govr.OnToolExecutionEnd, ovr.OnToolExecutionEnd))),
 		OnStepEndEvent:                 publicStepEnd(mergeStepFinish(resolveStepEnd(w.OnStepEnd, w.OnStepFinish), mergeStepFinish(resolveStepEnd(govr.OnStepEnd, govr.OnStepFinish), resolveStepEnd(ovr.OnStepEnd, ovr.OnStepFinish))), streaming, tools),
 		OnEndEvent:                     onEnd,
 	}
@@ -2485,6 +2734,17 @@ func withFinishReasonStop(conditions []ai.StopCondition) []ai.StopCondition {
 		return ""
 	})
 	return append(out, conditions...)
+}
+
+// effectiveToolApproval is TS `options.toolApproval ?? this.toolApproval`.
+func (w *WorkflowAgent) effectiveToolApproval(ovr WorkflowStreamOptions, govr WorkflowGenerateOptions) types.ToolApprovalConfig {
+	if ovr.ToolApproval != nil {
+		return ovr.ToolApproval
+	}
+	if govr.ToolApproval != nil {
+		return govr.ToolApproval
+	}
+	return w.ToolApproval
 }
 
 func (w *WorkflowAgent) effectiveToolApprovalSecret(ovr WorkflowStreamOptions, govr WorkflowGenerateOptions) []byte {
@@ -2674,6 +2934,7 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 		toolsContext:        toolsContext,
 		experimentalSandbox: sandbox,
 		toolApprovalSecret:  w.effectiveToolApprovalSecret(WorkflowStreamOptions{}, opts),
+		toolApproval:        w.effectiveToolApproval(WorkflowStreamOptions{}, opts),
 		onToolStart:         mergeToolStart(w.OnToolExecutionStart, opts.OnToolExecutionStart),
 		onToolEnd:           mergeToolEnd(w.OnToolExecutionEnd, opts.OnToolExecutionEnd),
 		telemetrySettings:   telemetrySettings,
@@ -2960,6 +3221,7 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 		toolsContext:        toolsContext,
 		experimentalSandbox: sandbox,
 		toolApprovalSecret:  w.effectiveToolApprovalSecret(opts, WorkflowGenerateOptions{}),
+		toolApproval:        w.effectiveToolApproval(opts, WorkflowGenerateOptions{}),
 		onToolStart:         mergeToolStart(w.OnToolExecutionStart, opts.OnToolExecutionStart),
 		onToolEnd:           mergeToolEnd(w.OnToolExecutionEnd, opts.OnToolExecutionEnd),
 		telemetrySettings:   telemetrySettings,
