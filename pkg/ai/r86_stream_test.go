@@ -68,7 +68,8 @@ func TestR86streamImageDeprecationFollowsStepMessages(t *testing.T) {
 	if _, err := r.ReadAll(); err != nil {
 		t.Fatal(err)
 	}
-	want := []int{1, -1, 1, 2, -2}
+	// TS d834c5bb35: the second step logs its prompt warnings as one batch.
+	want := []int{1, -1, 3, -2}
 	if len(batches) != len(want) {
 		t.Fatalf("log sequence = %v, want %v", batches, want)
 	}

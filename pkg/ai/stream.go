@@ -89,7 +89,8 @@ type StreamTextOptions struct {
 	ToolApproval types.ToolApprovalConfig
 
 	// ExperimentalToolApprovalSecret signs server-issued approval requests so
-	// resumed approval responses can be verified before execution.
+	// resumed approval responses can be verified before execution. Approval
+	// requests for automatically denied tool calls are not signed.
 	ExperimentalToolApprovalSecret []byte
 
 	// MaxSteps is a convenience shorthand for StopWhen{StepCountIs(N)}.
@@ -289,6 +290,13 @@ type StreamTextOptions struct {
 	// must still be collected (tools, output, callbacks, telemetry).
 	lowMemory      bool
 	collectContent bool
+
+	// OnWarning receives the warnings of this call instead of the global
+	// warning logger (SetLogWarnings, AI_SDK_LOG_WARNINGS): provider warnings
+	// and prompt conversion deprecations. It is never called with an empty
+	// list. The warnings are also part of each step's Warnings. Mirrors TS
+	// onWarning (#25389).
+	OnWarning LogWarningsFunction
 
 	// OnStepError is called when a step that started fails before it produces
 	// a step result: the provider call fails, or the model stream ends
@@ -654,6 +662,9 @@ type StreamTextResult struct {
 	// rawFinishReason is the raw finish reason string from the provider.
 	rawFinishReason string
 
+	// stoppedBy is why the tool loop stopped (TS stoppedBy).
+	stoppedBy StoppedBy
+
 	// stepRequest holds the last request metadata for the Request() accessor.
 	stepRequest types.StepRequest
 
@@ -733,6 +744,9 @@ type StreamTextResult struct {
 	// those of PrepareStep and steering messages), logged before each step's
 	// prompt conversion.
 	promptDeprecations stepPromptDeprecations
+	// stepPromptWarnings are the prompt conversion warnings of the step that
+	// is about to start; they lead the step's warnings (TS promptWarnings).
+	stepPromptWarnings []types.Warning
 
 	// cbModel and cbStreamOpts are retained so that processStream can start
 	// additional streaming steps when deferred provider tool results are pending.
@@ -1186,7 +1200,11 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 
 	stepModel := opts.Model
 	stepSystem := system
-	stepMessages := prompt.Messages
+	// The messages array of a step is created for that step: a tool approval
+	// function tells the tool calls of one response from those of another by
+	// the slice it receives (TS 0b8cbfadb8), so a caller's slice (the prompt
+	// or a PrepareStep result) is never handed out itself.
+	stepMessages := cloneStepMessages(prompt.Messages)
 	if len(initialResponseMessages) > 0 {
 		stepMessages = append(append([]types.Message(nil), prompt.Messages...), initialResponseMessages...)
 	}
@@ -1280,7 +1298,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 			stepInstructionMessages = nil
 		}
 		if prepared.Messages != nil {
-			stepMessages = prepared.Messages
+			stepMessages = cloneStepMessages(prepared.Messages)
 		}
 		stepTools, stepActiveTools = applyPreparedTools(opts.Tools, stepTools, stepActiveTools, prepared)
 		if prepared.ToolChoice.Type != "" {
@@ -1380,7 +1398,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		}
 	}
 
-	logPromptDeprecations(r.promptDeprecations.forStep(stepMessages))
+	r.stepPromptWarnings = r.logPromptWarnings(opts.OnWarning, r.promptDeprecations.forStep(stepMessages))
 	stepPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(stepCtx, types.Prompt{System: stepSystem, Messages: messagesForModel(stepMessages)}, allowSystem, effectiveDownload(opts.ExperimentalDownload), supportedURLChecker(stepModel))
 	if normErr != nil {
 		if stepCancel != nil {
@@ -2048,6 +2066,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	// steeringEndReason says why waiting steering messages are not delivered
 	// when the loop ends.
 	steeringEndReason := SteeringFinished
+	stoppedBy := StoppedByModel
 	// currentToolChoice tracks the tool choice actually used to open each
 	// step's stream (bootstrapAndStream's resolved value, including any
 	// PrepareStep override, for step 1; then whatever PrepareStep resolves
@@ -2373,7 +2392,11 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		stepSourcesStart := len(r.sources)
 		// Track how many files existed before this step so we can slice per-step files.
 		stepFilesStart := len(r.files)
+		// The prompt conversion warnings lead the step's warnings, also when
+		// the provider sends no stream-start (TS model-call-start).
+		stepPromptWarnings := r.stepPromptWarnings
 		stepWarningsStart := len(r.warnings)
+		r.warnings = append(r.warnings, stepPromptWarnings...)
 		// stepTextPartsStart: like the slices above, but for the call-level
 		// accumulatedTextParts (used for r.text below) — a retried attempt
 		// (see the ChunkTypeError branch) truncates back to this marker too,
@@ -2864,7 +2887,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			}
 
 			// Track provider-inline tool results for the deferred hasResult check.
-			if chunk.Type == provider.ChunkTypeToolResult && chunk.ToolResult != nil {
+			// TS records only final tool results in the step content: a
+			// preliminary one (image generation previews) is streamed only.
+			if chunk.Type == provider.ChunkTypeToolResult && chunk.ToolResult != nil && !chunk.ToolResult.Preliminary {
 				enrichedResult, convertErr := enrichStreamedToolResultForModelOutput(stepCtx, *chunk.ToolResult, !r.adapterToolResults[chunk.ToolResult], stepToolCalls, toolsByName, &stepUsage)
 				if convertErr != nil && stepModelOutputErr == nil {
 					stepModelOutputErr = convertErr
@@ -3234,7 +3259,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					r.mu.Lock()
 					r.sources = r.sources[:stepSourcesStart]
 					r.files = r.files[:stepFilesStart]
-					r.warnings = r.warnings[:stepWarningsStart]
+					r.warnings = append(r.warnings[:stepWarningsStart], stepPromptWarnings...)
 					r.partialOutput = nil
 					r.mu.Unlock()
 					accumulatedTextParts = accumulatedTextParts[:stepTextPartsStart]
@@ -4095,7 +4120,12 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// Log this step's model warnings once per model call (TS
 		// stream-text.ts logWarnings, called per step just after the
 		// step-finish notify).
-		logModelWarnings(stepWarnings, stepProvider, stepModelID)
+		// The prompt warnings were logged when the step was prepared.
+		modelWarnings := stepWarnings
+		if len(stepPromptWarnings) <= len(modelWarnings) {
+			modelWarnings = modelWarnings[len(stepPromptWarnings):]
+		}
+		logCallWarnings(opts.OnWarning, LogWarningsOptions{Warnings: modelWarnings, Provider: stepProvider, Model: stepModelID})
 		cancelStep()
 
 		// TS's outer stream checks the abort signal whenever it reads the next
@@ -4126,6 +4156,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		}
 		if hasUserApproval || skipStepTools {
 			steeringEndReason = SteeringWaitingForToolResults
+			stoppedBy = pendingToolCallStoppedBy(allSteps[len(allSteps)-1])
 			break
 		}
 
@@ -4141,6 +4172,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// Tool calls left unexecuted (unsafe finish reason) stop the loop.
 		if hasUnresolvedLocalToolCalls(stepToolCalls, toolsByName, stepToolResults) {
 			steeringEndReason = SteeringWaitingForToolResults
+			stoppedBy = pendingToolCallStoppedBy(allSteps[len(allSteps)-1])
 			break
 		}
 		if !hasLocalToolCalls && len(pendingDeferredToolCalls) == 0 {
@@ -4149,6 +4181,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			// that was not cut off (TS stream-text.ts 3392-3400).
 			truncated := r.finishReason == types.FinishReasonLength || r.finishReason == types.FinishReasonContentFilter
 			if !r.steering.hasPendingMessages() && (truncated || !r.steering.promoteQueuedMessage()) {
+				stoppedBy = modelStoppedBy(allSteps[len(allSteps)-1])
 				break
 			}
 			if r.finishReason == types.FinishReasonError {
@@ -4168,6 +4201,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			if reason := EvaluateStopConditions(stopConditions, state); reason != "" {
 				r.stopReason = reason
 				steeringEndReason = SteeringStopCondition
+				stoppedBy = StoppedByStopCondition
 				break
 			}
 		}
@@ -4271,7 +4305,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				nextInstructionMessages = nil
 			}
 			if prepared.Messages != nil {
-				nextMessages = prepared.Messages
+				nextMessages = cloneStepMessages(prepared.Messages)
 			}
 			nextTools, nextActiveTools = applyPreparedTools(opts.Tools, nextTools, nextActiveTools, prepared)
 			if prepared.ToolChoice.Type != "" {
@@ -4368,7 +4402,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			break
 		}
 		r.stepStartedAt = r.now()
-		logPromptDeprecations(r.promptDeprecations.forStep(nextMessages))
+		r.stepPromptWarnings = r.logPromptWarnings(opts.OnWarning, r.promptDeprecations.forStep(nextMessages))
 		nextPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(nextStepCtx, types.Prompt{
 			Messages: messagesForModel(nextMessages),
 			System:   nextSystem,
@@ -4552,6 +4586,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		r.steering.end(steeringEndReasonFor(ctx, r.err))
 	} else {
 		r.steering.end(steeringEndReason)
+		r.mu.Lock()
+		r.stoppedBy = stoppedBy
+		r.mu.Unlock()
 	}
 
 	// notifyOpenStepError reports a step that started without producing a
@@ -4886,6 +4923,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		StaticToolResults:  lastStep.StaticToolResults,
 		DynamicToolResults: lastStep.DynamicToolResults,
 		FinishReason:       endFinishReason,
+		StoppedBy:          r.stoppedBy,
 		RawFinishReason:    lastStep.RawFinishReason,
 		Usage:              lastStep.Usage,
 		Steps:              stepsForEvent,
@@ -5020,6 +5058,15 @@ func findToolCallByID(toolCalls []types.ToolCall, toolCallID string) (types.Tool
 		}
 	}
 	return types.ToolCall{}, false
+}
+
+// cloneStepMessages copies a step's messages, keeping a nil slice nil and an
+// empty one non-nil.
+func cloneStepMessages(messages []types.Message) []types.Message {
+	if messages == nil {
+		return nil
+	}
+	return append(make([]types.Message, 0, len(messages)), messages...)
 }
 
 // recordStreamedToolResult stores a provider-streamed tool result by call ID
@@ -5391,6 +5438,18 @@ func (r *StreamTextResult) RawFinishReason() string {
 	return r.rawFinishReason
 }
 
+// StoppedBy returns why the tool loop stopped: the model, a stop condition, a
+// tool without Execute, or a tool approval. Unlike FinishReason, which
+// describes the last model call, it tells what ended the loop. Empty when the
+// run failed or was aborted. Only available after stream completes (TS
+// result.stoppedBy).
+func (r *StreamTextResult) StoppedBy() StoppedBy {
+	_ = r.ensureConsumed()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.stoppedBy
+}
+
 // ResponseHeaders returns the raw HTTP response headers from the provider.
 // Only available after stream completes.
 //
@@ -5734,7 +5793,7 @@ func (r *StreamTextResult) readAllLegacy() (string, error) {
 				ThoughtSignature: enriched.ThoughtSignature,
 			})
 		}
-		if chunk.Type == provider.ChunkTypeToolResult && chunk.ToolResult != nil {
+		if chunk.Type == provider.ChunkTypeToolResult && chunk.ToolResult != nil && !chunk.ToolResult.Preliminary {
 			enrichedResult, convertErr := enrichStreamedToolResultForModelOutput(stepCtx, *chunk.ToolResult, !r.adapterToolResults[chunk.ToolResult], pendingToolCalls, toolsByName, &r.usage)
 			if convertErr != nil {
 				r.err = convertErr
@@ -6636,7 +6695,8 @@ func deferToolInputCallbacks(internal *InternalOptions) bool {
 // recordDeferredToolInput records a tool input lifecycle chunk for replay
 // after the model stream, as TS WorkflowAgent's model step records
 // toolInputLifecycleEvents: a start, a delta after its start, and a tool call
-// whose stream had a start (its tool looked up by the start's tool name).
+// whose stream had a start (its tool looked up by the start's tool name) or not
+// (the parsed call's own tool name).
 func recordDeferredToolInput(deferred []provider.StreamChunk, started map[string]string, chunk provider.StreamChunk) []provider.StreamChunk {
 	switch chunk.Type {
 	case provider.ChunkTypeToolInputStart:
@@ -6654,14 +6714,16 @@ func recordDeferredToolInput(deferred []provider.StreamChunk, started map[string
 		if chunk.ToolCall == nil {
 			return deferred
 		}
+		// A provider can send the tool call without streaming the input
+		// first, so the tool name does not always come from a start chunk
+		// (TS 453d8804a7: the parsed tool call provides it).
 		toolName, ok := started[chunk.ToolCall.ID]
-		if !ok {
-			return deferred
-		}
 		delete(started, chunk.ToolCall.ID)
-		call := *chunk.ToolCall
-		call.ToolName = toolName
-		chunk.ToolCall = &call
+		if ok {
+			call := *chunk.ToolCall
+			call.ToolName = toolName
+			chunk.ToolCall = &call
+		}
 		return append(deferred, chunk)
 	}
 	return deferred
@@ -6852,4 +6914,31 @@ func finalStepOutputOptions(text string, steps []types.StepResult, finishReason 
 			Body:      step.Response.Body,
 		},
 	}
+}
+
+// logCallWarnings sends warnings to the call's OnWarning when it is set, and
+// to the global logger otherwise (TS createLogWarnings). OnWarning is never
+// called with an empty list, and a panic in it does not break the call.
+func logCallWarnings(onWarning LogWarningsFunction, options LogWarningsOptions) {
+	if onWarning == nil {
+		LogWarnings(options)
+		return
+	}
+	if len(options.Warnings) == 0 {
+		return
+	}
+	safeInvoke(func() { onWarning(options) })
+}
+
+// logPromptWarnings logs the prompt conversion warnings of a step once, as one
+// batch without provider scope (logging them with the step's provider would
+// turn the stable deprecation code into a provider-scoped one), and returns
+// them for the step's warnings.
+func (r *StreamTextResult) logPromptWarnings(onWarning LogWarningsFunction, batches [][]types.Warning) []types.Warning {
+	var warnings []types.Warning
+	for _, batch := range batches {
+		warnings = append(warnings, batch...)
+	}
+	logCallWarnings(onWarning, LogWarningsOptions{Warnings: warnings})
+	return warnings
 }

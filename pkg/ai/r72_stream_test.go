@@ -173,7 +173,7 @@ func TestR72StreamUIToolExecutionError(t *testing.T) {
 		{"type":"start"},
 		{"type":"start-step"},
 		{"input":{"value":"value"},"toolCallId":"call-1","toolName":"tool1","type":"tool-input-available"},
-		{"errorText":"An error occurred.","toolCallId":"call-1","type":"tool-output-error"},
+		{"errorText":"Error: test error","toolCallId":"call-1","type":"tool-output-error"},
 		{"type":"finish-step"},
 		{"finishReason":"stop","type":"finish"}]`)
 }
@@ -281,7 +281,7 @@ func TestR72StreamUIInvalidToolCall(t *testing.T) {
 		{"type":"start-step"},
 		{"toolCallId":"call-1","toolName":"cityAttractions","type":"tool-input-start"},
 		{"inputTextDelta":"{ \"cities\": \"San Francisco\" }","toolCallId":"call-1","type":"tool-input-delta"},
-		{"errorText":"An error occurred.","input":{"cities":"San Francisco"},"toolCallId":"call-1","toolName":"cityAttractions","type":"tool-input-error"},
+		{"errorText":"AI_InvalidToolInputError: Invalid input for tool cityAttractions: AI_TypeValidationError: Type validation failed: Value: {\"cities\":\"San Francisco\"}.\nError message: Error: $.city: required: property is missing","input":{"cities":"San Francisco"},"toolCallId":"call-1","toolName":"cityAttractions","type":"tool-input-error"},
 		{"type":"finish-step"},
 		{"finishReason":"stop","type":"finish"}]`)
 }

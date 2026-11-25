@@ -131,12 +131,11 @@ func TestR76Integ_UIMessageToolInputUsesValidateInput(t *testing.T) {
 	}
 }
 
-// Mutation survivor (stream fix 2): TS do-stream-step records 'available'
-// only for a call whose tool-call part follows a tool-input-start for its id,
-// so under DeferToolInputCallbacks a call streamed without a
-// tool-input-start fires no OnInputAvailable; plain StreamText (TS
-// streamText) fires it for every valid call.
-func TestR76Integ_DeferredToolInputSkipsCallWithoutStart(t *testing.T) {
+// Mutation survivor (stream fix 2), updated for TS 453d8804a7: a call streamed
+// without a tool-input-start fires OnInputAvailable under
+// DeferToolInputCallbacks too (the parsed call provides the tool name), as
+// plain StreamText does for every valid call.
+func TestR76Integ_DeferredToolInputFiresForCallWithoutStart(t *testing.T) {
 	for _, deferred := range []bool{false, true} {
 		var available int32
 		tool := types.Tool{
@@ -163,9 +162,6 @@ func TestR76Integ_DeferredToolInputSkipsCallWithoutStart(t *testing.T) {
 		}
 		_ = r.ConsumeStream()
 		want := int32(1)
-		if deferred {
-			want = 0
-		}
 		if available != want {
 			t.Errorf("deferred=%v: OnInputAvailable ran %d times, want %d", deferred, available, want)
 		}
