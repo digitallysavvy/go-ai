@@ -14,7 +14,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf16"
 
 	"github.com/rivo/uniseg"
 
@@ -34,6 +33,7 @@ const (
 	colorReasoning = "\x1b[94m"
 	colorTool      = "\x1b[95m"
 	colorError     = "\x1b[91m"
+	colorApproval  = "\x1b[93m"
 
 	activeControls              = "↑/↓ · PgUp/PgDn · Esc/Ctrl+C"
 	doneControls                = "↑/↓ · PgUp/PgDn · q/Esc/Ctrl+C"
@@ -107,6 +107,10 @@ type TerminalRenderer struct {
 	// the next step shows "Processing tool results..." (TS
 	// hasPendingToolResults).
 	pendingToolResults bool
+
+	// approvalSectionID is the section of the tool call that awaits an
+	// approval decision (TS #toolApprovalSectionId); empty when none does.
+	approvalSectionID string
 }
 
 type paintState struct {
@@ -123,6 +127,7 @@ const (
 	sectionAssistant chatSectionKind = "assistant"
 	sectionReasoning chatSectionKind = "reasoning"
 	sectionTool      chatSectionKind = "tool"
+	sectionApproval  chatSectionKind = "approval"
 	sectionError     chatSectionKind = "error"
 )
 
@@ -437,15 +442,21 @@ func (r *TerminalRenderer) ReadToolApproval(ctx context.Context, request AgentTU
 	r.mu.Lock()
 	r.startLocked(options)
 	r.status = "Approve " + formatToolApprovalTitle(request) + "? y/n · " + activeControls
+	finishToolApprovalRequest := r.showToolApprovalRequestLocked(request)
 	r.paintLocked("", false, true, contextSize)
 	r.mu.Unlock()
 
 	for {
 		key, err := readTerminalKey(ctx, r.input, &r.keyReader)
 		if err != nil {
+			r.mu.Lock()
 			if errors.Is(err, io.EOF) {
+				finishToolApprovalRequest("denied")
+				r.mu.Unlock()
 				return AgentTUIToolApprovalResponse{Approved: false, Reason: "Denied by user."}, nil
 			}
+			r.approvalSectionID = ""
+			r.mu.Unlock()
 			return AgentTUIToolApprovalResponse{}, err
 		}
 		switch key.Type {
@@ -453,13 +464,20 @@ func (r *TerminalRenderer) ReadToolApproval(ctx context.Context, request AgentTU
 			switch strings.ToLower(key.Value) {
 			case "y":
 				r.mu.Lock()
+				// 25972d7857: y is ignored until the end of the input was shown.
+				if r.toolApprovalContinuesBelowViewportLocked() {
+					r.mu.Unlock()
+					continue
+				}
 				r.status = "Approved · " + processingStatus
+				finishToolApprovalRequest("approved")
 				r.paintLocked("", false, true, contextSize)
 				r.mu.Unlock()
 				return AgentTUIToolApprovalResponse{Approved: true}, nil
 			case "n":
 				r.mu.Lock()
 				r.status = "Denied · " + processingStatus
+				finishToolApprovalRequest("denied")
 				r.paintLocked("", false, true, contextSize)
 				r.mu.Unlock()
 				return AgentTUIToolApprovalResponse{Approved: false, Reason: "Denied by user."}, nil
@@ -498,6 +516,108 @@ func (r *TerminalRenderer) ReadToolApproval(ctx context.Context, request AgentTU
 	}
 }
 
+// showToolApprovalRequestLocked shows the tool call that the next approval
+// decision applies to: its section is expanded with the exact input, marked as
+// the one awaiting the decision, and scrolled into view, whatever the tool
+// display mode (TS showToolApprovalRequest, 2d2fc466c4). It returns a function
+// that records the decision in the section header and restores how the section
+// was displayed before.
+func (r *TerminalRenderer) showToolApprovalRequestLocked(request AgentTUIToolApprovalRequest) func(decision string) {
+	prefix := ""
+	if r.lastStreamID != "" {
+		prefix = r.lastStreamID + ":"
+	}
+	id := prefix + "tool:" + request.ToolCallID
+	var previous *chatSection
+	for i := range r.sections {
+		if r.sections[i].id == id {
+			section := r.sections[i]
+			previous = &section
+			break
+		}
+	}
+
+	r.approvalSectionID = id
+	r.upsertSection(chatSection{
+		id:         id,
+		kind:       sectionApproval,
+		title:      "Tool · " + nonEmpty(request.Title, request.ToolName),
+		rightTitle: "approve? y/n",
+		content:    "Input:\n" + formatValue(request.Input),
+	})
+	r.scrollSectionIntoViewLocked(id)
+
+	return func(decision string) {
+		if previous != nil {
+			restored := *previous
+			restored.rightTitle = decision
+			r.upsertSection(restored)
+		} else {
+			// the section only existed for the decision, e.g. with hidden tools:
+			kept := r.sections[:0]
+			for _, section := range r.sections {
+				if section.id != id {
+					kept = append(kept, section)
+				}
+			}
+			r.sections = kept
+		}
+		r.approvalSectionID = ""
+		r.scrollOffset = 0
+	}
+}
+
+// scrollSectionIntoViewLocked ends the section at the bottom of the viewport,
+// or starts it at the top when it is taller than the viewport.
+func (r *TerminalRenderer) scrollSectionIntoViewLocked(id string) {
+	start, end, ok := r.sectionLineRange(id)
+	if !ok {
+		return
+	}
+	height := r.bodyContentHeight()
+	firstVisibleLine := minInt(start, end-height)
+	r.scrollOffset = r.clampScrollOffset(r.bodyLineCount() - height - firstVisibleLine)
+}
+
+// toolApprovalContinuesBelowViewportLocked reports whether the input of the
+// tool call that awaits the approval decision continues below the visible part
+// of the transcript.
+func (r *TerminalRenderer) toolApprovalContinuesBelowViewportLocked() bool {
+	if r.approvalSectionID == "" {
+		return false
+	}
+	_, end, ok := r.sectionLineRange(r.approvalSectionID)
+	if !ok {
+		return false
+	}
+	height := r.bodyContentHeight()
+	firstVisibleLine := maxInt(0, r.bodyLineCount()-height-r.scrollOffset)
+	// the last line of the section is its border:
+	return end-1 > firstVisibleLine+height
+}
+
+func (r *TerminalRenderer) sectionLineRange(id string) (start, end int, ok bool) {
+	width := r.width() - 4
+	for _, section := range r.sections {
+		end = start + len(renderSectionLines(section, width))
+		if section.id == id {
+			return start, end, true
+		}
+		start = end
+	}
+	return 0, 0, false
+}
+
+// handleResizeLocked repaints after a terminal resize, keeping the tool call
+// that awaits an approval decision in view.
+func (r *TerminalRenderer) handleResizeLocked() {
+	if r.approvalSectionID != "" {
+		r.scrollSectionIntoViewLocked(r.approvalSectionID)
+	}
+	r.frameBuffer.Reset()
+	r.repaintLastLocked()
+}
+
 func (r *TerminalRenderer) Stop() {
 	r.mu.Lock()
 	r.stopLocked()
@@ -521,13 +641,13 @@ func (r *TerminalRenderer) startLocked(options TerminalSessionOptions) {
 		r.stopResizeWatcher = startTerminalResizeWatcher(r.output, func() {
 			r.mu.Lock()
 			defer r.mu.Unlock()
-			r.frameBuffer.Reset()
-			r.repaintLastLocked()
+			r.handleResizeLocked()
 		})
 	}
 }
 
 func (r *TerminalRenderer) stopLocked() {
+	r.approvalSectionID = ""
 	if !r.interactive {
 		return
 	}
@@ -783,9 +903,16 @@ func (r *TerminalRenderer) paintLocked(input string, inputActive bool, cursorVis
 		input:            input,
 		inputActive:      inputActive,
 		cursorVisible:    cursorVisible,
-		status:           r.status,
+		status:           r.paintStatusLocked(),
 	})
 	r.frameBuffer.Present(frame)
+}
+
+func (r *TerminalRenderer) paintStatusLocked() string {
+	if r.toolApprovalContinuesBelowViewportLocked() {
+		return "Scroll to the end to approve · n to deny · " + activeControls
+	}
+	return r.status
 }
 
 func (r *TerminalRenderer) repaintLastLocked() {
@@ -1165,7 +1292,7 @@ func formatToolApprovalTitle(request AgentTUIToolApprovalRequest) string {
 	if title == "" {
 		title = request.ToolName
 	}
-	return "tool " + title
+	return "tool " + escapeFormatCharacters(title)
 }
 
 // toolInputText is the "Input:" block of a tool section. TS prints
@@ -1273,21 +1400,23 @@ func jsonScalar(v interface{}) string {
 	return string(b)
 }
 
-func utf16Length(s string) int {
-	return len(utf16.Encode([]rune(s)))
-}
-
 func renderSectionLines(section chatSection, width int) []string {
 	width = maxInt(8, width)
 	styleColor, border := sectionStyle(section.kind)
 	contentWidth := maxInt(1, width-4)
-	title := " " + sanitizeTerminalText(section.title, false) + " "
 	right := ""
 	if section.rightTitle != "" {
 		right = " " + sanitizeTerminalText(section.rightTitle, false) + " "
 	}
-	// TS measures the titles with String.length (UTF-16 code units).
-	borderWidth := maxInt(0, width-2-utf16Length(title)-utf16Length(right))
+	title := " " + escapeFormatCharacters(sanitizeTerminalText(section.title, false)) + " "
+	if section.kind == sectionApproval {
+		// shorten a long title so that the marker of the tool call that awaits
+		// the approval decision is not cut off:
+		title = truncateSectionTitle(title, width-2-visibleLength(right))
+	}
+	// Section headers are laid out by their width in terminal columns
+	// (2d2fc466c4).
+	borderWidth := maxInt(0, width-2-visibleLength(title)-visibleLength(right))
 	top := styleColor + "╭" + title + strings.Repeat(border, borderWidth) + right + "╮" + ansiReset
 	bottom := styleColor + "╰" + strings.Repeat(border, maxInt(0, width-2)) + "╯" + ansiReset
 	if section.collapsed {
@@ -1296,7 +1425,14 @@ func renderSectionLines(section chatSection, width int) []string {
 	// TS: an empty section shows the placeholder; content that merely renders
 	// to nothing does not.
 	content := colorDim + "(streaming...)" + ansiReset
-	if section.content != "" {
+	switch {
+	case section.content == "":
+	case section.kind == sectionTool || section.kind == sectionApproval || section.kind == sectionError:
+		// tool input, tool output and errors are data: show them exactly,
+		// without markdown formatting, and make format characters visible
+		// (25972d7857).
+		content = escapeFormatCharacters(sanitizeTerminalText(section.content, true))
+	default:
 		content = RenderMarkdown(section.content)
 	}
 	var lines []string
@@ -1306,6 +1442,16 @@ func renderSectionLines(section chatSection, width int) []string {
 		}
 	}
 	return append(append([]string{top}, lines...), bottom)
+}
+
+func truncateSectionTitle(title string, maxWidth int) string {
+	if visibleLength(title) <= maxWidth {
+		return title
+	}
+	if maxWidth < 3 {
+		return ""
+	}
+	return sliceVisible(title, maxWidth-2) + "… "
 }
 
 func sectionLine(line string, width int, color string) string {
@@ -1324,6 +1470,8 @@ func sectionStyle(kind chatSectionKind) (string, string) {
 		return colorReasoning, "·"
 	case sectionTool:
 		return colorTool, "─"
+	case sectionApproval:
+		return colorApproval, "─"
 	case sectionError:
 		return colorError, "─"
 	default:

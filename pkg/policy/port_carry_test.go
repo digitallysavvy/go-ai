@@ -360,11 +360,17 @@ func TestPortcarryWrapMCPToolsAppliesFallbackToEveryOPAEvaluation(t *testing.T) 
 	if got[0].Type != "approved" || got[1].Type != "denied" {
 		t.Fatalf("hard allowlist: %v", got)
 	}
-	// Documented gap: a plain function carries no hook, so the fallback only
-	// reaches the combined decision.
+	// The documented v0.5.2 form passes the plain function OPAPolicy returns.
+	// Before the fix a model that emitted read_config and then delete_backup
+	// (not on the allowlist) got user-approval for delete_backup instead of a
+	// denial: one click from running a tool the hard allowlist excludes.
 	got = run(OPAPolicy(portcarryHardAllowlistClient(), OPAPolicyOptions{Path: "p"}), types.ToolApprovalStatusDenied)
-	if got[1].Type != "user-approval" {
-		t.Fatalf("plain func: %v", got)
+	if got[0].Type != "approved" || got[1].Type != "denied" {
+		t.Fatalf("plain func hard allowlist: %v", got)
+	}
+	got = run(Shadow(OPAPolicy(portcarryHardAllowlistClient(), OPAPolicyOptions{Path: "p"}), ShadowOptions{Enforce: true}), types.ToolApprovalStatusDenied)
+	if got[1].Type != "denied" {
+		t.Fatalf("shadow(plain func) hard allowlist: %v", got)
 	}
 	// user-approval (default) keeps the engine's reason.
 	got = run(NewOPAPolicy(portcarryHardAllowlistClient(), OPAPolicyOptions{Path: "p"}), types.ToolApprovalStatusUserApproval)
@@ -399,5 +405,33 @@ func TestPortcarryWrapMCPToolsAppliesFallbackThroughShadow(t *testing.T) {
 	d := portcarryApprove(wrapped, portcarryCall("c2", "delete_backup", map[string]interface{}{}), msgs)
 	if d.Type != "denied" {
 		t.Fatalf("shadow enforced + denied fallback: %v", d)
+	}
+}
+
+// The carrier WrapMCPTools uses stays out of the policy input, a custom
+// ToInput, and the caller's ToolsContext.
+func TestPortcarryFallbackCarrierIsInvisible(t *testing.T) {
+	var seen []map[string]interface{}
+	client := &portcarryClient{fn: func(_ string, input any) (any, error) { return map[string]any{"decision": "allow"}, nil }}
+	opts := OPAPolicyOptions{Path: "p", ToInput: func(o types.ToolApprovalOptions) any {
+		seen = append(seen, o.ToolsContext)
+		return nil
+	}}
+	callerCtx := map[string]interface{}{"x": 1}
+	wrapped := WrapMCPTools(map[string]types.Tool{"a": {Name: "a"}}, OPAPolicy(client, opts), types.ToolApprovalStatusDenied).ToolApproval.(types.GenericToolApprovalFunc)
+	args := types.ToolApprovalOptions{ToolCall: portcarryCall("c1", "a", map[string]interface{}{}), Messages: portcarryMessages(), ToolsContext: callerCtx}
+	if r := wrapped(args); r.Status != types.ToolApprovalStatusApproved {
+		t.Fatalf("result %v", r)
+	}
+	if len(callerCtx) != 1 || len(args.ToolsContext) != 1 {
+		t.Fatalf("caller ToolsContext modified: %v", callerCtx)
+	}
+	for _, m := range seen {
+		if len(m) != 1 || m["x"] != 1 {
+			t.Fatalf("ToInput saw %v", m)
+		}
+	}
+	if len(seen) == 0 {
+		t.Fatal("ToInput not called")
 	}
 }

@@ -10,6 +10,11 @@ type WrappedMCPTools struct {
 
 // WrapMCPTools makes approval total over a discovered tool surface, falling
 // back to user-approval for uncovered or not-applicable tools by default.
+//
+// An OPA policy gets the fallback for every one of its evaluations, whether
+// it is passed as OPAPolicy(...), NewOPAPolicy(...) or under Shadow (TS
+// fac1d6a588). The plain function carries no hook in Go, so the wrapper hands
+// the fallback to the function in the options of each call.
 func WrapMCPTools(tools map[string]types.Tool, approval types.ToolApprovalConfig, defaults ...types.ToolApprovalStatus) WrappedMCPTools {
 	fallback := types.ToolApprovalStatusUserApproval
 	if len(defaults) > 0 && defaults[0] != "" {
@@ -28,6 +33,9 @@ func WrapMCPTools(tools map[string]types.Tool, approval types.ToolApprovalConfig
 		return WrappedMCPTools{
 			Tools: tools,
 			ToolApproval: types.GenericToolApprovalFunc(func(args types.ToolApprovalOptions) types.ToolApprovalResult {
+				if _, plain := v.(types.GenericToolApprovalFunc); plain {
+					args = withApprovalFallback(args, fallback)
+				}
 				decision := decisionFromApproval(evaluateApprovalConfig(v, args))
 				if decision.Type == types.ToolApprovalStatusNotApplicable {
 					return types.ToolApprovalResult{Status: fallback}
