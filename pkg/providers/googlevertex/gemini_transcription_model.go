@@ -67,6 +67,9 @@ type vertexGeminiTranscriptionOptions struct {
 	WordTimestamp    *bool
 	Diarization      *bool
 	Mode             string // "SMART" | "VERBATIM"
+	// ManualActivityDetection is streaming.automaticActivityDetection.disabled
+	// (live models): the audio stream is sent as one user turn (TS 378af05f85).
+	ManualActivityDetection bool
 }
 
 // parseVertexGeminiTranscriptionOptionsChecked is the zod-validating form: a
@@ -138,6 +141,25 @@ func parseVertexGeminiTranscriptionOptionsChecked(providerOptions map[string]int
 				return out, invalid(key, fmt.Errorf("mode: invalid option %v, expected one of SMART, VERBATIM", v))
 			}
 			out.Mode = mode
+		}
+		if v, has := raw["streaming"]; has {
+			streaming, isMap := v.(map[string]interface{})
+			if !isMap {
+				return out, invalid(key, fmt.Errorf("streaming: expected object, received %T", v))
+			}
+			if v, has := streaming["automaticActivityDetection"]; has {
+				detection, isMap := v.(map[string]interface{})
+				if !isMap {
+					return out, invalid(key, fmt.Errorf("streaming.automaticActivityDetection: expected object, received %T", v))
+				}
+				if v, has := detection["disabled"]; has {
+					disabled, isBool := v.(bool)
+					if !isBool {
+						return out, invalid(key, fmt.Errorf("streaming.automaticActivityDetection.disabled: expected boolean, received %T", v))
+					}
+					out.ManualActivityDetection = disabled
+				}
+			}
 		}
 		return out, nil
 	}

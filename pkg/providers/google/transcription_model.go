@@ -65,6 +65,9 @@ type transcriptionModelOptions struct {
 	WordTimestamp    *bool
 	Diarization      *bool
 	Mode             string // "SMART" | "VERBATIM"
+	// ManualActivityDetection is streaming.automaticActivityDetection.disabled
+	// (live models): the audio stream is sent as one user turn (TS 378af05f85).
+	ManualActivityDetection bool
 }
 
 // parseTranscriptionModelOptionsChecked mirrors TS parseProviderOptions with
@@ -132,6 +135,25 @@ func parseTranscriptionModelOptionsChecked(providerOptions map[string]interface{
 			return out, invalidGoogleFilesOptions(fmt.Errorf("mode: invalid option %v, expected one of SMART, VERBATIM", v))
 		}
 		out.Mode = mode
+	}
+	if v, present := google["streaming"]; present {
+		streaming, isMap := v.(map[string]interface{})
+		if !isMap {
+			return out, invalidGoogleFilesOptions(fmt.Errorf("streaming: expected object, received %T", v))
+		}
+		if v, present := streaming["automaticActivityDetection"]; present {
+			detection, isMap := v.(map[string]interface{})
+			if !isMap {
+				return out, invalidGoogleFilesOptions(fmt.Errorf("streaming.automaticActivityDetection: expected object, received %T", v))
+			}
+			if v, present := detection["disabled"]; present {
+				disabled, isBool := v.(bool)
+				if !isBool {
+					return out, invalidGoogleFilesOptions(fmt.Errorf("streaming.automaticActivityDetection.disabled: expected boolean, received %T", v))
+				}
+				out.ManualActivityDetection = disabled
+			}
+		}
 	}
 	return out, nil
 }

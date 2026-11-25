@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"math"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -35,6 +37,11 @@ const liveGeminiTranscriptionWebSocketPath = "google.cloud.aiplatform.v1.LlmBidi
 // stream finishes with no terminal signal from the server (TS
 // defaultFinishGraceMs).
 const defaultGeminiFinishGraceDuration = 3 * time.Second
+
+// audioEndToleranceMs: speech that server VAD ended within this distance of
+// the end of the sent audio counts as ending at the end of the audio (TS
+// audioEndToleranceMs).
+const audioEndToleranceMs = 250
 
 // geminiLiveWebSocketURL builds the wss:// Vertex Live API URL for streaming
 // transcription, mirroring TS's `wss://${vertexHost(location)}/ws/${liveWebSocketPath}`.
@@ -148,6 +155,13 @@ func (m *GeminiTranscriptionModel) DoStream(ctx context.Context, opts *provider.
 		"model":                   vertexModelResourcePath(project, location, m.modelID),
 		"inputAudioTranscription": audioConfig,
 	}
+	// With manual activity detection the server VAD is off and the audio
+	// stream is one user turn (TS 378af05f85).
+	if transcriptionOpts.ManualActivityDetection {
+		setup["realtimeInputConfig"] = map[string]interface{}{
+			"automaticActivityDetection": map[string]interface{}{"disabled": true},
+		}
+	}
 
 	inputAudioRate := 16000
 	if opts.InputAudioFormat.Rate != nil {
@@ -178,6 +192,8 @@ func (m *GeminiTranscriptionModel) DoStream(ctx context.Context, opts *provider.
 		warnings:         []types.Warning{},
 		audio:            opts.Audio,
 		includeRawChunks: opts.IncludeRawChunks,
+
+		manualActivityDetection: transcriptionOpts.ManualActivityDetection,
 	})
 
 	return &provider.TranscriptionStreamResult{
@@ -196,6 +212,9 @@ type geminiLiveTranscriptionStreamConfig struct {
 	warnings         []types.Warning
 	audio            provider.AudioStream
 	includeRawChunks bool
+	// manualActivityDetection sends the audio as one activityStart /
+	// activityEnd turn instead of relying on server VAD.
+	manualActivityDetection bool
 }
 
 // geminiLiveTranscriptionStream implements provider.TranscriptionStream over
@@ -211,6 +230,9 @@ type geminiLiveTranscriptionStream struct {
 	*wsutil.Session[provider.TranscriptionStreamPart]
 	// abortCtx is the caller's context (TS abortSignal).
 	abortCtx context.Context
+	// sentAudioBytes counts the audio bytes sent to the server (written by
+	// the audio pump, read by the message loop).
+	sentAudioBytes atomic.Int64
 }
 
 func newGeminiLiveTranscriptionStream(parentCtx context.Context, cfg geminiLiveTranscriptionStreamConfig) *geminiLiveTranscriptionStream {
@@ -225,9 +247,22 @@ func newGeminiLiveTranscriptionStream(parentCtx context.Context, cfg geminiLiveT
 // audio chunks as realtimeInput.audio messages, committing
 // realtimeInput.audioStreamEnd at EOF and signalling audioEnded, via the
 // shared wsutil.PumpAudioAfterReady loop.
-func (s *geminiLiveTranscriptionStream) pumpAudio(conn *websocket.Conn, audio provider.AudioStream, setupComplete <-chan struct{}, rate int, audioEnded chan<- struct{}, errCh chan<- error) {
-	wsutil.PumpAudioAfterReady(s.Context(), setupComplete, audio,
+func (s *geminiLiveTranscriptionStream) pumpAudio(conn *websocket.Conn, audio provider.AudioStream, setupComplete <-chan struct{}, rate int, manual bool, audioEnded chan<- struct{}, errCh chan<- error) {
+	select {
+	case <-setupComplete:
+	case <-s.Context().Done():
+		return
+	}
+	// With manual activity detection, the audio stream is one user turn.
+	if manual {
+		if err := s.send(conn, []byte(`{"realtimeInput":{"activityStart":{}}}`)); err != nil {
+			errCh <- err
+			return
+		}
+	}
+	wsutil.PumpAudio(s.Context(), audio,
 		func(chunk []byte) error {
+			s.sentAudioBytes.Add(int64(len(chunk)))
 			msg, marshalErr := json.Marshal(map[string]interface{}{
 				"realtimeInput": map[string]interface{}{
 					"audio": map[string]interface{}{
@@ -242,7 +277,11 @@ func (s *geminiLiveTranscriptionStream) pumpAudio(conn *websocket.Conn, audio pr
 			return s.send(conn, msg)
 		},
 		func() error {
-			if sendErr := s.send(conn, []byte(`{"realtimeInput":{"audioStreamEnd":true}}`)); sendErr != nil {
+			end := []byte(`{"realtimeInput":{"audioStreamEnd":true}}`)
+			if manual {
+				end = []byte(`{"realtimeInput":{"activityEnd":{}}}`)
+			}
+			if sendErr := s.send(conn, end); sendErr != nil {
 				return sendErr
 			}
 			select {
@@ -269,8 +308,14 @@ type geminiLiveServerMessage struct {
 		InteractionStatus *string `json:"interactionStatus,omitempty"`
 	} `json:"serverContent,omitempty"`
 	InputTranscription *geminiLiveTranscription `json:"inputTranscription,omitempty"`
-	UsageMetadata      map[string]interface{}   `json:"usageMetadata,omitempty"`
-	Error              *struct {
+	// VoiceActivity is the latest server VAD signal (ACTIVITY_START /
+	// ACTIVITY_END with the audio offset it refers to).
+	VoiceActivity *struct {
+		Type        *string     `json:"type,omitempty"`
+		AudioOffset interface{} `json:"audioOffset,omitempty"`
+	} `json:"voiceActivity,omitempty"`
+	UsageMetadata map[string]interface{} `json:"usageMetadata,omitempty"`
+	Error         *struct {
 		// Message is a pointer: TS `message.error.message ?? default`
 		// keeps an empty message.
 		Message *string `json:"message,omitempty"`
@@ -329,7 +374,7 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 	// TS JSON.stringify({ setup }): model, then inputAudioTranscription
 	// (buildAudioTranscriptionConfig order).
 	payload := []byte(providerutils.StringifyOrdered(map[string]interface{}{"setup": cfg.setup}, map[string][]string{
-		"setup":                         {"model", "inputAudioTranscription"},
+		"setup":                         {"model", "inputAudioTranscription", "realtimeInputConfig"},
 		"setup.inputAudioTranscription": {"languageCodes", "customVocabulary", "wordTimestamp", "diarization", "mode"},
 	}))
 	streamStart := provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeStreamStart, Warnings: cfg.warnings}
@@ -349,7 +394,7 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 
 	audioEndedCh := make(chan struct{})
 	audioErrCh := make(chan error, 1)
-	go s.pumpAudio(conn, cfg.audio, setupCompleteCh, cfg.inputAudioRate, audioEndedCh, audioErrCh)
+	go s.pumpAudio(conn, cfg.audio, setupCompleteCh, cfg.inputAudioRate, cfg.manualActivityDetection, audioEndedCh, audioErrCh)
 
 	if !s.Emit(streamStart) {
 		return
@@ -367,6 +412,10 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 		language       string
 		audioEnded     bool
 		usageMetadata  map[string]interface{}
+		// lastVoiceActivityType is the latest server VAD signal; its audio
+		// offset is lastVoiceActivityMs (0 when it carried no usable offset).
+		lastVoiceActivityType string
+		lastVoiceActivityMs   float64
 	)
 
 	segmentID := func() string { return fmt.Sprintf("google-segment-%d", segmentCounter) }
@@ -397,6 +446,20 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 		cancelPendingFinish()
 		finishTimer = time.NewTimer(cfg.finishGrace)
 		finishTimerC = finishTimer.C
+	}
+
+	// Once the audio has ended, the server has transcribed all of it when
+	// server VAD ended the last speech at the end of the sent audio and no
+	// transcript is pending (TS isTranscriptionComplete). VAD ends speech at
+	// the end of the audio when the audio ends mid-speech and, with manual
+	// activity detection, always (activityEnd closes the single turn).
+	// Earlier ACTIVITY_END offsets can mean the server is still processing
+	// buffered audio with further segments.
+	isTranscriptionComplete := func() bool {
+		sentMs := float64(s.sentAudioBytes.Load()) / float64(cfg.inputAudioRate*2) * 1000
+		return lastVoiceActivityType == "ACTIVITY_END" &&
+			segmentBuffer == "" && latestInterim == "" &&
+			lastVoiceActivityMs >= sentMs-audioEndToleranceMs
 	}
 
 	finish := func() {
@@ -453,6 +516,10 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 		case <-audioEndedSel:
 			audioEnded = true
 			audioEndedCh = nil
+			if isTranscriptionComplete() {
+				finish()
+				return
+			}
 			schedulePendingFinish()
 
 		case audioErr := <-audioErrCh:
@@ -519,6 +586,14 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 				usageMetadata = message.UsageMetadata
 			}
 
+			if message.VoiceActivity != nil && message.VoiceActivity.Type != nil {
+				lastVoiceActivityType = *message.VoiceActivity.Type
+				lastVoiceActivityMs = 0
+				if seconds, ok := liveOffsetSeconds(message.VoiceActivity.AudioOffset); ok {
+					lastVoiceActivityMs = seconds * 1000
+				}
+			}
+
 			if message.Error != nil {
 				msg := "Vertex Live API error"
 				if message.Error.Message != nil {
@@ -562,15 +637,22 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 				}
 			}
 
-			if serverContent != nil && serverContent.TurnComplete {
+			// gemini-3.5-transcribe-live ends each segment with
+			// generationComplete and never sends turnComplete.
+			if serverContent != nil && (serverContent.GenerationComplete || serverContent.TurnComplete) {
 				if !completeSegment() {
 					return
 				}
 			}
 
-			if serverContent != nil && audioEnded {
-				status := serverContent.InteractionStatus
-				if (status != nil && (*status == "IDLE" || *status == "REQUIRES_ACTION")) || (serverContent.TurnComplete && status == nil) {
+			if audioEnded {
+				var status *string
+				turnComplete := false
+				if serverContent != nil {
+					status = serverContent.InteractionStatus
+					turnComplete = serverContent.TurnComplete
+				}
+				if (status != nil && (*status == "IDLE" || *status == "REQUIRES_ACTION")) || (turnComplete && status == nil) || isTranscriptionComplete() {
 					finish()
 					return
 				}
@@ -633,4 +715,20 @@ type vertexLiveAudioCancelOnce struct {
 
 func (a *vertexLiveAudioCancelOnce) Cancel(reason error) {
 	a.once.Do(func() { a.AudioStream.Cancel(reason) })
+}
+
+// liveOffsetSeconds is TS parseOffsetSeconds for a Live API voiceActivity
+// audioOffset: a duration string such as "2s" or "0.280s" (Number.parseFloat),
+// or a JSON number. Anything else, or a non-finite value, gives no offset.
+func liveOffsetSeconds(offset interface{}) (float64, bool) {
+	switch v := offset.(type) {
+	case string:
+		return parseGoogleDuration(v)
+	case float64:
+		if math.IsInf(v, 0) || math.IsNaN(v) {
+			return 0, false
+		}
+		return v, true
+	}
+	return 0, false
 }
