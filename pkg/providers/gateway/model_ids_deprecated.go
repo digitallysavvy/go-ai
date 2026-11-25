@@ -193,4 +193,94 @@ const (
 	//
 	// Deprecated: removed from the suggested Gateway model IDs.
 	GatewayRealtimeModelSpacexaiGrokVoiceThinkFast20 GatewayRealtimeModelID = "spacexai/grok-voice-think-fast-2.0"
+
+	// GatewayLanguageModelAlibabaQwen3235b is no longer in the TS Gateway model ID union (TS gateway sync commits 640569da18..f2732a66f7).
+	//
+	// Deprecated: removed from the suggested Gateway model IDs.
+	GatewayLanguageModelAlibabaQwen3235b GatewayLanguageModelID = "alibaba/qwen-3-235b"
+
+	// GatewayLanguageModelAlibabaQwen3Coder is no longer in the TS Gateway model ID union (TS gateway sync commits 640569da18..f2732a66f7).
+	//
+	// Deprecated: removed from the suggested Gateway model IDs.
+	GatewayLanguageModelAlibabaQwen3Coder GatewayLanguageModelID = "alibaba/qwen3-coder"
+
+	// GatewayLanguageModelAlibabaQwen3Next80bA3bThinking is no longer in the TS Gateway model ID union (TS gateway sync commits 640569da18..f2732a66f7).
+	//
+	// Deprecated: removed from the suggested Gateway model IDs.
+	GatewayLanguageModelAlibabaQwen3Next80bA3bThinking GatewayLanguageModelID = "alibaba/qwen3-next-80b-a3b-thinking"
+
+	// GatewayLanguageModelBytedanceSeed16 is no longer in the TS Gateway model ID union (TS gateway sync commits 640569da18..f2732a66f7).
+	//
+	// Deprecated: removed from the suggested Gateway model IDs.
+	GatewayLanguageModelBytedanceSeed16 GatewayLanguageModelID = "bytedance/seed-1.6"
+
+	// GatewayLanguageModelBytedanceSeed18 is no longer in the TS Gateway model ID union (TS gateway sync commits 640569da18..f2732a66f7).
+	//
+	// Deprecated: removed from the suggested Gateway model IDs.
+	GatewayLanguageModelBytedanceSeed18 GatewayLanguageModelID = "bytedance/seed-1.8"
+
+	// GatewayLanguageModelInceptionMercury2 is no longer in the TS Gateway model ID union (TS gateway sync commits 640569da18..f2732a66f7).
+	//
+	// Deprecated: removed from the suggested Gateway model IDs.
+	GatewayLanguageModelInceptionMercury2 GatewayLanguageModelID = "inception/mercury-2"
+
+	// GatewayLanguageModelInceptionMercury25 is no longer in the TS Gateway model ID union (TS gateway sync commits 640569da18..f2732a66f7).
+	//
+	// Deprecated: removed from the suggested Gateway model IDs.
+	GatewayLanguageModelInceptionMercury25 GatewayLanguageModelID = "inception/mercury-2.5"
+
+	// GatewayLanguageModelInceptionMercuryCoderSmall is no longer in the TS Gateway model ID union (TS gateway sync commits 640569da18..f2732a66f7).
+	//
+	// Deprecated: removed from the suggested Gateway model IDs.
+	GatewayLanguageModelInceptionMercuryCoderSmall GatewayLanguageModelID = "inception/mercury-coder-small"
+
+	// GatewayLanguageModelMinimaxMinimaxM2 is no longer in the TS Gateway model ID union (TS gateway sync commits 640569da18..f2732a66f7).
+	//
+	// Deprecated: removed from the suggested Gateway model IDs.
+	GatewayLanguageModelMinimaxMinimaxM2 GatewayLanguageModelID = "minimax/minimax-m2"
+
+	// GatewayLanguageModelMinimaxMinimaxM21Lightning is no longer in the TS Gateway model ID union (TS gateway sync commits 640569da18..f2732a66f7).
+	//
+	// Deprecated: removed from the suggested Gateway model IDs.
+	GatewayLanguageModelMinimaxMinimaxM21Lightning GatewayLanguageModelID = "minimax/minimax-m2.1-lightning"
+
+	// GatewayLanguageModelMinimaxMinimaxM25Highspeed is no longer in the TS Gateway model ID union (TS gateway sync commits 640569da18..f2732a66f7).
+	//
+	// Deprecated: removed from the suggested Gateway model IDs.
+	GatewayLanguageModelMinimaxMinimaxM25Highspeed GatewayLanguageModelID = "minimax/minimax-m2.5-highspeed"
+
+	// GatewayLanguageModelMinimaxMinimaxM27Highspeed is no longer in the TS Gateway model ID union (TS gateway sync commits 640569da18..f2732a66f7).
+	//
+	// Deprecated: removed from the suggested Gateway model IDs.
+	GatewayLanguageModelMinimaxMinimaxM27Highspeed GatewayLanguageModelID = "minimax/minimax-m2.7-highspeed"
+
+	// GatewayLanguageModelNvidiaNemotron3Nano30bA3b is no longer in the TS Gateway model ID union (TS gateway sync commits 640569da18..f2732a66f7).
+	//
+	// Deprecated: removed from the suggested Gateway model IDs.
+	GatewayLanguageModelNvidiaNemotron3Nano30bA3b GatewayLanguageModelID = "nvidia/nemotron-3-nano-30b-a3b"
+
+	// GatewayLanguageModelPoolsideLagunaS21 is no longer in the TS Gateway model ID union (TS gateway sync commits 640569da18..f2732a66f7).
+	//
+	// Deprecated: removed from the suggested Gateway model IDs.
+	GatewayLanguageModelPoolsideLagunaS21 GatewayLanguageModelID = "poolside/laguna-s-2.1"
+
+	// GatewayLanguageModelSpacexaiGrokBuild01 is no longer in the TS Gateway model ID union (TS gateway sync commits 640569da18..f2732a66f7).
+	//
+	// Deprecated: removed from the suggested Gateway model IDs.
+	GatewayLanguageModelSpacexaiGrokBuild01 GatewayLanguageModelID = "spacexai/grok-build-0.1"
+
+	// GatewayImageModelProdiaFluxFastSchnell is no longer in the TS Gateway model ID union (TS gateway sync commits 640569da18..f2732a66f7).
+	//
+	// Deprecated: removed from the suggested Gateway model IDs.
+	GatewayImageModelProdiaFluxFastSchnell GatewayImageModelID = "prodia/flux-fast-schnell"
+
+	// GatewayVideoModelBytedanceSeedanceV15Pro is no longer in the TS Gateway model ID union (TS gateway sync commits 640569da18..f2732a66f7).
+	//
+	// Deprecated: removed from the suggested Gateway model IDs.
+	GatewayVideoModelBytedanceSeedanceV15Pro GatewayVideoModelID = "bytedance/seedance-v1.5-pro"
+
+	// GatewayDecisionModelLiquidD1 is no longer in the TS Gateway model ID union (TS gateway sync commits 640569da18..f2732a66f7).
+	//
+	// Deprecated: removed from the suggested Gateway model IDs.
+	GatewayDecisionModelLiquidD1 GatewayDecisionModelID = "liquid/d1"
 )
