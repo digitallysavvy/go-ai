@@ -549,8 +549,29 @@ func redactProviderToolArgsChanged(id string, args map[string]interface{}) (map[
 		return redactOpenAIToolArgs("code_interpreter", args, false)
 	case "openai.shell":
 		return redactOpenAIToolArgs("shell", args, false)
+	case "google.mcp_server":
+		return redactGoogleMCPServerArgs(args)
 	}
 	return args, false
+}
+
+// redactGoogleMCPServerArgs is TS redactToolDefinition's google.mcp_server
+// branch and redactGoogleToolArgs (b0fccbda62): every header value of a
+// Google Interactions MCP server tool becomes "[redacted]" (header names are
+// kept); args without a headers record pass through unchanged. args itself is
+// never modified.
+func redactGoogleMCPServerArgs(args map[string]interface{}) (map[string]interface{}, bool) {
+	headers, ok := asToolRecord(args["headers"])
+	if !ok {
+		return args, false
+	}
+	redacted := make(map[string]interface{}, len(headers))
+	for name := range headers {
+		redacted[name] = redactedToolValue
+	}
+	out := copyRecord(args)
+	out["headers"] = redacted
+	return out, true
 }
 
 // redactOpenAIToolArgs is TS redactOpenAIToolArgs
