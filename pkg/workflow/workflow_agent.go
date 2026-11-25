@@ -462,7 +462,50 @@ func (r *WorkflowResult) IsLoopFinished() bool {
 }
 
 // WorkflowStreamResult wraps the streaming result.
-type WorkflowStreamResult struct{ *ai.StreamTextResult }
+type WorkflowStreamResult struct {
+	*ai.StreamTextResult
+	// initialResponse is the tool message holding the results of the
+	// approvals this run resumed (TS initialResponseMessages).
+	initialResponse []types.Message
+}
+
+// ResponseMessages are the messages this run added to the conversation. As
+// in generate, the tool message with the results of the approvals the run
+// resumed comes first: the caller's history holds only the approval
+// responses, so the next turn needs it (TS stream messages carry it ahead of
+// the first step's messages).
+func (r *WorkflowStreamResult) ResponseMessages() []types.Message {
+	base := r.StreamTextResult.ResponseMessages()
+	if len(r.initialResponse) == 0 {
+		return base
+	}
+	resumed := map[string]bool{}
+	for _, m := range r.initialResponse {
+		for _, p := range m.Content {
+			if tr, ok := p.(types.ToolResultContent); ok {
+				resumed[tr.ToolCallID] = true
+			}
+		}
+	}
+	out := append([]types.Message(nil), r.initialResponse...)
+	for _, m := range base {
+		if m.Role == types.RoleTool {
+			kept := make([]types.ContentPart, 0, len(m.Content))
+			for _, p := range m.Content {
+				if tr, ok := p.(types.ToolResultContent); ok && resumed[tr.ToolCallID] {
+					continue
+				}
+				kept = append(kept, p)
+			}
+			if len(kept) == 0 {
+				continue
+			}
+			m.Content = kept
+		}
+		out = append(out, m)
+	}
+	return out
+}
 
 // skipOutput reports whether TS WorkflowAgent's stream mode would not parse
 // the structured output: it parses the last step's text only with an output
@@ -1902,6 +1945,10 @@ func (w *WorkflowAgent) makePrepareCall(pctx prepareCallContext, stepsInline boo
 			mutated = keepUnsetHookFields(opts, mutated)
 			persist.record(opts, mutated)
 			stepHeaders, haveStepHeaders = workflowMergeStepHeaders(inHeaders, mutated.Headers), true
+			// A step's providerOptions merge into the call's (TS
+			// mergeObjects(providerOptions, prepareStepResult.providerOptions)),
+			// as core does on the streaming path.
+			mutated.ProviderOptions = promptutils.MergeProviderOptions(opts.ProviderOptions, mutated.ProviderOptions)
 			opts = mutated
 		}
 		if opts.Model != nil {
@@ -2119,6 +2166,13 @@ func (p *stepPersistence) record(in, out LanguageModelCallOptions) {
 		return
 	}
 	out.System, out.InstructionMessages, _ = resolveInstructionChange(in.System, in.InstructionMessages, out.System, out.InstructionMessages)
+	if len(out.InstructionMessages) > 0 {
+		// Instruction messages replace the system text (core clears System
+		// when a step sets them). Keeping the stale text would make the next
+		// step's hook input look like a System change that drops the
+		// messages again.
+		out.System = ""
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.set, p.last = true, out
@@ -3283,7 +3337,9 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 	ctx, _ = workflowExpiredTotalContext(ctx, callTimeout)
 	callID := newWorkflowCallID()
 	var prefixChunks []provider.StreamChunk
+	var initialResponseMessages []types.Message
 	opts.Messages, prefixChunks, err = processWorkflowApprovalResume(ctx, workflowApprovalResumeOptions{
+		initialResponse:     &initialResponseMessages,
 		messages:            opts.Messages,
 		tools:               effectiveWorkflowTools(w, opts, WorkflowGenerateOptions{}),
 		runtimeContext:      runtimeContext,
@@ -3412,7 +3468,7 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 		}
 		return nil, err
 	}
-	return &WorkflowStreamResult{StreamTextResult: stream}, nil
+	return &WorkflowStreamResult{StreamTextResult: stream, initialResponse: initialResponseMessages}, nil
 }
 
 // workflowInternalOptions answers a provider-executed tool call with no

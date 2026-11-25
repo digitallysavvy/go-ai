@@ -2,8 +2,10 @@ package harness
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"testing"
@@ -323,5 +325,144 @@ func TestPortcarryharContextValidationErrorStaysOutOfStreamOnPause(t *testing.T)
 	defer mu.Unlock()
 	if hostErr == nil || !strings.Contains(hostErr.Error(), "host-secret") {
 		t.Fatalf("OnToolExecutionEnd error = %v, want the detailed error", hostErr)
+	}
+}
+
+// portcarryharPauseFailingTurn runs the turn of TS 'redacts a host tool error
+// in %s when redactToolErrors is true': a failing host tool and a client tool
+// in one step, so the turn pauses for the client tool and the harness
+// reports the host tool outcome itself.
+func portcarryharPauseFailingTurn() *runPromptOutput {
+	failing := types.Tool{
+		Name: "failing", Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
+		Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			return nil, errors.New("host tool failed")
+		},
+	}
+	askUser := types.Tool{Name: "askUser", Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}}
+	tools := map[string]types.Tool{"failing": failing, "askUser": askUser}
+	mock := newScriptedHarness(
+		func(emit func(StreamPart)) {
+			emit(&StreamStartPart{})
+			emit(&ToolCallPart{ToolCallID: "c1", ToolName: "failing", Input: `{}`})
+			emit(&ToolCallPart{ToolCallID: "c2", ToolName: "askUser", Input: `{}`})
+			emit(&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonToolCalls}, Usage: stringUsage(1, 1)})
+			emit(&FinishPart{FinishReason: FinishReason{Unified: FinishReasonToolCalls}, TotalUsage: stringUsage(1, 1)})
+		}, nil)
+	return runPrompt(context.Background(), runPromptInput{
+		Harness: mock.harness, Session: mock.session,
+		Prompt: TextPrompt("go"), Tools: tools, ActiveTools: tools, SandboxSession: testSandbox(),
+	})
+}
+
+// portcarryharAssertRedactedHostToolError checks the full stream (a tool-error
+// part for c1 carrying the real error, not provider-executed) and the UI body.
+func portcarryharAssertRedactedHostToolError(t *testing.T, out *runPromptOutput, uiBody func() string) {
+	t.Helper()
+	var parts []provider.StreamChunk
+	stream := out.Result.Stream()
+	for {
+		c, err := stream.Next()
+		if err != nil {
+			break
+		}
+		parts = append(parts, *c)
+	}
+	body := uiBody()
+	<-out.Done
+	var toolErrors []provider.StreamChunk
+	for _, p := range parts {
+		if p.Type == provider.ChunkTypeToolResult && p.ToolResult != nil && p.ToolResult.Error != nil {
+			toolErrors = append(toolErrors, p)
+		}
+	}
+	if len(toolErrors) != 1 || toolErrors[0].ToolResult.ToolCallID != "c1" ||
+		!strings.Contains(toolErrors[0].ToolResult.Error.Error(), "host tool failed") || toolErrors[0].ToolResult.ProviderExecuted {
+		t.Fatalf("tool-error parts = %+v, want one for c1 carrying the real error", toolErrors)
+	}
+	if !strings.Contains(body, `"errorText":"An error occurred."`) {
+		t.Fatalf("UI body lacks the masked error text: %s", body)
+	}
+	if strings.Contains(body, "host tool failed") {
+		t.Fatalf("UI body leaks the host tool error: %s", body)
+	}
+}
+
+// TS: redacts a host tool error in toUIMessageStream when redactToolErrors is true.
+func TestPortcarryharRedactToolErrorsHostToolErrorToUIMessageStream(t *testing.T) {
+	out := portcarryharPauseFailingTurn()
+	redact := true
+	chunks, errs := out.Result.ToUIMessageStream(context.Background(), ai.UIMessageStreamResultOptions{RedactToolErrors: &redact}) //nolint:staticcheck // the harness result's UI entry point
+	var body strings.Builder
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		var all []ai.UIMessageChunk
+		for c := range chunks {
+			all = append(all, c)
+		}
+		<-errs
+		b, _ := json.Marshal(all)
+		body.Write(b)
+	}()
+	portcarryharAssertRedactedHostToolError(t, out, func() string { <-done; return body.String() })
+}
+
+// TS: redacts a host tool error in toUIMessageStreamResponse when redactToolErrors is true.
+func TestPortcarryharRedactToolErrorsHostToolErrorToUIMessageStreamResponse(t *testing.T) {
+	out := portcarryharPauseFailingTurn()
+	redact := true
+	resp, err := out.Result.ToUIMessageStreamResponse(context.Background(), nil, ai.UIMessageStreamResultOptions{RedactToolErrors: &redact}) //nolint:staticcheck // the harness result's UI entry point
+	if err != nil {
+		t.Fatal(err)
+	}
+	bodyCh := make(chan string, 1)
+	go func() {
+		b, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		bodyCh <- string(b)
+	}()
+	portcarryharAssertRedactedHostToolError(t, out, func() string { return <-bodyCh })
+}
+
+// TS: formats a failed host tool result with onError when tool errors are
+// redacted. The runtime echoes the failed submission; OnError alone turns
+// redaction on, so the one tool-output-error chunk carries the OnError text.
+func TestPortcarryharFormatsFailedHostToolResultWithOnError(t *testing.T) {
+	tool := types.Tool{
+		Name: "weather", Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
+		Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			return nil, errors.New("weather unavailable")
+		},
+	}
+	tools := map[string]types.Tool{"weather": tool}
+	mock := newScriptedHarness(
+		func(emit func(StreamPart)) {
+			emit(&StreamStartPart{})
+			emit(&ToolCallPart{ToolCallID: "c1", ToolName: "weather", Input: `{}`})
+		},
+		func(sub ToolResultSubmission, emit func(StreamPart)) {
+			emit(&ToolResultPart{ToolCallID: sub.ToolCallID, ToolName: "weather", IsError: sub.IsError, Result: sub.Output})
+			emit(&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonStop}, Usage: stringUsage(1, 1)})
+			emit(&FinishPart{FinishReason: FinishReason{Unified: FinishReasonStop}, TotalUsage: stringUsage(1, 1)})
+		},
+	)
+	out := runPrompt(context.Background(), runPromptInput{
+		Harness: mock.harness, Session: mock.session,
+		Prompt: TextPrompt("go"), Tools: tools, ActiveTools: tools, SandboxSession: testSandbox(),
+	})
+	chunks, errs := out.Result.ToUIMessageStream(context.Background(), ai.UIMessageStreamResultOptions{OnError: func(error) string { return "Tool failed" }}) //nolint:staticcheck // the harness result's UI entry point
+	var outputs []ai.UIMessageChunk
+	for c := range chunks {
+		if typ, _ := c["type"].(string); strings.HasPrefix(typ, "tool-output-") {
+			outputs = append(outputs, c)
+		}
+	}
+	if err := <-errs; err != nil {
+		t.Fatalf("ui stream error: %v", err)
+	}
+	<-out.Done
+	if len(outputs) != 1 || outputs[0]["type"] != "tool-output-error" || outputs[0]["toolCallId"] != "c1" || outputs[0]["errorText"] != "Tool failed" {
+		t.Fatalf("tool-output chunks = %+v, want one tool-output-error c1 \"Tool failed\"", outputs)
 	}
 }

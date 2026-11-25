@@ -753,11 +753,14 @@ func (i OpenTelemetry) OnLanguageModelCallStart(ctx context.Context, e LanguageM
 		// A stream retry or a steering interrupt starts a new model call
 		// without ending the previous one (TS 5-line change in
 		// onLanguageModelCallStart, e4039889ba): end the open chat span with
-		// an error status first.
-		if value, ok := genAICallSpans.LoadAndDelete(genAISpanKey("languageModel", i.stateKey(e.CallID))); ok {
-			if entry, ok := value.(otelSpanEntry); ok && entry.span != nil && entry.span.IsRecording() {
-				entry.span.SetStatus(codes.Error, "")
-				entry.span.End()
+		// an error status first. Only text calls: TS's object path
+		// (onObjectStepStart) does not end an open span.
+		if !isObject {
+			if value, ok := genAICallSpans.LoadAndDelete(genAISpanKey("languageModel", i.stateKey(e.CallID))); ok {
+				if entry, ok := value.(otelSpanEntry); ok && entry.span != nil && entry.span.IsRecording() {
+					entry.span.SetStatus(codes.Error, "")
+					entry.span.End()
+				}
 			}
 		}
 		if st := genAILoadedState(i.stateKey(e.CallID)); st != nil {
