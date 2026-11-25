@@ -797,6 +797,15 @@ type StreamTextResult struct {
 	// stream-text.ts 2654-2671 adds them to the stitchable stream ahead of
 	// the step's own stream).
 	pendingSteering []provider.StreamChunk
+	// stepInterrupt watches the current step's model call for a steering
+	// interrupt; stepRedoBase, stepRedoSteering and stepRedoStart are what a
+	// redo of the step starts from: the step's messages without its steering
+	// messages, every steering message it took, and the instructions and
+	// contexts it started with (TS streamStep redo).
+	stepInterrupt    *stepInterrupt
+	stepRedoBase     []types.Message
+	stepRedoSteering []types.Message
+	stepRedoStart    stepRedoStart
 
 	// singleConsumer is set by StreamTextLowMemory: the chunk buffer drops
 	// consumed chunks and the first stream accessor claims the only cursor.
@@ -1209,6 +1218,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		stepMessages = append(append([]types.Message(nil), prompt.Messages...), initialResponseMessages...)
 	}
 	// Messages sent before the run starts land in the first step.
+	redoBase := stepMessages
 	steeringMessages := r.steering.takeMessages()
 	if len(steeringMessages) > 0 {
 		stepMessages = append(append([]types.Message(nil), stepMessages...), steeringMessages...)
@@ -1222,6 +1232,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	// The call-level sandbox: a PrepareStep sandbox applies to its step only.
 	r.cbCallSandbox = opts.ExperimentalSandbox
 	stepInstructionMessages := instructionMessages
+	redoStart := stepRedoStart{system: stepSystem, instructionMessages: stepInstructionMessages, runtimeCtx: runtimeContext, toolsCtx: toolsContext}
 	// Per-step call-setting overrides (audit row 60f97f6 / WG-STEP); see the
 	// analogous comment in generate.go's GenerateText.
 	stepMaxTokens := opts.MaxTokens
@@ -1508,6 +1519,9 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	// and starts its clock; a retried DoStream open runs it again, as TS
 	// retries streamLanguageModelCall as a whole.
 	var modelCallCtx context.Context
+	// A steering interrupt cancels the model call while it has produced no
+	// output (TS interruptController merged into the call's signal).
+	interrupt := newStepInterrupt(r.steering)
 	startModelCall := func() context.Context {
 		Notify(telemetryStepCtx, LanguageModelCallStartEvent{
 			CallID:              callID,
@@ -1555,9 +1569,10 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 
 		r.stepReopenCtx = modelCallCtx
 		r.stepCallStartedAt = r.now()
-		return modelCallCtx
+		return interrupt.wrap(modelCallCtx)
 	}
 	startModelCall()
+	openCtx := interrupt.wrap(modelCallCtx)
 
 	// Start streaming
 	r.stepReopenModel = stepModel
@@ -1566,9 +1581,15 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	var stream provider.TextStream
 	err := responseFormatErr
 	if err == nil {
-		stream, err = doStreamWithGatewayRetryEach(modelCallCtx, stepModel, genOpts, stepMaxRetries, startModelCall)
+		stream, err = doStreamWithGatewayRetryEach(openCtx, stepModel, genOpts, stepMaxRetries, startModelCall)
+		if err != nil && interrupt.interrupted(stepCtx) {
+			// The interrupt cancelled the open: the step is made again
+			// (processStream), not failed. A caller abort or a timeout wins.
+			stream, err = stepInterruptedStream{}, nil
+		}
 	}
 	if err != nil {
+		interrupt.release()
 		// stepCancel runs only after the error is classified below: a cancelled
 		// step context would make every open failure look like a step timeout.
 		if opts.Timeout.HasPerStep() && deadlineFired(stepCtx, ctx) {
@@ -1639,6 +1660,10 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	// been called concurrently, from the caller, while this bootstrap work
 	// was still in flight — see setStream/setInitialStep and Close() below.
 	r.setStream(stream)
+	r.stepInterrupt = interrupt
+	r.stepRedoBase = redoBase
+	r.stepRedoSteering = append([]types.Message(nil), steeringMessages...)
+	r.stepRedoStart = redoStart
 	r.setInitialStep(stepCtx, stepCancel)
 	r.telemetryCtx = telemetryCtx
 	r.telemetrySettings = telemetrySettings
@@ -2295,6 +2320,437 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	// before any step's content is read.
 	forwardThroughTransformChain(0, []provider.StreamChunk{{Type: provider.ChunkTypeStart}})
 
+	// openStep prepares the step with index `index` and opens its model call:
+	// PrepareStep, the step start and the stream. It starts the step that follows
+	// the one just finished, or (redo != nil) makes the current step again after a
+	// steering interrupt cancelled its model call. It returns false when the step
+	// could not be started; the failure is already reported.
+	openStep := func(index int, redo *stepRedo) bool {
+		// Resolve ResponseFormat for the next step.
+		// A failure fails this step's model call (see bootstrapAndStream).
+		responseFormat := opts.ResponseFormat
+		var nextResponseFormatErr error
+		if responseFormat == nil && r.outputSpec != nil {
+			responseFormat, nextResponseFormatErr = r.outputSpec.ResponseFormat(ctx)
+		}
+
+		// Start a new stream for the next step.
+		// Each step starts from the call's model (TS `prepareStepResult?.model
+		// ?? model`): a PrepareStep model applies to its own step only.
+		nextModel := opts.Model
+		// A redo starts from the state the step started with: its messages
+		// without the steering messages, the messages already taken for it,
+		// and the instructions and contexts before PrepareStep changed them.
+		var nextSteering []types.Message
+		var nextBase []types.Message
+		if redo != nil {
+			r.cbSystem, r.cbInstructionMessages = r.stepRedoStart.system, r.stepRedoStart.instructionMessages
+			r.cbRuntimeCtx, r.cbToolsCtx = r.stepRedoStart.runtimeCtx, r.stepRedoStart.toolsCtx
+			nextBase = r.stepRedoBase
+			nextSteering = append(append([]types.Message(nil), r.stepRedoSteering...), r.steering.takeMessages()...)
+		} else {
+			nextBase = currentMessages
+			nextSteering = r.steering.takeMessages()
+			r.stepRedoStart = stepRedoStart{system: r.cbSystem, instructionMessages: r.cbInstructionMessages, runtimeCtx: r.cbRuntimeCtx, toolsCtx: r.cbToolsCtx}
+		}
+		r.stepRedoBase = nextBase
+		r.stepRedoSteering = append([]types.Message(nil), nextSteering...)
+		nextSystem := r.cbSystem
+		nextMessages := nextBase
+		if len(nextSteering) > 0 {
+			nextMessages = append(append([]types.Message(nil), nextMessages...), nextSteering...)
+		}
+		nextTools := FilterActiveTools(opts.Tools, opts.ActiveTools)
+		nextActiveTools := opts.ActiveTools
+		nextToolChoice := opts.ToolChoice
+		nextToolOrder := opts.ToolOrder
+		nextProviderOptions := opts.ProviderOptions
+		nextSandbox := r.cbCallSandbox
+		nextInstructionMessages := r.cbInstructionMessages
+		// Per-step call-setting overrides (audit row 60f97f6 / WG-STEP); see
+		// the analogous comment in generate.go's GenerateText.
+		nextMaxTokens := opts.MaxTokens
+		nextTemperature := opts.Temperature
+		nextTopP := opts.TopP
+		nextTopK := opts.TopK
+		nextPresencePenalty := opts.PresencePenalty
+		nextFrequencyPenalty := opts.FrequencyPenalty
+		nextStopSequences := opts.StopSequences
+		nextSeed := opts.Seed
+		nextReasoningLevel := opts.Reasoning
+		// The next step's timeout starts before its PrepareStep (TS streamStep).
+		nextStepCtx := ctx
+		nextStepCancel := func() {}
+		if redo != nil {
+			// The redo keeps the step's timeout running (TS redo.stepTimeoutId).
+			nextStepCtx = redo.stepCtx
+		} else if r.timeout != nil && r.timeout.HasPerStep() {
+			nextStepCtx, nextStepCancel = r.timeout.CreateTimeoutContext(ctx, "step")
+		}
+		if opts.PrepareStep != nil {
+			initialSystem := r.cbInitialSystem
+			givenInstructions := nextSystem
+			prepared := opts.PrepareStep(ctx, PrepareStepOptions{
+				Model:                        nextModel,
+				System:                       nextSystem,
+				Instructions:                 &givenInstructions,
+				InitialInstructions:          &initialSystem,
+				InstructionMessages:          cloneInstructionMessages(nextInstructionMessages),
+				InitialInstructionMessages:   cloneInstructionMessages(r.cbInitialInstructionMessages),
+				ExperimentalSteeringMessages: append([]types.Message(nil), nextSteering...),
+				Messages:                     append([]types.Message(nil), nextMessages...),
+				InitialMessages:              append([]types.Message(nil), r.cbInitialMessages...),
+				ResponseMessages:             responseMessagesWithInitial(r.initialResponseMessages, allSteps),
+				UserContext:                  r.cbRuntimeCtx,
+				RuntimeContext:               r.cbRuntimeCtx,
+				ToolsContext:                 r.cbToolsCtx,
+				StepNumber:                   index,
+				Steps:                        append([]types.StepResult(nil), allSteps...),
+				Tools:                        nextTools,
+				ToolChoice:                   nextToolChoice,
+				ActiveTools:                  opts.ActiveTools,
+				ToolOrder:                    nextToolOrder,
+				ProviderOptions:              nextProviderOptions,
+				ExperimentalSandbox:          nextSandbox,
+				AccumulatedUsage:             r.usage,
+				MaxOutputTokens:              nextMaxTokens,
+				Temperature:                  nextTemperature,
+				TopP:                         nextTopP,
+				TopK:                         nextTopK,
+				PresencePenalty:              nextPresencePenalty,
+				FrequencyPenalty:             nextFrequencyPenalty,
+				StopSequences:                nextStopSequences,
+				Seed:                         nextSeed,
+				Reasoning:                    nextReasoningLevel,
+			})
+			if prepared.Model != nil {
+				nextModel = prepared.Model
+			}
+			if len(prepared.InstructionMessages) > 0 {
+				if err := validateInstructionMessages(prepared.InstructionMessages); err != nil {
+					nextStepCancel()
+					failNextStep(err)
+					return false
+				}
+				nextInstructionMessages = cloneInstructionMessages(prepared.InstructionMessages)
+				nextSystem = ""
+			} else if preparedInstructionsSet(prepared.Instructions, &givenInstructions, nextSystem) {
+				nextSystem = *prepared.Instructions
+				nextInstructionMessages = nil
+			} else if prepared.System != "" {
+				nextSystem = prepared.System
+				nextInstructionMessages = nil
+			} else if prepared.InstructionMessages != nil {
+				nextInstructionMessages = nil
+			}
+			if prepared.Messages != nil {
+				nextMessages = cloneStepMessages(prepared.Messages)
+			}
+			nextTools, nextActiveTools = applyPreparedTools(opts.Tools, nextTools, nextActiveTools, prepared)
+			if prepared.ToolChoice.Type != "" {
+				nextToolChoice = prepared.ToolChoice
+			}
+			if prepared.ToolOrder != nil {
+				nextToolOrder = prepared.ToolOrder
+			}
+			if prepared.ProviderOptions != nil {
+				// TS mergeObjects(providerOptions, prepareStepResult.providerOptions).
+				nextProviderOptions = promptutils.MergeProviderOptions(opts.ProviderOptions, prepared.ProviderOptions)
+			}
+			if prepared.RuntimeContext != nil {
+				r.cbRuntimeCtx = prepared.RuntimeContext
+			}
+			if prepared.ToolsContext != nil {
+				r.cbToolsCtx = prepared.ToolsContext
+			}
+			if prepared.ExperimentalSandbox != nil {
+				nextSandbox = prepared.ExperimentalSandbox
+			}
+			if prepared.MaxOutputTokens != nil {
+				nextMaxTokens = prepared.MaxOutputTokens
+			}
+			if prepared.Temperature != nil {
+				nextTemperature = prepared.Temperature
+			}
+			if prepared.TopP != nil {
+				nextTopP = prepared.TopP
+			}
+			if prepared.TopK != nil {
+				nextTopK = prepared.TopK
+			}
+			if prepared.PresencePenalty != nil {
+				nextPresencePenalty = prepared.PresencePenalty
+			}
+			if prepared.FrequencyPenalty != nil {
+				nextFrequencyPenalty = prepared.FrequencyPenalty
+			}
+			if prepared.StopSequences != nil {
+				nextStopSequences = prepared.StopSequences
+			}
+			if prepared.Seed != nil {
+				nextSeed = prepared.Seed
+			}
+			if prepared.Reasoning != nil {
+				nextReasoningLevel = prepared.Reasoning
+			}
+		}
+
+		nextHeaders, nextMaxRetries := opts.Internal.stepCallSettings(opts.Headers, opts.MaxRetries)
+
+		nextTools = r.toolSearchState.Apply(nextTools, r.cbToolsCtx, nextSandbox)
+		nextExecutionTools, nextModelTools, nextToolCallerMessages := PrepareToolsForToolCallers(nextTools, r.resolvedToolCallers)
+		nextTools = nextModelTools
+		if len(nextToolCallerMessages) > 0 {
+			nextMessages = AppendToolCallerMessages(nextMessages, nextToolCallerMessages)
+		}
+		// TS stream-text.ts: `currentStepMessages = stepMessages` (the
+		// result of appendToolCallerMessages) becomes the base for that
+		// step's `stepMessagesForNextStep = [...currentStepMessages,
+		// ...stepResponseMessages]` once the step finishes. Mirror that here
+		// by syncing currentMessages to nextMessages now, so when the next
+		// loop iteration processes this step's response and does
+		// `currentMessages = append(currentMessages, stepResponseMsgs...)`
+		// above, it builds on top of this step's own toolCaller
+		// announcement instead of dropping it after one step.
+		currentMessages = nextMessages
+
+		// Steering messages are delivered when they are part of the messages
+		// sent to the model after PrepareStep.
+		deliveredSteering := r.steering.resolveTakenMessages(index, nextMessages)
+		if redo != nil {
+			// Messages the step already delivered stay in the redo; their
+			// parts were streamed or are still waiting for the step's start.
+			r.stepSteering = append(append([]types.Message(nil), r.stepSteering...), steeringDeliveredMessages(deliveredSteering)...)
+			r.pendingSteering = append(r.pendingSteering, steeringMessageChunks(deliveredSteering, index)...)
+		} else {
+			r.stepSteering = steeringDeliveredMessages(deliveredSteering)
+			r.pendingSteering = steeringMessageChunks(deliveredSteering, index)
+		}
+
+		nextTools = resolveStepTools(ctx, nextTools, r.cbToolsCtx, nextSandbox)
+		nextTools = orderStepTools(nextTools, nextToolOrder)
+		nextExecutionTools = resolveStepTools(ctx, nextExecutionTools, r.cbToolsCtx, nextSandbox)
+		r.cbModel = nextModel
+		r.cbModelProvider = nextModel.Provider()
+		r.cbModelID = nextModel.ModelID()
+		r.cbSystem = nextSystem
+		r.cbInstructionMessages = nextInstructionMessages
+		r.cbToolChoice = nextToolChoice
+		currentTools = append([]types.Tool(nil), nextTools...)
+		currentExecutionTools = append([]types.Tool(nil), nextExecutionTools...)
+		currentToolChoice = nextToolChoice
+		opts.ExperimentalSandbox = nextSandbox
+		// TS prepareStepCallSettings validates the step's settings after the
+		// step's tools are prepared, before the model call.
+		if err := checkStreamMaxOutputTokens(opts.Internal, nextMaxTokens); err != nil {
+			nextStepCancel()
+			failNextStep(err)
+			return false
+		}
+		r.stepStartedAt = r.now()
+		r.stepPromptWarnings = r.logPromptWarnings(opts.OnWarning, r.promptDeprecations.forStep(nextMessages))
+		nextPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(nextStepCtx, types.Prompt{
+			Messages: messagesForModel(nextMessages),
+			System:   nextSystem,
+		}, allowSystemMessages(opts.AllowSystemMessages, opts.AllowSystemInMessages), effectiveDownload(opts.ExperimentalDownload), supportedURLChecker(nextModel))
+		if normErr != nil {
+			nextStepCancel()
+			failNextStep(normErr)
+			return false
+		}
+		if toolResultsErr := validateStepToolResults(nextPrompt.Messages, opts.Tools); toolResultsErr != nil {
+			nextStepCancel()
+			failNextStep(toolResultsErr)
+			return false
+		}
+		nextPrompt = prependInstructionMessages(nextPrompt, nextInstructionMessages)
+		nextStepStart := OnStepStartEvent{
+			CallID:              r.cbCallID,
+			StepNumber:          index,
+			Provider:            nextModel.Provider(),
+			ModelProvider:       nextModel.Provider(),
+			ModelID:             nextModel.ModelID(),
+			Instructions:        nextSystem,
+			InstructionMessages: nextInstructionMessages,
+			System:              nextSystem,
+			Messages:            nextMessages,
+			Tools:               opts.Tools, // TS stepStartEvent.tools: the call's tools
+			ToolChoice:          nextToolChoice,
+			ActiveTools:         nextActiveTools,
+			ToolOrder:           nextToolOrder,
+			ProviderOptions:     nextProviderOptions,
+			Output:              opts.Output,
+			Steps:               allSteps,
+			PreviousSteps:       allSteps,
+			ExperimentalContext: r.cbRuntimeCtx,
+			RuntimeContext:      r.cbRuntimeCtx,
+			ToolsContext:        r.cbToolsCtx,
+		}
+		if redo == nil {
+			// onStepStart fires once per step, not again for a redo.
+			Notify(nextStepCtx, nextStepStart, opts.OnStepStart)
+			r.openStep = &nextStepStart
+		}
+		nextGenOpts := &provider.GenerateOptions{
+			Prompt:                nextPrompt,
+			AllowSystemMessages:   allowSystemMessages(opts.AllowSystemMessages, opts.AllowSystemInMessages),
+			AllowSystemInMessages: allowSystemMessages(opts.AllowSystemMessages, opts.AllowSystemInMessages),
+			Temperature:           nextTemperature,
+			MaxTokens:             nextMaxTokens,
+			TopP:                  nextTopP,
+			TopK:                  nextTopK,
+			FrequencyPenalty:      nextFrequencyPenalty,
+			PresencePenalty:       nextPresencePenalty,
+			StopSequences:         nextStopSequences,
+			Seed:                  nextSeed,
+			Headers:               nextHeaders,
+			Tools:                 toolutil.ResolveToolSchemas(nextTools),
+			ToolChoice:            preparedToolChoice(nextToolChoice),
+			IncludeRawChunks:      includeRawChunksValue(r.cbInclude),
+			RuntimeContext:        r.cbRuntimeCtx,
+			ToolsContext:          r.cbToolsCtx,
+			ResponseFormat:        responseFormat,
+			Reasoning:             nextReasoningLevel,
+			SendReasoning:         opts.SendReasoning,
+			ProviderOptions:       nextProviderOptions,
+			Telemetry:             r.telemetrySettings,
+		}
+		// Fire this next step's step-start telemetry BEFORE its DoStream call,
+		// matching TS's sequential onStepStart-then-doStream ordering (same
+		// rationale as the analogous comment in bootstrapAndStream for step
+		// 1). nextTelemetryStepCtx is saved on r so the top of the following
+		// loop iteration — which processes the stream DoStream returns here —
+		// reads it back instead of firing FireOnStepStart again.
+		var nextTelemetryStepCtx context.Context
+		if redo != nil {
+			nextTelemetryStepCtx = redo.telemetryStepCtx
+		} else {
+			nextTelemetryStepCtx = telemetry.FireOnStepStart(nextStepCtx, stepStartTelemetryPrompt(opts.Internal, telemetry.TelemetryStepStartEvent{
+				CallID:         r.cbCallID,
+				OperationType:  "ai.streamText",
+				Settings:       r.telemetrySettings,
+				StepNumber:     index,
+				ModelProvider:  nextModel.Provider(),
+				ModelID:        nextModel.ModelID(),
+				ToolChoice:     preparedToolChoice(nextToolChoice),
+				PromptMessages: nextGenOpts.Prompt.Messages,
+				System:         telemetryInput(r.telemetrySettings, nextSystem),
+				StepTools:      nextTools,
+				RuntimeContext: telemetryRuntimeContextWithSensitivity(r.telemetrySettings, r.cbRuntimeCtx, r.cbSensitiveRuntimeCtx),
+				ToolsContext:   telemetryToolsContext(r.telemetrySettings, r.cbToolsCtx),
+			}))
+		}
+		r.stepReopenTelemetryStepCtx = nextTelemetryStepCtx
+		// As for the first step: a retried DoStream open is a new model call.
+		var nextModelCallCtx context.Context
+		// A steering interrupt cancels the model call while it has produced no
+		// output (TS interruptController merged into the call's signal). A
+		// redo's call start ends the cancelled call's model-call span.
+		nextInterrupt := newStepInterrupt(r.steering)
+		startNextModelCall := func() context.Context {
+			Notify(nextTelemetryStepCtx, LanguageModelCallStartEvent{
+				CallID:              r.cbCallID,
+				Provider:            nextModel.Provider(),
+				ModelID:             nextModel.ModelID(),
+				Instructions:        nextSystem,
+				InstructionMessages: nextInstructionMessages,
+				Messages:            nextMessages,
+				Tools:               nextGenOpts.Tools,
+				MaxOutputTokens:     nextGenOpts.MaxTokens,
+				Temperature:         nextGenOpts.Temperature,
+				TopP:                nextGenOpts.TopP,
+				TopK:                nextGenOpts.TopK,
+				PresencePenalty:     nextGenOpts.PresencePenalty,
+				FrequencyPenalty:    nextGenOpts.FrequencyPenalty,
+				StopSequences:       nextGenOpts.StopSequences,
+				Seed:                nextGenOpts.Seed,
+				Reasoning:           nextGenOpts.Reasoning,
+			}, onLanguageModelCallStart)
+			// Scoped to just this call (594029e): see the analogous comment where
+			// the first step's stream is started, above. Parented under the step
+			// span created just above.
+			nextModelCallCtx = telemetry.FireOnLanguageModelCallStart(nextTelemetryStepCtx, telemetry.LanguageModelCallStartEvent{
+				Settings:            r.telemetrySettings,
+				CallID:              r.cbCallID,
+				ModelProvider:       nextModel.Provider(),
+				ModelID:             nextModel.ModelID(),
+				Prompt:              nextGenOpts.Prompt,
+				Messages:            nextMessages,
+				InstructionMessages: nextInstructionMessages,
+				Tools:               nextGenOpts.Tools,
+				System:              nextSystem,
+				Temperature:         nextGenOpts.Temperature,
+				MaxOutputTokens:     nextGenOpts.MaxTokens,
+				TopP:                nextGenOpts.TopP,
+				TopK:                nextGenOpts.TopK,
+				PresencePenalty:     nextGenOpts.PresencePenalty,
+				FrequencyPenalty:    nextGenOpts.FrequencyPenalty,
+				StopSequences:       nextGenOpts.StopSequences,
+				Seed:                nextGenOpts.Seed,
+			})
+			r.stepReopenCtx = nextModelCallCtx
+			r.stepCallStartedAt = r.now()
+			return nextInterrupt.wrap(nextModelCallCtx)
+		}
+		startNextModelCall()
+		nextOpenCtx := nextInterrupt.wrap(nextModelCallCtx)
+		r.stepReopenModel = nextModel
+		r.stepReopenGenOpts = nextGenOpts
+		r.stepReopenMaxRetries = nextMaxRetries
+		var newStream provider.TextStream
+		err := nextResponseFormatErr
+		if err == nil {
+			newStream, err = doStreamWithGatewayRetryEach(nextOpenCtx, nextModel, nextGenOpts, nextMaxRetries, startNextModelCall)
+			if err != nil && nextInterrupt.interrupted(nextStepCtx) {
+				// The interrupt cancelled the open: the step is made again, not
+				// failed. A caller abort or a timeout wins.
+				newStream, err = stepInterruptedStream{}, nil
+			}
+		}
+		if err != nil {
+			nextInterrupt.release()
+			// nextStepCancel runs after the error is classified: a cancelled
+			// step context would make every open failure look like a step timeout.
+			if r.timeout.HasPerStep() && deadlineFired(nextStepCtx, ctx) {
+				err = r.timeout.timeoutError(TimeoutReasonStep, nextStepCtx.Err())
+			} else if r.timeout.HasTotal() && deadlineFired(ctx, r.totalParentCtx) {
+				err = r.timeout.timeoutError(TimeoutReasonTotal, err)
+			}
+			openErr := err
+			r.err = wrapGatewayError(err)
+			// Close the still-open step span and the model-call/"chat" span
+			// opened just above via FireOnStepStart/FireOnLanguageModelCallStart
+			// (this next step's own iteration of the outer loop is never
+			// reached — this break prevents it): the shared cleanup after the
+			// loop only closes the root span (H4 item 2).
+			// On abort TS's step catch only enqueues an `error` part, which the
+			// outer stream turns into abort(): no telemetry onStepError (its
+			// notifyStepError returns once aborted) and no onError; the
+			// telemetry onAbort ends the spans.
+			if isAbortErr(nextStepCtx, r.err) {
+				fireAbort(r.err)
+			} else {
+				// Same as the first step: the failure is an error part. onError
+				// is called once, by the shared error handling after the loop.
+				// The error part carries the model call's own error (TS step
+				// catch); onError gets it wrapped.
+				forwardThroughTransformChain(0, []provider.StreamChunk{{Type: provider.ChunkTypeError, Err: openErr, Text: openErr.Error()}})
+				flushSteering()
+				continuationFailed = true
+				stepErrorTelemetryCtx = nextModelCallCtx
+			}
+			nextStepCancel()
+			return false
+		}
+		if redo == nil {
+			pendingStepCtx = nextStepCtx
+			pendingStepCancel = nextStepCancel
+		}
+		r.stepInterrupt = nextInterrupt
+		r.setStream(newStream)
+		return true
+	}
+
 	for stepNum := 1; ; stepNum++ {
 		stepIndex := stepNum - 1
 		// The step's time runs from after its PrepareStep and the model call's
@@ -2504,6 +2960,76 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		var decidedErr *provider.StreamChunk
 		var decidedErrNormalized error
 		var openTextIDs, openReasoningIDs []string
+		// si watches the step's model call for a steering interrupt.
+		si := r.stepInterrupt
+		r.stepInterrupt = nil
+
+		// resetAttempt discards what the model call attempt in progress recorded
+		// for the step: a stream retry and a steering redo start it fresh.
+		resetAttempt := func() {
+			// Discard this attempt's buffered step output and start
+			// the step's aggregation fresh, so the recovered step
+			// reflects only the successful attempt (TS: the
+			// attempt-boundary reset in stream-text.ts's transform).
+			firstTokenAt = nil
+			previousOutputChunkAt = nil
+			outputChunkGapsMs = nil
+			stepResponseModelID = stepModelID
+			stepResponseID = ""
+			stepDefaultResponseID = remapGenerateID()
+			stepResponseTimestamp = r.now()
+			attemptHeaders := streamResponseHeaders(r.currentStream())
+			r.mu.Lock()
+			r.responseHeaders = attemptHeaders
+			r.mu.Unlock()
+			toolInputCallbacks = newStreamToolInputCallbacks(stepExecutionTools, currentMessages, r.cbToolsCtx)
+			deferredToolInputs = nil
+			startedToolInputs = map[string]string{}
+			preRefinementCalls = nil
+			stepTextParts = nil
+			outputTracker.reset()
+			outputText.reset()
+			if rec != nil {
+				// TS eventProcessor retry boundary: the recorded
+				// content restarts, and the step's request and
+				// warnings are the retry's (recordedRequest /
+				// recordedWarnings from the boundary, not from the
+				// transformed start-step part).
+				rec.resetStep()
+			}
+			stepToolCalls = nil
+			eagerApprovals = make(map[string]preResolvedApproval)
+			pendingApprovalChunks = nil
+			stepModelOutputErr = nil
+			inlineInvalidResults = nil
+			pendingInvalidToolErrors = nil
+			stepContent = nil
+			stepBlocks.reset()
+			rawBlocks.reset()
+			sinkBlocks.reset()
+			stepReasoningBuilder.Reset()
+			modelCallEndFired = false
+			modelCallPerformance = nil
+			stepUsage = types.Usage{}
+			stepProviderMetadataRaw = nil
+			// TS retry boundary: stepRawFinishReason = undefined.
+			r.rawFinishReason = ""
+			stepSawTerminal = false
+			stepSawFinish = false
+			stepSawErrorChunk = false
+			stepSawOutput = false
+			streamedToolResults = make(map[string]types.ToolResult)
+			streamedToolResultOrder = nil
+			stepTextIDRemap = make(map[string]string)
+			stepReasoningIDRemap = make(map[string]string)
+			r.mu.Lock()
+			r.sources = r.sources[:stepSourcesStart]
+			r.files = r.files[:stepFilesStart]
+			r.warnings = append(r.warnings[:stepWarningsStart], stepPromptWarnings...)
+			r.partialOutput = nil
+			r.mu.Unlock()
+			accumulatedTextParts = accumulatedTextParts[:stepTextPartsStart]
+		}
 
 	stepAttempt:
 		for {
@@ -2522,7 +3048,72 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			case streamEnded:
 				err = io.EOF
 			default:
-				chunk, err = r.readChunk(chunkDeadlineCtx)
+				chunk, err = r.readChunkInterruptible(chunkDeadlineCtx, si.channel())
+			}
+			// A steering interrupt cancels a model call that has produced no
+			// output; the step is made again with the steering message. It
+			// wins over what the read returned, a caller abort or a timeout
+			// wins over it (TS isInterrupted). Output, a tool input start or
+			// the end of the call closes the window.
+			interruptStep := false
+			if !replayed && si.windowOpen() {
+				switch {
+				case si.interrupted(stepCtx):
+					interruptStep = true
+				case err == errStepInterrupted:
+					// A caller abort or a timeout ended the step first.
+					err = context.Cause(stepCtx)
+				case err == io.EOF || (err == nil && closesInterruptWindow(*chunk)):
+					si.closeWindow()
+				}
+			}
+			if interruptStep {
+				chunkDeadlineCancel()
+				if s := r.currentStream(); s != nil {
+					_ = s.Close()
+				}
+				si.release()
+				heldChunks, replayQueue, streamEnded, decidedErr = nil, nil, false, nil
+				r.onChunkReportedErr = nil
+				// Close the text and reasoning blocks the cancelled call left
+				// open downstream (TS closeOpenAttemptParts), then make the
+				// step again, with the steering messages taken so far.
+				for _, id := range openTextIDs {
+					forwardThroughTransformChain(0, []provider.StreamChunk{{Type: provider.ChunkTypeTextEnd, ID: id}})
+				}
+				for _, id := range openReasoningIDs {
+					forwardThroughTransformChain(0, []provider.StreamChunk{{Type: provider.ChunkTypeReasoningEnd, ID: id}})
+				}
+				openTextIDs, openReasoningIDs = nil, nil
+				if !openStep(stepIndex, &stepRedo{stepCtx: stepCtx, telemetryStepCtx: telemetryStepCtx}) {
+					break
+				}
+				si = r.stepInterrupt
+				stepProvider, stepModelID = r.cbModel.Provider(), r.cbModel.ModelID()
+				stepInstructions, stepInstructionMessages = r.cbSystem, r.cbInstructionMessages
+				stepTools = append([]types.Tool(nil), currentTools...)
+				stepExecutionTools = append([]types.Tool(nil), currentExecutionTools...)
+				toolsByName = make(map[string]*types.Tool, len(stepExecutionTools))
+				for i := range stepExecutionTools {
+					toolsByName[stepExecutionTools[i].Name] = &stepExecutionTools[i]
+				}
+				modelToolsByName = make(map[string]*types.Tool, len(stepTools))
+				for i := range stepTools {
+					modelToolsByName[stepTools[i].Name] = &stepTools[i]
+				}
+				stepPromptWarnings = r.stepPromptWarnings
+				stepStart, callStart = r.stepStartedAt, r.stepCallStartedAt
+				automaticStreamRetryCount, callbackStreamRetryCount = 0, 0
+				resetAttempt()
+				// The cancelled call may already have sent the step's
+				// start-step part; the redo's steering-message parts then come
+				// right after the closed blocks (otherwise before start-step).
+				if !stepFirstForwardedChunk {
+					flushSteering()
+				}
+				chunkDeadlineCancel()
+				chunkDeadlineCtx, chunkDeadlineCancel, chunkDeadlineReason = armStepChunkDeadline(stepCtx, r.timeout)
+				continue stepAttempt
 			}
 			if err == io.EOF {
 				if len(heldChunks) > 0 {
@@ -3163,10 +3754,15 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 							Seed:                reopenOpts.Seed,
 						})
 						callStart = r.now()
-						return r.stepReopenCtx
+						return si.wrap(r.stepReopenCtx)
 					}
 					startReopenCall()
-					newStream, reopenErr := doStreamWithGatewayRetryEach(r.stepReopenCtx, reopenModel, reopenOpts, r.stepReopenMaxRetries, startReopenCall)
+					newStream, reopenErr := doStreamWithGatewayRetryEach(si.wrap(r.stepReopenCtx), reopenModel, reopenOpts, r.stepReopenMaxRetries, startReopenCall)
+					if reopenErr != nil && si.windowOpen() && si.interrupted(stepCtx) {
+						// The interrupt cancelled the retry's open: the step is
+						// made again (below), not failed.
+						newStream, reopenErr = stepInterruptedStream{}, nil
+					}
 					if reopenErr != nil {
 						// A step or total deadline that passes while the
 						// retry's model call opens is that timeout (TS: the
@@ -3201,68 +3797,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					}
 					r.setStream(newStream)
 
-					// Discard this attempt's buffered step output and start
-					// the step's aggregation fresh, so the recovered step
-					// reflects only the successful attempt (TS: the
-					// attempt-boundary reset in stream-text.ts's transform).
-					firstTokenAt = nil
-					previousOutputChunkAt = nil
-					outputChunkGapsMs = nil
-					stepResponseModelID = stepModelID
-					stepResponseID = ""
-					stepDefaultResponseID = remapGenerateID()
-					stepResponseTimestamp = r.now()
-					attemptHeaders := streamResponseHeaders(newStream)
-					r.mu.Lock()
-					r.responseHeaders = attemptHeaders
-					r.mu.Unlock()
-					toolInputCallbacks = newStreamToolInputCallbacks(stepExecutionTools, currentMessages, r.cbToolsCtx)
-					deferredToolInputs = nil
-					startedToolInputs = map[string]string{}
-					preRefinementCalls = nil
-					stepTextParts = nil
-					outputTracker.reset()
-					outputText.reset()
-					if rec != nil {
-						// TS eventProcessor retry boundary: the recorded
-						// content restarts, and the step's request and
-						// warnings are the retry's (recordedRequest /
-						// recordedWarnings from the boundary, not from the
-						// transformed start-step part).
-						rec.resetStep()
-					}
-					stepToolCalls = nil
-					eagerApprovals = make(map[string]preResolvedApproval)
-					pendingApprovalChunks = nil
-					stepModelOutputErr = nil
-					inlineInvalidResults = nil
-					pendingInvalidToolErrors = nil
-					stepContent = nil
-					stepBlocks.reset()
-					rawBlocks.reset()
-					sinkBlocks.reset()
-					stepReasoningBuilder.Reset()
-					modelCallEndFired = false
-					modelCallPerformance = nil
-					stepUsage = types.Usage{}
-					stepProviderMetadataRaw = nil
-					// TS retry boundary: stepRawFinishReason = undefined.
-					r.rawFinishReason = ""
-					stepSawTerminal = false
-					stepSawFinish = false
-					stepSawErrorChunk = false
-					stepSawOutput = false
-					streamedToolResults = make(map[string]types.ToolResult)
-					streamedToolResultOrder = nil
-					stepTextIDRemap = make(map[string]string)
-					stepReasoningIDRemap = make(map[string]string)
-					r.mu.Lock()
-					r.sources = r.sources[:stepSourcesStart]
-					r.files = r.files[:stepFilesStart]
-					r.warnings = append(r.warnings[:stepWarningsStart], stepPromptWarnings...)
-					r.partialOutput = nil
-					r.mu.Unlock()
-					accumulatedTextParts = accumulatedTextParts[:stepTextPartsStart]
+					resetAttempt()
 					chunkDeadlineCancel()
 					chunkDeadlineCtx, chunkDeadlineCancel, chunkDeadlineReason = armStepChunkDeadline(stepCtx, r.timeout)
 					continue stepAttempt
@@ -3351,6 +3886,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			}
 		}
 		chunkDeadlineCancel()
+		si.release()
 		if transformFailErr != nil && r.err == nil {
 			r.err = transformFailErr
 		}
@@ -4206,380 +4742,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			}
 		}
 
-		// Resolve ResponseFormat for the next step.
-		// A failure fails this step's model call (see bootstrapAndStream).
-		responseFormat := opts.ResponseFormat
-		var nextResponseFormatErr error
-		if responseFormat == nil && r.outputSpec != nil {
-			responseFormat, nextResponseFormatErr = r.outputSpec.ResponseFormat(ctx)
-		}
-
-		// Start a new stream for the next step.
-		// Each step starts from the call's model (TS `prepareStepResult?.model
-		// ?? model`): a PrepareStep model applies to its own step only.
-		nextModel := opts.Model
-		nextSystem := r.cbSystem
-		nextMessages := currentMessages
-		nextSteering := r.steering.takeMessages()
-		if len(nextSteering) > 0 {
-			nextMessages = append(append([]types.Message(nil), nextMessages...), nextSteering...)
-		}
-		nextTools := FilterActiveTools(opts.Tools, opts.ActiveTools)
-		nextActiveTools := opts.ActiveTools
-		nextToolChoice := opts.ToolChoice
-		nextToolOrder := opts.ToolOrder
-		nextProviderOptions := opts.ProviderOptions
-		nextSandbox := r.cbCallSandbox
-		nextInstructionMessages := r.cbInstructionMessages
-		// Per-step call-setting overrides (audit row 60f97f6 / WG-STEP); see
-		// the analogous comment in generate.go's GenerateText.
-		nextMaxTokens := opts.MaxTokens
-		nextTemperature := opts.Temperature
-		nextTopP := opts.TopP
-		nextTopK := opts.TopK
-		nextPresencePenalty := opts.PresencePenalty
-		nextFrequencyPenalty := opts.FrequencyPenalty
-		nextStopSequences := opts.StopSequences
-		nextSeed := opts.Seed
-		nextReasoningLevel := opts.Reasoning
-		// The next step's timeout starts before its PrepareStep (TS streamStep).
-		nextStepCtx := ctx
-		nextStepCancel := func() {}
-		if r.timeout != nil && r.timeout.HasPerStep() {
-			nextStepCtx, nextStepCancel = r.timeout.CreateTimeoutContext(ctx, "step")
-		}
-		if opts.PrepareStep != nil {
-			initialSystem := r.cbInitialSystem
-			givenInstructions := nextSystem
-			prepared := opts.PrepareStep(ctx, PrepareStepOptions{
-				Model:                        nextModel,
-				System:                       nextSystem,
-				Instructions:                 &givenInstructions,
-				InitialInstructions:          &initialSystem,
-				InstructionMessages:          cloneInstructionMessages(nextInstructionMessages),
-				InitialInstructionMessages:   cloneInstructionMessages(r.cbInitialInstructionMessages),
-				ExperimentalSteeringMessages: append([]types.Message(nil), nextSteering...),
-				Messages:                     append([]types.Message(nil), nextMessages...),
-				InitialMessages:              append([]types.Message(nil), r.cbInitialMessages...),
-				ResponseMessages:             responseMessagesWithInitial(r.initialResponseMessages, allSteps),
-				UserContext:                  r.cbRuntimeCtx,
-				RuntimeContext:               r.cbRuntimeCtx,
-				ToolsContext:                 r.cbToolsCtx,
-				StepNumber:                   stepNum,
-				Steps:                        append([]types.StepResult(nil), allSteps...),
-				Tools:                        nextTools,
-				ToolChoice:                   nextToolChoice,
-				ActiveTools:                  opts.ActiveTools,
-				ToolOrder:                    nextToolOrder,
-				ProviderOptions:              nextProviderOptions,
-				ExperimentalSandbox:          nextSandbox,
-				AccumulatedUsage:             r.usage,
-				MaxOutputTokens:              nextMaxTokens,
-				Temperature:                  nextTemperature,
-				TopP:                         nextTopP,
-				TopK:                         nextTopK,
-				PresencePenalty:              nextPresencePenalty,
-				FrequencyPenalty:             nextFrequencyPenalty,
-				StopSequences:                nextStopSequences,
-				Seed:                         nextSeed,
-				Reasoning:                    nextReasoningLevel,
-			})
-			if prepared.Model != nil {
-				nextModel = prepared.Model
-			}
-			if len(prepared.InstructionMessages) > 0 {
-				if err := validateInstructionMessages(prepared.InstructionMessages); err != nil {
-					nextStepCancel()
-					failNextStep(err)
-					break
-				}
-				nextInstructionMessages = cloneInstructionMessages(prepared.InstructionMessages)
-				nextSystem = ""
-			} else if preparedInstructionsSet(prepared.Instructions, &givenInstructions, nextSystem) {
-				nextSystem = *prepared.Instructions
-				nextInstructionMessages = nil
-			} else if prepared.System != "" {
-				nextSystem = prepared.System
-				nextInstructionMessages = nil
-			} else if prepared.InstructionMessages != nil {
-				nextInstructionMessages = nil
-			}
-			if prepared.Messages != nil {
-				nextMessages = cloneStepMessages(prepared.Messages)
-			}
-			nextTools, nextActiveTools = applyPreparedTools(opts.Tools, nextTools, nextActiveTools, prepared)
-			if prepared.ToolChoice.Type != "" {
-				nextToolChoice = prepared.ToolChoice
-			}
-			if prepared.ToolOrder != nil {
-				nextToolOrder = prepared.ToolOrder
-			}
-			if prepared.ProviderOptions != nil {
-				// TS mergeObjects(providerOptions, prepareStepResult.providerOptions).
-				nextProviderOptions = promptutils.MergeProviderOptions(opts.ProviderOptions, prepared.ProviderOptions)
-			}
-			if prepared.RuntimeContext != nil {
-				r.cbRuntimeCtx = prepared.RuntimeContext
-			}
-			if prepared.ToolsContext != nil {
-				r.cbToolsCtx = prepared.ToolsContext
-			}
-			if prepared.ExperimentalSandbox != nil {
-				nextSandbox = prepared.ExperimentalSandbox
-			}
-			if prepared.MaxOutputTokens != nil {
-				nextMaxTokens = prepared.MaxOutputTokens
-			}
-			if prepared.Temperature != nil {
-				nextTemperature = prepared.Temperature
-			}
-			if prepared.TopP != nil {
-				nextTopP = prepared.TopP
-			}
-			if prepared.TopK != nil {
-				nextTopK = prepared.TopK
-			}
-			if prepared.PresencePenalty != nil {
-				nextPresencePenalty = prepared.PresencePenalty
-			}
-			if prepared.FrequencyPenalty != nil {
-				nextFrequencyPenalty = prepared.FrequencyPenalty
-			}
-			if prepared.StopSequences != nil {
-				nextStopSequences = prepared.StopSequences
-			}
-			if prepared.Seed != nil {
-				nextSeed = prepared.Seed
-			}
-			if prepared.Reasoning != nil {
-				nextReasoningLevel = prepared.Reasoning
-			}
-		}
-
-		nextHeaders, nextMaxRetries := opts.Internal.stepCallSettings(opts.Headers, opts.MaxRetries)
-
-		nextTools = r.toolSearchState.Apply(nextTools, r.cbToolsCtx, nextSandbox)
-		nextExecutionTools, nextModelTools, nextToolCallerMessages := PrepareToolsForToolCallers(nextTools, r.resolvedToolCallers)
-		nextTools = nextModelTools
-		if len(nextToolCallerMessages) > 0 {
-			nextMessages = AppendToolCallerMessages(nextMessages, nextToolCallerMessages)
-		}
-		// TS stream-text.ts: `currentStepMessages = stepMessages` (the
-		// result of appendToolCallerMessages) becomes the base for that
-		// step's `stepMessagesForNextStep = [...currentStepMessages,
-		// ...stepResponseMessages]` once the step finishes. Mirror that here
-		// by syncing currentMessages to nextMessages now, so when the next
-		// loop iteration processes this step's response and does
-		// `currentMessages = append(currentMessages, stepResponseMsgs...)`
-		// above, it builds on top of this step's own toolCaller
-		// announcement instead of dropping it after one step.
-		currentMessages = nextMessages
-
-		// Steering messages are delivered when they are part of the messages
-		// sent to the model after PrepareStep.
-		deliveredSteering := r.steering.resolveTakenMessages(stepNum, nextMessages)
-		r.stepSteering = steeringDeliveredMessages(deliveredSteering)
-		r.pendingSteering = steeringMessageChunks(deliveredSteering, stepNum)
-
-		nextTools = resolveStepTools(ctx, nextTools, r.cbToolsCtx, nextSandbox)
-		nextTools = orderStepTools(nextTools, nextToolOrder)
-		nextExecutionTools = resolveStepTools(ctx, nextExecutionTools, r.cbToolsCtx, nextSandbox)
-		r.cbModel = nextModel
-		r.cbModelProvider = nextModel.Provider()
-		r.cbModelID = nextModel.ModelID()
-		r.cbSystem = nextSystem
-		r.cbInstructionMessages = nextInstructionMessages
-		r.cbToolChoice = nextToolChoice
-		currentTools = append([]types.Tool(nil), nextTools...)
-		currentExecutionTools = append([]types.Tool(nil), nextExecutionTools...)
-		currentToolChoice = nextToolChoice
-		opts.ExperimentalSandbox = nextSandbox
-		// TS prepareStepCallSettings validates the step's settings after the
-		// step's tools are prepared, before the model call.
-		if err := checkStreamMaxOutputTokens(opts.Internal, nextMaxTokens); err != nil {
-			nextStepCancel()
-			failNextStep(err)
+		if !openStep(stepNum, nil) {
 			break
 		}
-		r.stepStartedAt = r.now()
-		r.stepPromptWarnings = r.logPromptWarnings(opts.OnWarning, r.promptDeprecations.forStep(nextMessages))
-		nextPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(nextStepCtx, types.Prompt{
-			Messages: messagesForModel(nextMessages),
-			System:   nextSystem,
-		}, allowSystemMessages(opts.AllowSystemMessages, opts.AllowSystemInMessages), effectiveDownload(opts.ExperimentalDownload), supportedURLChecker(nextModel))
-		if normErr != nil {
-			nextStepCancel()
-			failNextStep(normErr)
-			break
-		}
-		if toolResultsErr := validateStepToolResults(nextPrompt.Messages, opts.Tools); toolResultsErr != nil {
-			nextStepCancel()
-			failNextStep(toolResultsErr)
-			break
-		}
-		nextPrompt = prependInstructionMessages(nextPrompt, nextInstructionMessages)
-		nextStepStart := OnStepStartEvent{
-			CallID:              r.cbCallID,
-			StepNumber:          stepNum,
-			Provider:            nextModel.Provider(),
-			ModelProvider:       nextModel.Provider(),
-			ModelID:             nextModel.ModelID(),
-			Instructions:        nextSystem,
-			InstructionMessages: nextInstructionMessages,
-			System:              nextSystem,
-			Messages:            nextMessages,
-			Tools:               opts.Tools, // TS stepStartEvent.tools: the call's tools
-			ToolChoice:          nextToolChoice,
-			ActiveTools:         nextActiveTools,
-			ToolOrder:           nextToolOrder,
-			ProviderOptions:     nextProviderOptions,
-			Output:              opts.Output,
-			Steps:               allSteps,
-			PreviousSteps:       allSteps,
-			ExperimentalContext: r.cbRuntimeCtx,
-			RuntimeContext:      r.cbRuntimeCtx,
-			ToolsContext:        r.cbToolsCtx,
-		}
-		Notify(nextStepCtx, nextStepStart, opts.OnStepStart)
-		r.openStep = &nextStepStart
-		nextGenOpts := &provider.GenerateOptions{
-			Prompt:                nextPrompt,
-			AllowSystemMessages:   allowSystemMessages(opts.AllowSystemMessages, opts.AllowSystemInMessages),
-			AllowSystemInMessages: allowSystemMessages(opts.AllowSystemMessages, opts.AllowSystemInMessages),
-			Temperature:           nextTemperature,
-			MaxTokens:             nextMaxTokens,
-			TopP:                  nextTopP,
-			TopK:                  nextTopK,
-			FrequencyPenalty:      nextFrequencyPenalty,
-			PresencePenalty:       nextPresencePenalty,
-			StopSequences:         nextStopSequences,
-			Seed:                  nextSeed,
-			Headers:               nextHeaders,
-			Tools:                 toolutil.ResolveToolSchemas(nextTools),
-			ToolChoice:            preparedToolChoice(nextToolChoice),
-			IncludeRawChunks:      includeRawChunksValue(r.cbInclude),
-			RuntimeContext:        r.cbRuntimeCtx,
-			ToolsContext:          r.cbToolsCtx,
-			ResponseFormat:        responseFormat,
-			Reasoning:             nextReasoningLevel,
-			SendReasoning:         opts.SendReasoning,
-			ProviderOptions:       nextProviderOptions,
-			Telemetry:             r.telemetrySettings,
-		}
-		// Fire this next step's step-start telemetry BEFORE its DoStream call,
-		// matching TS's sequential onStepStart-then-doStream ordering (same
-		// rationale as the analogous comment in bootstrapAndStream for step
-		// 1). nextTelemetryStepCtx is saved on r so the top of the following
-		// loop iteration — which processes the stream DoStream returns here —
-		// reads it back instead of firing FireOnStepStart again.
-		nextTelemetryStepCtx := telemetry.FireOnStepStart(nextStepCtx, stepStartTelemetryPrompt(opts.Internal, telemetry.TelemetryStepStartEvent{
-			CallID:         r.cbCallID,
-			OperationType:  "ai.streamText",
-			Settings:       r.telemetrySettings,
-			StepNumber:     stepNum,
-			ModelProvider:  nextModel.Provider(),
-			ModelID:        nextModel.ModelID(),
-			ToolChoice:     preparedToolChoice(nextToolChoice),
-			PromptMessages: nextGenOpts.Prompt.Messages,
-			System:         telemetryInput(r.telemetrySettings, nextSystem),
-			StepTools:      nextTools,
-			RuntimeContext: telemetryRuntimeContextWithSensitivity(r.telemetrySettings, r.cbRuntimeCtx, r.cbSensitiveRuntimeCtx),
-			ToolsContext:   telemetryToolsContext(r.telemetrySettings, r.cbToolsCtx),
-		}))
-		r.stepReopenTelemetryStepCtx = nextTelemetryStepCtx
-		// As for the first step: a retried DoStream open is a new model call.
-		var nextModelCallCtx context.Context
-		startNextModelCall := func() context.Context {
-			Notify(nextTelemetryStepCtx, LanguageModelCallStartEvent{
-				CallID:              r.cbCallID,
-				Provider:            nextModel.Provider(),
-				ModelID:             nextModel.ModelID(),
-				Instructions:        nextSystem,
-				InstructionMessages: nextInstructionMessages,
-				Messages:            nextMessages,
-				Tools:               nextGenOpts.Tools,
-				MaxOutputTokens:     nextGenOpts.MaxTokens,
-				Temperature:         nextGenOpts.Temperature,
-				TopP:                nextGenOpts.TopP,
-				TopK:                nextGenOpts.TopK,
-				PresencePenalty:     nextGenOpts.PresencePenalty,
-				FrequencyPenalty:    nextGenOpts.FrequencyPenalty,
-				StopSequences:       nextGenOpts.StopSequences,
-				Seed:                nextGenOpts.Seed,
-				Reasoning:           nextGenOpts.Reasoning,
-			}, onLanguageModelCallStart)
-			// Scoped to just this call (594029e): see the analogous comment where
-			// the first step's stream is started, above. Parented under the step
-			// span created just above.
-			nextModelCallCtx = telemetry.FireOnLanguageModelCallStart(nextTelemetryStepCtx, telemetry.LanguageModelCallStartEvent{
-				Settings:            r.telemetrySettings,
-				CallID:              r.cbCallID,
-				ModelProvider:       nextModel.Provider(),
-				ModelID:             nextModel.ModelID(),
-				Prompt:              nextGenOpts.Prompt,
-				Messages:            nextMessages,
-				InstructionMessages: nextInstructionMessages,
-				Tools:               nextGenOpts.Tools,
-				System:              nextSystem,
-				Temperature:         nextGenOpts.Temperature,
-				MaxOutputTokens:     nextGenOpts.MaxTokens,
-				TopP:                nextGenOpts.TopP,
-				TopK:                nextGenOpts.TopK,
-				PresencePenalty:     nextGenOpts.PresencePenalty,
-				FrequencyPenalty:    nextGenOpts.FrequencyPenalty,
-				StopSequences:       nextGenOpts.StopSequences,
-				Seed:                nextGenOpts.Seed,
-			})
-			r.stepReopenCtx = nextModelCallCtx
-			r.stepCallStartedAt = r.now()
-			return nextModelCallCtx
-		}
-		startNextModelCall()
-		r.stepReopenModel = nextModel
-		r.stepReopenGenOpts = nextGenOpts
-		r.stepReopenMaxRetries = nextMaxRetries
-		var newStream provider.TextStream
-		err := nextResponseFormatErr
-		if err == nil {
-			newStream, err = doStreamWithGatewayRetryEach(nextModelCallCtx, nextModel, nextGenOpts, nextMaxRetries, startNextModelCall)
-		}
-		if err != nil {
-			// nextStepCancel runs after the error is classified: a cancelled
-			// step context would make every open failure look like a step timeout.
-			if r.timeout.HasPerStep() && deadlineFired(nextStepCtx, ctx) {
-				err = r.timeout.timeoutError(TimeoutReasonStep, nextStepCtx.Err())
-			} else if r.timeout.HasTotal() && deadlineFired(ctx, r.totalParentCtx) {
-				err = r.timeout.timeoutError(TimeoutReasonTotal, err)
-			}
-			openErr := err
-			r.err = wrapGatewayError(err)
-			// Close the still-open step span and the model-call/"chat" span
-			// opened just above via FireOnStepStart/FireOnLanguageModelCallStart
-			// (this next step's own iteration of the outer loop is never
-			// reached — this break prevents it): the shared cleanup after the
-			// loop only closes the root span (H4 item 2).
-			// On abort TS's step catch only enqueues an `error` part, which the
-			// outer stream turns into abort(): no telemetry onStepError (its
-			// notifyStepError returns once aborted) and no onError; the
-			// telemetry onAbort ends the spans.
-			if isAbortErr(nextStepCtx, r.err) {
-				fireAbort(r.err)
-			} else {
-				// Same as the first step: the failure is an error part. onError
-				// is called once, by the shared error handling after the loop.
-				// The error part carries the model call's own error (TS step
-				// catch); onError gets it wrapped.
-				forwardThroughTransformChain(0, []provider.StreamChunk{{Type: provider.ChunkTypeError, Err: openErr, Text: openErr.Error()}})
-				flushSteering()
-				continuationFailed = true
-				stepErrorTelemetryCtx = nextModelCallCtx
-			}
-			nextStepCancel()
-			break
-		}
-		pendingStepCtx = nextStepCtx
-		pendingStepCancel = nextStepCancel
-		r.setStream(newStream)
 	}
 
 	if r.err != nil {
@@ -6408,12 +6573,24 @@ func telemetryInput(settings *telemetry.Options, v string) string {
 // deadline, which (as TS's chunkMs timer) starts only once semantic output
 // begins, so no per-read chunk timer is added.
 func (r *StreamTextResult) readChunk(ctx context.Context) (*provider.StreamChunk, error) {
+	return r.readChunkInterruptible(ctx, nil)
+}
+
+// readChunkInterruptible is readChunk that also returns errStepInterrupted
+// when interrupt is closed while it waits (a nil interrupt never is).
+func (r *StreamTextResult) readChunkInterruptible(ctx context.Context, interrupt <-chan struct{}) (*provider.StreamChunk, error) {
 	stream := r.currentStream()
-	if ctx == nil || ctx.Done() == nil {
+	if interrupt == nil && (ctx == nil || ctx.Done() == nil) {
 		return stream.Next()
 	}
+	var ctxDone <-chan struct{}
+	if ctx != nil {
+		ctxDone = ctx.Done()
+	}
 	select {
-	case <-ctx.Done():
+	case <-interrupt:
+		return nil, errStepInterrupted
+	case <-ctxDone:
 		return nil, ctx.Err()
 	default:
 	}
@@ -6429,7 +6606,9 @@ func (r *StreamTextResult) readChunk(ctx context.Context) (*provider.StreamChunk
 	select {
 	case result := <-resultCh:
 		return result.chunk, result.err
-	case <-ctx.Done():
+	case <-interrupt:
+		return nil, errStepInterrupted
+	case <-ctxDone:
 		return nil, ctx.Err()
 	}
 }
