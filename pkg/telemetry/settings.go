@@ -18,6 +18,7 @@ const (
 	SpanTypeEmbedding     SpanType = "embedding"
 	SpanTypeReranking     SpanType = "reranking"
 	SpanTypeDecision      SpanType = "experimental_decision"
+	SpanTypeExtraction    SpanType = "experimental_extraction"
 )
 
 // EnrichSpanOptions describes a span that is about to be created. The

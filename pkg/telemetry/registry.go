@@ -603,6 +603,13 @@ type TelemetryFinishEvent struct {
 	// ReasoningFiles are the final step's reasoning file parts (see
 	// TelemetryStepFinishEvent.ReasoningFiles).
 	ReasoningFiles []types.ReasoningFileContent
+	// Content is the content generated in all steps, in the order the model
+	// produced it (TS GenerateTextEndEvent.content, `steps.flatMap(step =>
+	// step.content)`). When non-nil the GenAI integration builds the root
+	// span's gen_ai.output.messages from it in one ordered pass (TS
+	// formatOutputContent, 71410a4755); when nil it falls back to Text,
+	// ReasoningParts, ToolCalls, ToolResults and Files.
+	Content []types.ContentPart
 	// Object holds the parsed result for ai.generateObject/ai.streamObject,
 	// emitted as ai.response.object (output-gated, JSON-encoded) instead of
 	// ai.response.text/reasoning/toolCalls/files, mirroring TS's

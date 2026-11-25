@@ -3,9 +3,11 @@ package telemetry
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"reflect"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -95,6 +97,10 @@ func redactStructValue(s reflect.Value) (reflect.Value, bool) {
 			out, ok = redactStepsValue(f)
 		case "FinalStep":
 			out, ok = redactAnyValue(f)
+		default:
+			if sf.Type == errorInterface {
+				out, ok = redactErrorValue(f)
+			}
 		}
 		if ok {
 			changes = append(changes, replacement{i, out})
@@ -423,7 +429,10 @@ func redactToolDefinitions(list []interface{}, wire bool) ([]interface{}, bool) 
 		}
 		next, changed := rec, false
 		if wire {
-			if kind, _ := rec["type"].(string); kind != "" {
+			if kind, _ := rec["type"].(string); kind == "mcp_server" {
+				// Google Interactions wire tool (TS b0fccbda62).
+				next, changed = redactGoogleMCPServerArgs(next)
+			} else if kind != "" {
 				next, changed = redactOpenAIToolArgs(kind, next, true)
 			}
 		}
@@ -497,22 +506,112 @@ func redactBody(body interface{}) (interface{}, bool) {
 	if !ok {
 		return body, false
 	}
-	tools, ok := asToolList(rec["tools"])
-	if !ok {
-		return body, false
+	out, changed := rec, false
+	if tools, ok := asToolList(rec["tools"]); ok {
+		if redacted, toolsChanged := redactToolDefinitions(tools, true); toolsChanged {
+			out, changed = copyRecord(rec), true
+			out["tools"] = redacted
+		}
 	}
-	redacted, changed := redactToolDefinitions(tools, true)
+	if next, byokChanged := redactGatewayByok(out); byokChanged {
+		out, changed = next, true
+	}
 	if !changed {
 		return body, false
 	}
-	out := copyRecord(rec)
-	out["tools"] = redacted
 	return out, true
+}
+
+// redactGatewayByok is TS withGatewayRequestTelemetryRedaction
+// (redact-gateway-request-credentials.ts, 83026e8e0f): in a Gateway request
+// body every value under providerOptions.gateway.byok, and under each batch
+// request's options.providerOptions.gateway.byok, becomes "[redacted]" while
+// provider names and the credential shape (objects, lists) stay. rec is not
+// modified; the result is a copy when something changed. TS annotates only
+// Gateway bodies; Go has no annotation, so any body with that key is
+// redacted (known difference S2, as for the OpenAI wire rule).
+func redactGatewayByok(rec map[string]interface{}) (map[string]interface{}, bool) {
+	out, changed := rec, false
+	if po, ok := redactProviderOptionsByok(rec["providerOptions"]); ok {
+		out, changed = copyRecord(rec), true
+		out["providerOptions"] = po
+	}
+	if requests, ok := asToolList(rec["requests"]); ok {
+		var redacted []interface{}
+		for i, item := range requests {
+			request, ok := asToolRecord(item)
+			if !ok {
+				continue
+			}
+			options, ok := asToolRecord(request["options"])
+			if !ok {
+				continue
+			}
+			po, ok := redactProviderOptionsByok(options["providerOptions"])
+			if !ok {
+				continue
+			}
+			if redacted == nil {
+				redacted = append([]interface{}(nil), requests...)
+			}
+			newOptions := copyRecord(options)
+			newOptions["providerOptions"] = po
+			newRequest := copyRecord(request)
+			newRequest["options"] = newOptions
+			redacted[i] = newRequest
+		}
+		if redacted != nil {
+			if !changed {
+				out, changed = copyRecord(rec), true
+			}
+			out["requests"] = redacted
+		}
+	}
+	return out, changed
+}
+
+func redactProviderOptionsByok(value interface{}) (map[string]interface{}, bool) {
+	po, ok := asToolRecord(value)
+	if !ok {
+		return nil, false
+	}
+	gateway, ok := asToolRecord(po["gateway"])
+	if !ok {
+		return nil, false
+	}
+	byok, present := gateway["byok"]
+	if !present {
+		return nil, false
+	}
+	newGateway := copyRecord(gateway)
+	newGateway["byok"] = redactByokValue(byok)
+	out := copyRecord(po)
+	out["gateway"] = newGateway
+	return out, true
+}
+
+// redactByokValue keeps objects and lists and replaces every leaf.
+func redactByokValue(v interface{}) interface{} {
+	if list, ok := asToolList(v); ok {
+		out := make([]interface{}, len(list))
+		for i, item := range list {
+			out[i] = redactByokValue(item)
+		}
+		return out
+	}
+	if rec, ok := asToolRecord(v); ok {
+		out := make(map[string]interface{}, len(rec))
+		for k, item := range rec {
+			out[k] = redactByokValue(item)
+		}
+		return out
+	}
+	return redactedToolValue
 }
 
 func redactJSONTextBody(raw []byte) ([]byte, bool) {
 	trimmed := bytes.TrimSpace(raw)
-	if len(trimmed) == 0 || trimmed[0] != '{' || !bytes.Contains(trimmed, []byte(`"tools"`)) {
+	if len(trimmed) == 0 || trimmed[0] != '{' || (!bytes.Contains(trimmed, []byte(`"tools"`)) && !bytes.Contains(trimmed, []byte(`"byok"`))) {
 		return raw, false
 	}
 	var decoded map[string]interface{}
@@ -549,8 +648,29 @@ func redactProviderToolArgsChanged(id string, args map[string]interface{}) (map[
 		return redactOpenAIToolArgs("code_interpreter", args, false)
 	case "openai.shell":
 		return redactOpenAIToolArgs("shell", args, false)
+	case "google.mcp_server":
+		return redactGoogleMCPServerArgs(args)
 	}
 	return args, false
+}
+
+// redactGoogleMCPServerArgs is TS redactToolDefinition's google.mcp_server
+// branch and redactGoogleToolArgs (b0fccbda62): every header value of a
+// Google Interactions MCP server tool becomes "[redacted]" (header names are
+// kept); args without a headers record pass through unchanged. args itself is
+// never modified.
+func redactGoogleMCPServerArgs(args map[string]interface{}) (map[string]interface{}, bool) {
+	headers, ok := asToolRecord(args["headers"])
+	if !ok {
+		return args, false
+	}
+	redacted := make(map[string]interface{}, len(headers))
+	for name := range headers {
+		redacted[name] = redactedToolValue
+	}
+	out := copyRecord(args)
+	out["headers"] = redacted
+	return out, true
 }
 
 // redactOpenAIToolArgs is TS redactOpenAIToolArgs
@@ -625,4 +745,38 @@ func redactOpenAIToolArgs(kind string, args map[string]interface{}, wire bool) (
 	out := copyRecord(args)
 	out[containerKey] = newContainer
 	return out, true
+}
+
+// redactErrorValue is TS redactDownloadError (15bfd6b262): an error that is
+// or wraps a download error becomes a telemetry-only *DownloadError with the
+// URL "[redacted]", the status kept, no cause, and the message "Failed to
+// download a file." A file URL can carry credentials (a signed query
+// string), and the original message and cause print it. Wrapping errors
+// around the download error are dropped with it, since their text repeats
+// the URL; errors.As still finds the *DownloadError. Other errors are left
+// as they are.
+func redactErrorValue(f reflect.Value) (reflect.Value, bool) {
+	if f.IsNil() {
+		return f, false
+	}
+	err, ok := f.Interface().(error)
+	if !ok {
+		return f, false
+	}
+	var download *providererrors.DownloadError
+	if !errors.As(err, &download) || download == nil {
+		return f, false
+	}
+	out := reflect.New(f.Type()).Elem()
+	out.Set(reflect.ValueOf(error(redactDownloadError(download))))
+	return out, true
+}
+
+func redactDownloadError(e *providererrors.DownloadError) *providererrors.DownloadError {
+	return &providererrors.DownloadError{
+		URL:        redactedToolValue,
+		StatusCode: e.StatusCode,
+		StatusText: e.StatusText,
+		Message:    "Failed to download a file.",
+	}
 }

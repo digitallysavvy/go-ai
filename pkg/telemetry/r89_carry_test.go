@@ -250,7 +250,7 @@ func TestR89carryOutputMessagesKeepEmptyIDs(t *testing.T) {
 		types.GeneratedFileContent{FileData: types.FileData{Type: types.FileDataTypeData, DataString: "AA=="}},
 	}
 	want := `[{"role":"assistant","parts":[{"type":"tool_call","id":"","name":"t","arguments":{}},{"type":"tool_call_response","id":"","response":"r"},{"type":"blob","modality":"image","mime_type":"","content":"AA=="}],"finish_reason":"tool_call"}]`
-	r89carryExpect(t, formatOutputMessagesFromContent(content, "tool-calls"), want)
+	r89carryExpect(t, formatOutputContent(content, "tool-calls"), want)
 	r89carryExpect(t, formatOutputMessagesFromFinish(TelemetryFinishEvent{
 		ToolCalls:    []types.ToolCall{{ID: "", ToolName: "t", Arguments: map[string]interface{}{}}},
 		ToolResults:  []types.ToolResult{{ToolCallID: "", Result: "r"}},

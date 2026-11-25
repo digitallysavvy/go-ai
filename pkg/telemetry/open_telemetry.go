@@ -79,6 +79,9 @@ type OpenTelemetryOptions struct {
 	//
 	// Deprecated: Use ExperimentalDecision instead.
 	ExperimentalEvaluation bool
+	// ExperimentalExtraction emits ai.extraction.* attributes (state, fields,
+	// reference date and answers; TS experimental_extraction).
+	ExperimentalExtraction bool
 	// RuntimeContext emits flattened ai.settings.context.* attributes.
 	RuntimeContext bool
 	// Headers emits ai.request.headers.* attributes.
@@ -747,6 +750,16 @@ func (i OpenTelemetry) OnLanguageModelCallStart(ctx context.Context, e LanguageM
 	var settings genAIRequestSettings
 	isObject := genAIIsObjectCall(i.stateKey(e.CallID))
 	if e.CallID != "" {
+		// A stream retry or a steering interrupt starts a new model call
+		// without ending the previous one (TS 5-line change in
+		// onLanguageModelCallStart, e4039889ba): end the open chat span with
+		// an error status first.
+		if value, ok := genAICallSpans.LoadAndDelete(genAISpanKey("languageModel", i.stateKey(e.CallID))); ok {
+			if entry, ok := value.(otelSpanEntry); ok && entry.span != nil && entry.span.IsRecording() {
+				entry.span.SetStatus(codes.Error, "")
+				entry.span.End()
+			}
+		}
 		if st := genAILoadedState(i.stateKey(e.CallID)); st != nil {
 			st.mu.Lock()
 			parent = st.stepSpan
@@ -1026,7 +1039,7 @@ func (i OpenTelemetry) OnLanguageModelCallEnd(ctx context.Context, e LanguageMod
 			attrs = append(attrs, attribute.String("gen_ai.output.messages", string(b)))
 		}
 	} else if recordOutputs && e.Content != nil {
-		if b, err := jsonstr.Marshal(formatOutputMessagesFromContent(content, e.FinishReason)); err == nil {
+		if b, err := jsonstr.Marshal(formatOutputContent(content, e.FinishReason)); err == nil {
 			attrs = append(attrs, attribute.String("gen_ai.output.messages", string(b)))
 		}
 	}
@@ -1660,6 +1673,10 @@ func (i OpenTelemetry) endSupplementalAttrs(e TelemetryFinishEvent) []attribute.
 // the way TS onGenerateEnd does: final-step reasoning and text, then the tool
 // calls and results and the files of every step.
 func formatOutputMessagesFromFinish(e TelemetryFinishEvent) []semConvOutputMessage {
+	// TS 71410a4755: event.content (every step's content, in order).
+	if e.Content != nil {
+		return formatOutputContent(e.Content, e.FinishReason)
+	}
 	return FormatOutputMessages(FormatOutputMessagesOptions{
 		Text:         e.Text,
 		Reasoning:    e.ReasoningParts,
@@ -1835,6 +1852,7 @@ func (i OpenTelemetry) closeOpenChildSpans(callID string, err error) {
 	}
 	end(rerankSpan)
 	end(takeEntry("decision"))
+	end(takeEntry("extraction"))
 }
 
 // OnStepError closes a still-open step span and the nested model-call

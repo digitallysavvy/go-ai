@@ -56,7 +56,7 @@ func TestR50GenAITextSpansUseModelMessages(t *testing.T) {
 	})
 	integration.OnLanguageModelCallEnd(ctx, LanguageModelCallEndEvent{Settings: settings, CallID: "c", FinishReason: "stop"})
 
-	wantMessages := `[{"role":"user","parts":[{"type":"text","content":"look"},{"type":"uri","modality":"image","mime_type":"image/png","uri":"https://example.com/a.png"},{"type":"blob","modality":"image","mime_type":null,"content":"AQID"},{"type":"uri","modality":"audio","mime_type":"audio/wav","uri":"https://example.com/a.wav"}]},{"role":"assistant","parts":[{"type":"text","content":"ok"},{"type":"custom"}]},{"role":"tool","parts":[{"type":"tool-approval-response"}]}]`
+	wantMessages := `[{"role":"user","parts":[{"type":"text","content":"look"},{"type":"uri","modality":"image","mime_type":"image/png","uri":"https://example.com/a.png"},{"type":"blob","modality":"image","mime_type":null,"content":"AQID"},{"type":"uri","modality":"audio","mime_type":"audio/wav","uri":"https://example.com/a.wav"}]},{"role":"assistant","parts":[{"type":"text","content":"ok"},{"type":"custom","kind":"x"}]},{"role":"tool","parts":[{"type":"tool_approval_response","approval_id":"a1","approved":true}]}]`
 	wantInstructions := `[{"type":"text","content":"first"},{"type":"text","content":"second"}]`
 	for _, name := range []string{"invoke_agent m", "chat m"} {
 		span := findSpan(rec, name)
