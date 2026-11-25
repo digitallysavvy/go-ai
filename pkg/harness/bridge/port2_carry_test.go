@@ -55,19 +55,19 @@ func port2carryHelperMain(mode string) {
 	switch mode {
 	case "tool":
 		onTerm(filepath.Join(dir, "tool-stopped"))
-		os.Stdout.WriteString(strconv.Itoa(os.Getpid()) + "\n")
+		_, _ = os.Stdout.WriteString(strconv.Itoa(os.Getpid()) + "\n")
 	case "runtime":
 		onTerm(filepath.Join(dir, "runtime-stopped"))
 		line, _ := spawn("tool").ReadString('\n')
-		os.Stdout.WriteString(strconv.Itoa(os.Getpid()) + " " + strings.TrimSpace(line) + "\n")
+		_, _ = os.Stdout.WriteString(strconv.Itoa(os.Getpid()) + " " + strings.TrimSpace(line) + "\n")
 	case "bridge":
 		line, _ := spawn("runtime").ReadString('\n')
-		os.Stdout.WriteString(strings.TrimSpace(line) + "\n")
+		_, _ = os.Stdout.WriteString(strings.TrimSpace(line) + "\n")
 	case "ignore-term":
 		signal.Ignore(syscall.SIGTERM)
-		os.Stdout.WriteString("ready\n")
+		_, _ = os.Stdout.WriteString("ready\n")
 	case "plain":
-		os.Stdout.WriteString("ready\n")
+		_, _ = os.Stdout.WriteString("ready\n")
 	}
 	time.Sleep(time.Minute)
 	os.Exit(0)

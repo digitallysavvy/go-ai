@@ -206,7 +206,7 @@ func FireOnExtractionModelCallEnd(ctx context.Context, e ExtractionModelCallEndE
 }
 
 // redactFileLocations is TS redactFileLocations (with 797dc0254e): in a state
-// that is a list of parts, every file part loses its provider options and
+// that is a list of parts, every text and file part loses its provider options and
 // every file part whose data is a location (a URL that is not a
 // data: URL, or a provider reference) gets its data replaced by
 // "[redacted]". Any other state is returned as is. state itself is never
@@ -233,8 +233,24 @@ func redactFileLocations(state interface{}) interface{} {
 		return state
 	}
 	var out reflect.Value
+	_, hasPartOptions := elem.FieldByName("ProviderOptions")
 	for i := 0; i < v.Len(); i++ {
 		part := v.Index(i)
+		if part.FieldByName("Type").String() == "text" {
+			// TS 797dc0254e: a text part's provider options never reach
+			// telemetry either.
+			if po := part.FieldByName("ProviderOptions"); hasPartOptions && po.Kind() == reflect.Map && !po.IsNil() {
+				if !out.IsValid() {
+					out = reflect.MakeSlice(v.Type(), v.Len(), v.Len())
+					reflect.Copy(out, v)
+				}
+				cp := reflect.New(elem).Elem()
+				cp.Set(part)
+				cp.FieldByName("ProviderOptions").Set(reflect.Zero(po.Type()))
+				out.Index(i).Set(cp)
+			}
+			continue
+		}
 		if part.FieldByName("Type").String() != "file" {
 			continue
 		}

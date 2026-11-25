@@ -88,6 +88,11 @@ type DecisionStatePart struct {
 	// Text is the content of a "text" part.
 	Text string
 
+	// ProviderOptions are the provider options of a "text" part (TS
+	// `providerOptions` on a text state part). The model sees them; telemetry
+	// copies drop them (a file part's are File.ProviderOptions).
+	ProviderOptions map[string]interface{}
+
 	// Value is the JSON-compatible content of a "json" part.
 	Value interface{}
 
@@ -104,9 +109,10 @@ func (p DecisionStatePart) MarshalJSON() ([]byte, error) {
 	switch p.Type {
 	case "text":
 		return json.Marshal(struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		}{"text", p.Text})
+			Type            string                 `json:"type"`
+			Text            string                 `json:"text"`
+			ProviderOptions map[string]interface{} `json:"providerOptions,omitempty"`
+		}{"text", p.Text, p.ProviderOptions})
 	case "json":
 		return json.Marshal(struct {
 			Type  string      `json:"type"`

@@ -194,7 +194,7 @@ func (r port2carryRun) contentPartTypes(sorted bool) [][]string {
 
 func port2carryPartType(p types.ContentPart) string {
 	t := reflect.TypeOf(p)
-	for t.Kind() == reflect.Ptr {
+	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	return t.Name()

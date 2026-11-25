@@ -20,7 +20,10 @@ import (
 type portcarrytelStatePart struct {
 	Type string
 	Text string
-	File *types.FileContent
+	// ProviderOptions mirrors provider.DecisionStatePart.ProviderOptions (the
+	// text part's options).
+	ProviderOptions map[string]interface{}
+	File            *types.FileContent
 }
 
 func portcarrytelState() []portcarrytelStatePart {
