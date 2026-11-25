@@ -325,6 +325,8 @@ var wireSuites = map[string]tsfixture.WireSuite{
 	"scaledown": {Skip: map[string]string{
 		"passes custom settings, call headers, abort signal, and model ID":             "the TS test passes the API key as the apiKey setting (x-api-key custom-key), which the recorded model config does not carry; replayed natively by scaledown TestPassesCustomSettingsCallHeadersAndModelID",
 		"restores workflow configuration and falls back to environment authentication": "depends on SCALEDOWN_API_KEY set by the TS test (known difference: Go serializes no API key, the restored model reads the environment); replayed natively by scaledown TestRestoresWorkflowConfigurationAndFallsBackToEnvironmentAuthentication",
+		"passes custom configuration and warns about unsupported settings":             "the TS extraction test passes the API key as the apiKey setting (x-api-key custom-key), which the recorded model config does not carry; replayed natively by scaledown TestPort2toolsExtractionPassesCustomConfigurationAndWarnsAboutUnsupportedSettings (port wave 2)",
+		"restores workflow configuration and environment authentication":               "depends on SCALEDOWN_API_KEY set by the TS test (known difference: Go serializes no API key); replayed natively by scaledown TestPort2toolsExtractionRestoresWorkflowConfigurationAndEnvironmentAuthentication (port wave 2)",
 	}, Provider: simple(func(b, k string, h map[string]string) provider.Provider {
 		return scaledown.New(scaledown.Config{APIKey: k, BaseURL: b, Headers: h})
 	})},
@@ -337,6 +339,7 @@ var wireSuites = map[string]tsfixture.WireSuite{
 			"~o11y": "observability headers come from the Vercel environment; covered by gateway unit tests",
 			"GatewayBatch > doStartBatch > should send the shared request model in the model header":    "ai-o11y-* headers come from the Vercel environment, which the replay does not set",
 			"~GatewayBatch > doCancelBatch > should acknowledge cancellation without treating":          "ai-o11y-* headers come from the Vercel environment, which the replay does not set",
+			"GatewayExtractionModel > doExtract > should pass headers correctly":                        "ai-o11y-* headers come from the Vercel environment, which the replay does not set; replayed natively by gateway TestPortprovgExtractionHeaders (port wave 2)",
 			"GatewayLanguageModel > Provider Options > should pass provider routing order for doStream": "TS callers omit includeRawChunks here; streamText always sends it (false), which Go sends",
 			"GatewayLanguageModel > Provider Options > should pass providerTimeouts for doStream":       "TS callers omit includeRawChunks here; streamText always sends it (false), which Go sends",
 		},

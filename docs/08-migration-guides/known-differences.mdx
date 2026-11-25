@@ -918,6 +918,9 @@ The wire recordings were refreshed at `a457990a33`. Skipped, each with its reaso
 ## Steering interrupt and the cancelled stream reader
 When a steering interrupt cancels a `StreamText` model call, the goroutine reading the cancelled provider stream can outlive the redo until the provider stream's `Next` returns after `Close`, as for the chunk timeout. Its output is discarded. Informational: Go stream readers are goroutines, not cancellable promises; no caller-visible result differs (port wave 2).
 
+## TS test replays skipped in port wave 2
+The extraction recordings (`doExtract`, re-recorded at `a457990a33`) replay except: the Anthropic test that splits 17 fields into two parallel calls (the calls reach the replay server in either order, which serves the recorded responses in sequence); two ScaleDown extraction tests that set the API key as a setting or in the environment; and the Gateway extraction header test, whose `ai-o11y-*` headers come from the Vercel environment. Informational: test-harness limits, each covered by a Go unit test named in the skip (port wave 2).
+
 ## Features that are TypeScript-only (not ported)
 
 - **OpenAI Live over WebRTC** — the browser transport for OpenAI's realtime

@@ -57,6 +57,15 @@ replay passes on it with the skips listed in the suites. Earlier fal recordings 
 reached the real fal hosts (the test ran with network access); the new ones
 replay the mocked responses.
 
+Port wave 2 added `doExtract` to the recorder hooks and re-recorded the
+packages with extraction models (`scaledown`, `gateway`, `anthropic`,
+`openai`, `google`) at `a457990a33` the same way; only the tests that call
+`doExtract` were taken from the new run, every other recorded test is kept
+byte for byte. `TestTSWire` replays them through `wireExtract`. The Gateway
+Live model's `doCreateClientSecret` / `parseServerEvent` /
+`serializeClientEvent` calls are in the wave-1 recording but are not replayed
+(no Go replay kind for realtime calls); the gateway Live unit twins cover them.
+
 `finish.py` gzips with a fixed mtime (reproducible bytes) and splits a package
 into `<pkg>__<test-file>.jsonl.gz` when one file would exceed ~900 KB.
 

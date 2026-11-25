@@ -25,6 +25,7 @@ func init() {
 		BatchPrefix:     "/v1",
 		LanguageResults: true,
 		Skip: map[string]string{
+			"splits more than 16 fields into parallel calls under the union parameter limit": "the two extraction calls run in parallel and reach the replay server in either order, which serves the recorded responses in sequence; replayed natively by anthropic TestPort2provaSplitsMoreThan16FieldsIntoParallelCalls (port wave 2)",
 			"~should not strip temperature":                                                "the TS test passes topK 0.1; Go TopK is an int",
 			"AnthropicLanguageModel > doGenerate > should send the model id and settings":  "the TS test passes topK 0.1; Go TopK is an int",
 			"~when transformRequestBody is provided":                                       "the transform is code in the TS test; Go has Config.TransformRequestBody",

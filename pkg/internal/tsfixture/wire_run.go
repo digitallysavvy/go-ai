@@ -340,6 +340,8 @@ func WireKind(c WireCall) string {
 		return "rerank"
 	case c.Method == "doDecide":
 		return "decide"
+	case c.Method == "doExtract":
+		return "extract"
 	case c.Method == "doStartBatch" || c.Method == "doGetBatchStatus" || c.Method == "doGetBatchResults" || c.Method == "doCancelBatch":
 		return "batch"
 	case (c.Method == "doStart" || c.Method == "doStatus") && strings.Contains(cls, "Video"):
@@ -410,6 +412,16 @@ func RunWireCall(ctx context.Context, srv *WireServer, s WireSuite, p provider.P
 			return nil, err
 		}
 		return wireDecide(ctx, dm, arg, c)
+	case "extract":
+		ep, ok := p.(provider.ExtractionModelProvider)
+		if !ok {
+			return map[string]interface{}{"skip": "provider has no ExtractionModel"}, errWireSkip
+		}
+		em, err := ep.ExtractionModel(c.Model.ModelID)
+		if err != nil {
+			return nil, err
+		}
+		return wireExtract(ctx, em, arg, c)
 	case "video":
 		m, ok := p.(interface {
 			VideoModel(string) (provider.VideoModelV3, error)
@@ -498,7 +510,7 @@ func CompareWireResult(srv *WireServer, s WireSuite, c WireCall, got map[string]
 	}
 	// A DecisionLanguageModel reports its language model's response body,
 	// so it differs from TS the same way a language result's body does.
-	if WireKind(c) == "language" || (WireKind(c) == "decide" && c.Model.Cls == "DecisionLanguageModel") {
+	if WireKind(c) == "language" || (WireKind(c) == "decide" && c.Model.Cls == "DecisionLanguageModel") || (WireKind(c) == "extract" && c.Model.Cls == "ExtractionLanguageModel") {
 		// TS exposes the zod-parsed response body, Go the typed one.
 		for _, m := range []map[string]interface{}{want, g} {
 			if r, ok := m["response"].(map[string]interface{}); ok {

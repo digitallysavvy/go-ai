@@ -126,7 +126,7 @@ function recordMockFetch(cfg) {
   try { cfg.fetch = wrapped; } catch (e) { /* frozen config */ }
 }
 
-const names = ['doGenerate','doStream','doEmbed','doRerank','doStart','doStatus','doDecide','doGetBatchResults','doStartBatch','doGetBatchStatus','doCancelBatch','doCreateClientSecret','doCreateWebRTCSession','parseServerEvent','serializeClientEvent'];
+const names = ['doGenerate','doStream','doEmbed','doRerank','doStart','doStatus','doDecide','doExtract','doGetBatchResults','doStartBatch','doGetBatchStatus','doCancelBatch','doCreateClientSecret','doCreateWebRTCSession','parseServerEvent','serializeClientEvent'];
 let instSeq = 0;
 for (const n of names) {
   Object.defineProperty(Object.prototype, '__cap_' + n, {
