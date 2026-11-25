@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
@@ -28,6 +29,12 @@ type CustomProviderOptions struct {
 	//
 	// Deprecated: Use DecisionModels instead.
 	EvaluationModels map[string]provider.EvaluationModel //nolint:staticcheck // deprecated compatibility field
+
+	// ExtractionModels maps model ID -> extraction model. A value is a
+	// provider.ExtractionModel instance or a string model ID resolved through
+	// the SetDefaultProvider provider (TS customProvider({ extractionModels })).
+	// Extraction is experimental and not part of the stable Provider contract.
+	ExtractionModels map[string]interface{}
 
 	FilesFactory  func() provider.FilesAPI
 	SkillsFactory func() provider.SkillsAPI
@@ -172,6 +179,26 @@ func (p *customProvider) DecisionModel(modelID string) (provider.DecisionModel, 
 	}
 
 	return nil, noSuchModel(modelID, "decisionModel")
+}
+
+// ExtractionModel implements provider.ExtractionModelProvider (TS
+// customProvider({ extractionModels })): an own alias is resolved first, then
+// a Fallback provider that also implements it; an unknown ID is a
+// NoSuchModelError. The resolved model's specification version is checked.
+func (p *customProvider) ExtractionModel(modelID string) (provider.ExtractionModel, error) {
+	if model, ok := p.opts.ExtractionModels[modelID]; ok {
+		return ai.ResolveExtractionModel(model)
+	}
+	if fallback, ok := p.opts.Fallback.(provider.ExtractionModelProvider); ok {
+		model, err := fallback.ExtractionModel(modelID)
+		if err != nil {
+			return nil, err
+		}
+		if model != nil {
+			return ai.ResolveExtractionModel(model)
+		}
+	}
+	return nil, noSuchModel(modelID, "extractionModel")
 }
 
 // EvaluationModel is the deprecated form of DecisionModel.
