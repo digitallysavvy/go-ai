@@ -30,3 +30,8 @@ var CodeExecutionTool = gemini.CodeExecutionTool
 
 // VertexRagStoreTool creates a Vertex RAG store retrieval tool.
 var VertexRagStoreTool = gemini.VertexRagStoreTool
+
+// MCPServerTool connects a remote MCP server so the model can call its tools.
+// Only available with the Interactions API. Headers carry connector
+// credentials and are redacted from telemetry.
+var MCPServerTool = gemini.MCPServerTool
