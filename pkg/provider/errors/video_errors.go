@@ -39,12 +39,16 @@ type VideoGenerationError struct {
 	Cause    error
 }
 
-// Error implements the error interface
+// Error returns the provider's message, as the TS provider video models
+// throw AISDKError({message}) with the provider text alone (for example BFL
+// BLACK_FOREST_LABS_VIDEO_GENERATION_FAILED carries statusResult.error).
+// Provider and ModelID stay available as fields. A cause is appended after
+// ": ".
 func (e *VideoGenerationError) Error() string {
 	if e.Cause != nil {
-		return fmt.Sprintf("video generation failed [provider=%s, model=%s]: %s: %v", e.Provider, e.ModelID, e.Message, e.Cause)
+		return fmt.Sprintf("%s: %v", e.Message, e.Cause)
 	}
-	return fmt.Sprintf("video generation failed [provider=%s, model=%s]: %s", e.Provider, e.ModelID, e.Message)
+	return e.Message
 }
 
 // Unwrap returns the underlying cause

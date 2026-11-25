@@ -1,6 +1,7 @@
 package anthropic
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -346,13 +347,22 @@ func TestPerCall_ContextManagement(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepareRequest: %v", err)
 	}
-	cm, ok := req.body["context_management"].(*ContextManagement)
-	if !ok || len(cm.Edits) != 1 {
-		t.Fatalf("context_management = %#v, want one edit", req.body["context_management"])
+	// The request body uses the API's snake_case names (TS maps clearToolInputs
+	// to clear_tool_inputs and excludeTools to exclude_tools).
+	cm, ok := req.body["context_management"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("context_management = %#v", req.body["context_management"])
 	}
-	edit, ok := cm.Edits[0].(*ClearToolUsesEdit)
-	if !ok || edit.ClearToolInputs == nil || !*edit.ClearToolInputs || len(edit.ExcludeTools) != 1 || edit.ExcludeTools[0] != "keep_me" {
-		t.Fatalf("edit = %#v", cm.Edits[0])
+	edits, _ := cm["edits"].([]map[string]interface{})
+	if len(edits) != 1 {
+		t.Fatalf("context_management = %#v, want one edit", cm)
+	}
+	edit := edits[0]
+	if edit["clear_tool_inputs"] != true || !reflect.DeepEqual(edit["exclude_tools"], []string{"keep_me"}) {
+		t.Fatalf("edit = %#v", edit)
+	}
+	if _, camel := edit["clearToolInputs"]; camel {
+		t.Fatalf("camelCase option name leaked into the request: %#v", edit)
 	}
 	found := false
 	for _, b := range req.betas {
@@ -687,4 +697,47 @@ func errorsAs(err error, target **providererrors.InvalidArgumentError) bool {
 	}
 	*target = e
 	return true
+}
+
+// TS sends stop_sequences as given: an explicitly empty array is on the wire.
+func TestStopSequences_EmptyIsSentNilIsOmitted(t *testing.T) {
+	prov := New(Config{APIKey: "test-key"})
+	model := NewLanguageModel(prov, ClaudeSonnet4_6, nil)
+	o := genOpts("hi", nil)
+	o.StopSequences = []string{}
+	body := model.buildRequestBody(o, false)
+	if v, ok := body["stop_sequences"].([]string); !ok || len(v) != 0 {
+		t.Fatalf("stop_sequences = %#v, want empty slice", body["stop_sequences"])
+	}
+	body = model.buildRequestBody(genOpts("hi", nil), false)
+	if _, ok := body["stop_sequences"]; ok {
+		t.Fatal("nil StopSequences must be omitted")
+	}
+}
+
+// TS anthropicLanguageModelOptions zod enums and required fields.
+func TestPerCall_ZodSchemaRejections(t *testing.T) {
+	prov := New(Config{APIKey: "test-key"})
+	model := NewLanguageModel(prov, ClaudeSonnet4_6, nil)
+	bad := map[string]map[string]interface{}{
+		"thinking display":        {"thinking": map[string]interface{}{"type": "adaptive", "display": "bogus"}},
+		"thinking without type":   {"thinking": map[string]interface{}{}},
+		"blockBinding behavior":   {"thinking": map[string]interface{}{"type": "adaptive", "blockBinding": map[string]interface{}{"prefixMismatchBehavior": "x"}}},
+		"cacheControl type":       {"cacheControl": map[string]interface{}{"type": "persistent"}},
+		"cacheControl ttl":        {"cacheControl": map[string]interface{}{"type": "ephemeral", "ttl": "2h"}},
+		"taskBudget remaining":    {"taskBudget": map[string]interface{}{"type": "tokens", "total": 20000, "remaining": -1}},
+		"fallback speed":          {"fallbacks": []interface{}{map[string]interface{}{"model": "m", "speed": "slow"}}},
+		"mcp server without name": {"mcpServers": []interface{}{map[string]interface{}{"type": "url", "url": "https://x"}}},
+		"anthropic skill no id":   {"container": map[string]interface{}{"skills": []interface{}{map[string]interface{}{"type": "anthropic"}}}},
+		"custom skill no ref":     {"container": map[string]interface{}{"skills": []interface{}{map[string]interface{}{"type": "custom"}}}},
+	}
+	for name, o := range bad {
+		if _, _, err := model.resolveCallOptions(genOpts("hi", map[string]interface{}{"anthropic": o})); err == nil {
+			t.Errorf("%s: expected an InvalidArgumentError", name)
+		}
+	}
+	ok := map[string]interface{}{"thinking": map[string]interface{}{"blockBinding": map[string]interface{}{"prefixMismatchBehavior": "drop_block"}}}
+	if _, _, err := model.resolveCallOptions(genOpts("hi", map[string]interface{}{"anthropic": ok})); err != nil {
+		t.Errorf("binding-only thinking must be accepted: %v", err)
+	}
 }

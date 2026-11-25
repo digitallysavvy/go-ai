@@ -1,16 +1,35 @@
 package vercel
 
+import (
+	"encoding/json"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+)
+
 // Wire (HTTP) request/response shapes for the Vercel Sandbox API. Ported from
 // the response validators in
 // node_modules/@vercel/sandbox/dist/api-client/validators.js. Only the fields
 // this package actually reads or writes are modeled; the API accepts and
 // returns more.
 
-// SnapshotSource selects how a sandbox is created: from a git/tarball source
-// (omitted here; unused) or from a snapshot.
+// SnapshotSource selects how a sandbox is created (the @vercel/sandbox
+// 3.9.0 `source` union): a snapshot ({Type: "snapshot", SnapshotID}), a git
+// repository ({Type: "git", URL, optional Depth / Revision, and Username +
+// Password for a private one}) or a tarball ({Type: "tarball", URL}). It is
+// sent as given and, for a template, hashed into the template name
+// (harness-02). JSON keys follow the field order.
 type SnapshotSource struct {
 	Type       string `json:"type"`
 	SnapshotID string `json:"snapshotId,omitempty"`
+	// URL is the git repository or tarball URL.
+	URL string `json:"url,omitempty"`
+	// Username and Password authenticate a private git repository.
+	Username string `json:"username,omitempty"`
+	Password string `json:"password,omitempty"`
+	// Depth makes a shallow git clone (minimum 1).
+	Depth *int `json:"depth,omitempty"`
+	// Revision is the git commit, branch or tag to check out.
+	Revision string `json:"revision,omitempty"`
 }
 
 // ResourcesParams selects vCPU allocation for the sandbox. Mirrors TS
@@ -29,22 +48,57 @@ type KeepLastSnapshotsParams struct {
 
 // createSandboxRequest is the body of POST /v2|v3/sandboxes.
 type createSandboxRequest struct {
-	ProjectID          string                   `json:"projectId,omitempty"`
-	Ports              []int                    `json:"ports,omitempty"`
-	Source             *SnapshotSource          `json:"source,omitempty"`
-	Timeout            int64                    `json:"timeout,omitempty"`
-	Resources          *ResourcesParams         `json:"resources,omitempty"`
-	Runtime            string                   `json:"runtime,omitempty"`
-	Image              string                   `json:"image,omitempty"`
-	Name               string                   `json:"name,omitempty"`
+	// ProjectID is always sent: 3.9.0 Sandbox.create passes
+	// `projectId: credentials.projectId`, a string ("" from a token whose
+	// project_id claim is empty).
+	ProjectID string `json:"projectId"`
+	// Ports is always sent: 3.9.0 Sandbox.create passes `ports ?? []`.
+	Ports     []int            `json:"ports"`
+	Source    *SnapshotSource  `json:"source,omitempty"`
+	Timeout   int64            `json:"timeout,omitempty"`
+	Resources *ResourcesParams `json:"resources,omitempty"`
+	Runtime   string           `json:"runtime,omitempty"`
+	Image     string           `json:"image,omitempty"`
+	Name      string           `json:"name,omitempty"`
+	// NameSet sends "name" even when Name is empty (TS sends a defined
+	// `name: ''`; only an absent name is omitted).
+	NameSet            bool                     `json:"-"`
 	Persistent         *bool                    `json:"persistent,omitempty"`
-	NetworkPolicy      *NetworkPolicy           `json:"networkPolicy,omitempty"`
+	NetworkPolicy      *apiNetworkPolicy        `json:"networkPolicy,omitempty"`
 	Env                map[string]string        `json:"env,omitempty"`
 	Tags               map[string]string        `json:"tags,omitempty"`
 	SnapshotExpiration *int64                   `json:"snapshotExpiration,omitempty"`
 	KeepLastSnapshots  *KeepLastSnapshotsParams `json:"keepLastSnapshots,omitempty"`
 	Region             string                   `json:"region,omitempty"`
 	FailoverRegions    []string                 `json:"failoverRegions,omitempty"`
+}
+
+// MarshalJSON writes "name" when Name is non-empty or NameSet is true.
+func (r createSandboxRequest) MarshalJSON() ([]byte, error) {
+	type plain createSandboxRequest
+	if !r.NameSet || r.Name != "" {
+		return json.Marshal(plain(r))
+	}
+	return json.Marshal(struct {
+		plain
+		Name string `json:"name"`
+	}{plain(r), ""})
+}
+
+// UnmarshalJSON records whether "name" was present.
+func (r *createSandboxRequest) UnmarshalJSON(data []byte) error {
+	type plain createSandboxRequest
+	var p plain
+	if err := json.Unmarshal(data, &p); err != nil {
+		return err
+	}
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(data, &keys); err != nil {
+		return err
+	}
+	_, p.NameSet = keys["name"]
+	*r = createSandboxRequest(p)
+	return nil
 }
 
 type sandboxRouteWire struct {
@@ -59,6 +113,28 @@ type sessionWire struct {
 	NetworkPolicy *NetworkPolicy `json:"networkPolicy,omitempty"`
 	Status        string         `json:"status"`
 	Timeout       int64          `json:"timeout"`
+	// RawNetworkPolicy is the session's networkPolicy exactly as the API
+	// returned it: in a listSessions() page, the session metadata TS reads
+	// to find response rules the decoded policy does not carry (44a4261e52).
+	RawNetworkPolicy json.RawMessage `json:"-"`
+}
+
+// UnmarshalJSON decodes the session and keeps its raw networkPolicy.
+func (w *sessionWire) UnmarshalJSON(data []byte) error {
+	type plain sessionWire
+	var p plain
+	if err := jsonexact.UnmarshalPlain(data, &p); err != nil { // base-client.js parse(): plain JSON.parse
+		return err
+	}
+	var raw struct {
+		NetworkPolicy json.RawMessage `json:"networkPolicy"`
+	}
+	if err := jsonexact.UnmarshalPlain(data, &raw); err != nil {
+		return err
+	}
+	p.RawNetworkPolicy = raw.NetworkPolicy
+	*w = sessionWire(p)
+	return nil
 }
 
 type sandboxWire struct {
@@ -80,11 +156,11 @@ type sandboxAndSessionResponse struct {
 }
 
 type updateSandboxRequest struct {
-	Persistent         *bool          `json:"persistent,omitempty"`
-	Timeout            int64          `json:"timeout,omitempty"`
-	NetworkPolicy      *NetworkPolicy `json:"networkPolicy,omitempty"`
-	Ports              []int          `json:"ports,omitempty"`
-	SnapshotExpiration *int64         `json:"snapshotExpiration,omitempty"`
+	Persistent         *bool             `json:"persistent,omitempty"`
+	Timeout            int64             `json:"timeout,omitempty"`
+	NetworkPolicy      *apiNetworkPolicy `json:"networkPolicy,omitempty"`
+	Ports              []int             `json:"ports,omitempty"`
+	SnapshotExpiration *int64            `json:"snapshotExpiration,omitempty"`
 }
 
 type updateSandboxResponse struct {
@@ -98,6 +174,38 @@ type stopSessionResponse struct {
 	Snapshot *struct {
 		ID string `json:"id"`
 	} `json:"snapshot,omitempty"`
+}
+
+// snapshotWire is one entry of the snapshot list / create responses.
+type snapshotWire struct {
+	ID             string `json:"id"`
+	Status         string `json:"status"`
+	CreationMethod string `json:"creationMethod"`
+}
+
+type createSnapshotRequest struct {
+	Expiration *int64 `json:"expiration,omitempty"`
+}
+
+type createSnapshotResponse struct {
+	Snapshot snapshotWire `json:"snapshot"`
+	Session  sessionWire  `json:"session"`
+}
+
+type listSnapshotsResponse struct {
+	Snapshots  []snapshotWire `json:"snapshots"`
+	Pagination struct {
+		Next *string `json:"next"`
+	} `json:"pagination"`
+}
+
+// listSessionsResponse is the 3.9.0 SessionsResponse (GET
+// /v2/sandboxes/sessions).
+type listSessionsResponse struct {
+	Sessions   []sessionWire `json:"sessions"`
+	Pagination struct {
+		Next *string `json:"next"`
+	} `json:"pagination"`
 }
 
 type sessionResponse struct {
@@ -129,14 +237,29 @@ type ndjsonLine struct {
 }
 
 type runCommandRequest struct {
-	Command string            `json:"command"`
-	Args    []string          `json:"args,omitempty"`
-	CWD     string            `json:"cwd,omitempty"`
-	Env     map[string]string `json:"env,omitempty"`
-	Sudo    bool              `json:"sudo,omitempty"`
-	Wait    bool              `json:"wait,omitempty"`
-	Logs    bool              `json:"logs,omitempty"`
-	Timeout int64             `json:"timeout,omitempty"`
+	Command string `json:"command"`
+	// Args, Env and Sudo are always sent: 3.9.0 Session.runCommand passes
+	// `args ?? []`, `env ?? {}` and `sudo ?? false` (see withDefaults).
+	Args []string          `json:"args"`
+	CWD  string            `json:"cwd,omitempty"`
+	Env  map[string]string `json:"env"`
+	Sudo bool              `json:"sudo"`
+	Wait bool              `json:"wait,omitempty"`
+	// AttachStdin is TS `attachStdin: params.attachStdin || undefined`.
+	AttachStdin bool  `json:"attachStdin,omitempty"`
+	Logs        bool  `json:"logs,omitempty"`
+	Timeout     int64 `json:"timeout,omitempty"`
+}
+
+// withDefaults fills the 3.9.0 Session.runCommand defaults.
+func (r runCommandRequest) withDefaults() runCommandRequest {
+	if r.Args == nil {
+		r.Args = []string{}
+	}
+	if r.Env == nil {
+		r.Env = map[string]string{}
+	}
+	return r
 }
 
 type mkdirRequest struct {

@@ -3,15 +3,17 @@ package openai
 import (
 	"bytes"
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
-	"strconv"
+	"math"
 	"strings"
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
@@ -26,45 +28,83 @@ type FilesAPI struct {
 // openAIFilesResponse is the wire shape of a file resource, shared by
 // uploadFile and getFileMetadata.
 type openAIFilesResponse struct {
-	ID        string `json:"id"`
-	Object    string `json:"object"`
-	Bytes     *int64 `json:"bytes"`
-	CreatedAt *int64 `json:"created_at"`
-	Filename  string `json:"filename"`
-	Purpose   string `json:"purpose"`
-	Status    string `json:"status"`
-	ExpiresAt *int64 `json:"expires_at"`
+	ID        string   `json:"id"`
+	Object    string   `json:"object"`
+	Bytes     *float64 `json:"bytes"` // TS z.number(): a fraction is kept in the metadata
+	CreatedAt *float64 `json:"created_at"`
+	Filename  *string  `json:"filename"`
+	Purpose   *string  `json:"purpose"`
+	Status    *string  `json:"status"`
+	ExpiresAt *float64 `json:"expires_at"`
 }
 
 func (r openAIFilesResponse) toMetadata() map[string]interface{} {
+	// TS toFileMetadata spreads each field that is not null (a present
+	// empty string included).
 	meta := map[string]interface{}{}
-	if r.Filename != "" {
-		meta["filename"] = r.Filename
+	if r.Filename != nil {
+		meta["filename"] = *r.Filename
 	}
-	if r.Purpose != "" {
-		meta["purpose"] = r.Purpose
+	if r.Purpose != nil {
+		meta["purpose"] = *r.Purpose
 	}
 	if r.Bytes != nil {
-		meta["bytes"] = *r.Bytes
+		meta["bytes"] = unixSecondsMetadataValue(*r.Bytes)
 	}
 	if r.CreatedAt != nil {
-		meta["createdAt"] = *r.CreatedAt
+		meta["createdAt"] = unixSecondsMetadataValue(*r.CreatedAt)
 	}
-	if r.Status != "" {
-		meta["status"] = r.Status
+	if r.Status != nil {
+		meta["status"] = *r.Status
 	}
 	if r.ExpiresAt != nil {
-		meta["expiresAt"] = *r.ExpiresAt
+		meta["expiresAt"] = unixSecondsMetadataValue(*r.ExpiresAt)
 	}
 	return meta
 }
 
-func unixSecondsToTime(v *int64) *time.Time {
+// unixSecondsToTime converts a wire timestamp in unix seconds (TS
+// z.number(), so it may be fractional) as TS new Date(seconds * 1000):
+// milliseconds are kept (truncated). Nil, or outside the JS Date range (an
+// Invalid Date in TS), is nil.
+func unixSecondsToTime(v *float64) *time.Time {
 	if v == nil {
 		return nil
 	}
-	t := time.Unix(*v, 0)
+	t, ok := unixSecondsTime(*v)
+	if !ok {
+		return nil
+	}
 	return &t
+}
+
+// unixSecondsTime is new Date(sec * 1000); false outside the JS Date range.
+func unixSecondsTime(sec float64) (time.Time, bool) {
+	ms := sec * 1000
+	if math.IsNaN(ms) || math.IsInf(ms, 0) || math.Abs(ms) > 8.64e15 {
+		return time.Time{}, false
+	}
+	return time.UnixMilli(int64(ms)), true
+}
+
+// filesByteSize is the wire byte count as the int64 ByteSize field: a
+// fraction is truncated (the provider metadata keeps the exact number).
+func filesByteSize(v *float64) *int64 {
+	if v == nil || math.IsNaN(*v) || math.IsInf(*v, 0) || math.Abs(*v) > 9e18 {
+		return nil
+	}
+	n := int64(*v)
+	return &n
+}
+
+// unixSecondsMetadataValue reports a wire number in provider metadata: an
+// integral value stays an int64 (as v0.5 reported it), a fractional one
+// (TS z.number() accepts it) is the float64 TS reports.
+func unixSecondsMetadataValue(v float64) interface{} {
+	if v == math.Trunc(v) && math.Abs(v) < 1<<53 {
+		return int64(v)
+	}
+	return v
 }
 
 // UploadFile uploads a file to OpenAI's Files API (`POST /files`). Both
@@ -91,18 +131,25 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		return nil, err
 	}
 
+	// TS `purpose ?? 'assistants'`: a present "" is sent as given.
 	purpose := "assistants"
-	if filesOpts.purpose != "" {
+	if filesOpts.hasPurpose {
 		purpose = filesOpts.purpose
 	}
+	// TS resolves the headers (the API key) before it converts the file data.
+	client, err := f.provider.resolvedClient(ctx)
+	if err != nil {
+		return nil, err
+	}
 
-	parts := []internalhttp.MultipartStreamPart{
+	fields := []internalhttp.MultipartStreamPart{
 		{Name: "purpose", Value: purpose},
 	}
 	if filesOpts.expiresAfter != nil {
-		parts = append(parts,
+		fields = append(fields,
 			internalhttp.MultipartStreamPart{Name: "expires_after[anchor]", Value: "created_at"},
-			internalhttp.MultipartStreamPart{Name: "expires_after[seconds]", Value: strconv.FormatInt(*filesOpts.expiresAfter, 10)},
+			// TS String(expiresAfter)
+			internalhttp.MultipartStreamPart{Name: "expires_after[seconds]", Value: providerutils.JSNumberString(*filesOpts.expiresAfter)},
 		)
 	}
 
@@ -122,9 +169,17 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		}
 		content = bytes.NewReader(fileBytes)
 	}
-	parts = append(parts, internalhttp.MultipartStreamPart{
+	file := internalhttp.MultipartStreamPart{
 		IsFile: true, Name: "file", Filename: filename, MediaType: mediaType, Content: content,
-	})
+		// TS sends inline bytes as a FormData Blob (postFormDataToApi).
+		FormData: opts.Data.Type != types.FileDataTypeStream,
+	}
+	// TS streams the fields before the file (postMultipartStreamToApi), and
+	// appends an inline file to its FormData before the fields.
+	parts := append(fields, file)
+	if opts.Data.Type != types.FileDataTypeStream {
+		parts = append([]internalhttp.MultipartStreamPart{file}, fields...)
+	}
 
 	body, contentType, err := internalhttp.NewMultipartStreamBody(parts)
 	if err != nil {
@@ -134,27 +189,32 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 
 	headers := internalhttp.MergeHeaders(map[string]string{"Content-Type": contentType}, opts.Headers)
 
-	resp, err := f.provider.client.Do(ctx, internalhttp.Request{
+	resp, err := client.Do(ctx, internalhttp.Request{
 		Method:  "POST",
 		Path:    "/files",
 		Body:    body,
 		Headers: headers,
 	})
 	if err != nil {
-		return nil, err
+		return nil, internalhttp.UnwrapFetchRejection(err)
 	}
-	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("openai files upload failed: %d %s", resp.StatusCode, string(resp.Body))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 { // TS !response.ok
+		return nil, openAICompatStatusError("openai", resp.StatusError(resp.Body))
 	}
 
+	resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS response.text(): BOM dropped, invalid UTF-8 replaced
+	if err := providerutils.MediaResponseValidator("openai", providerutils.SchemaOpenAIFile)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+		return nil, err
+	}
 	var out openAIFilesResponse
-	if err := json.Unmarshal(resp.Body, &out); err != nil {
+	if err := providerutils.UnmarshalChunk(resp.Body, &out); err != nil {
 		return nil, err
 	}
 
-	resultFilename := out.Filename
-	if resultFilename == "" {
-		resultFilename = opts.Filename
+	// TS `response.filename ?? filename`, reported when truthy.
+	resultFilename := opts.Filename
+	if out.Filename != nil {
+		resultFilename = *out.Filename
 	}
 
 	succeeded = true
@@ -164,7 +224,7 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		Filename:          resultFilename,
 		ProviderMetadata:  map[string]interface{}{"openai": out.toMetadata()},
 		Warnings:          []types.Warning{},
-		ByteSize:          out.Bytes,
+		ByteSize:          filesByteSize(out.Bytes),
 		CreatedAt:         unixSecondsToTime(out.CreatedAt),
 		ExpiresAt:         unixSecondsToTime(out.ExpiresAt),
 	}, nil
@@ -184,21 +244,25 @@ func (f *FilesAPI) GetFileMetadata(ctx context.Context, opts provider.FileMetada
 		Headers: opts.Headers,
 	})
 	if err != nil {
-		return nil, err
+		return nil, internalhttp.UnwrapFetchRejection(err)
 	}
-	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("openai files retrieve failed: %d %s", resp.StatusCode, string(resp.Body))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 { // TS !response.ok
+		return nil, openAICompatStatusError("openai", resp.StatusError(resp.Body))
 	}
 
+	resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS response.text(): BOM dropped, invalid UTF-8 replaced
+	if err := providerutils.MediaResponseValidator("openai", providerutils.SchemaOpenAIFile)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+		return nil, err
+	}
 	var out openAIFilesResponse
-	if err := json.Unmarshal(resp.Body, &out); err != nil {
+	if err := providerutils.UnmarshalChunk(resp.Body, &out); err != nil {
 		return nil, err
 	}
 
 	return &provider.FileMetadataResult{
 		ProviderReference: types.ProviderReference{"openai": out.ID},
-		Filename:          out.Filename,
-		ByteSize:          out.Bytes,
+		Filename:          filesString(out.Filename),
+		ByteSize:          filesByteSize(out.Bytes),
 		CreatedAt:         unixSecondsToTime(out.CreatedAt),
 		ExpiresAt:         unixSecondsToTime(out.ExpiresAt),
 		ProviderMetadata:  map[string]interface{}{"openai": out.toMetadata()},
@@ -222,12 +286,16 @@ func (f *FilesAPI) DownloadFile(ctx context.Context, opts provider.DownloadFileO
 		Headers: opts.Headers,
 	})
 	if err != nil {
-		return nil, err
+		var statusErr *internalhttp.HTTPStatusError
+		if errors.As(err, &statusErr) {
+			return nil, openAICompatStatusError("openai", statusErr)
+		}
+		return nil, internalhttp.UnwrapFetchRejection(err)
 	}
 
 	mediaType := ""
-	if ct := httpResp.Header.Get("Content-Type"); ct != "" {
-		mediaType = strings.TrimSpace(strings.SplitN(ct, ";", 2)[0])
+	if ct := providerutils.FetchHeaderText(httpResp.Header, "Content-Type"); ct != "" {
+		mediaType = providerutils.JSTrim(strings.SplitN(ct, ";", 2)[0])
 	}
 
 	return &provider.DownloadFileResult{
@@ -251,18 +319,22 @@ func (f *FilesAPI) DeleteFile(ctx context.Context, opts provider.DeleteFileOptio
 		Headers: opts.Headers,
 	})
 	if err != nil {
-		return nil, err
+		return nil, internalhttp.UnwrapFetchRejection(err)
 	}
-	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("openai files delete failed: %d %s", resp.StatusCode, string(resp.Body))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 { // TS !response.ok
+		return nil, openAICompatStatusError("openai", resp.StatusError(resp.Body))
 	}
 
+	resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS response.text(): BOM dropped, invalid UTF-8 replaced
+	if err := providerutils.MediaResponseValidator("openai", providerutils.SchemaFileDelete)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+		return nil, err
+	}
 	var out struct {
 		ID      string `json:"id"`
 		Object  string `json:"object"`
 		Deleted bool   `json:"deleted"`
 	}
-	if err := json.Unmarshal(resp.Body, &out); err != nil {
+	if err := providerutils.UnmarshalChunk(resp.Body, &out); err != nil {
 		return nil, err
 	}
 
@@ -277,8 +349,8 @@ func (f *FilesAPI) DeleteFile(ctx context.Context, opts provider.DeleteFileOptio
 // mirroring TypeScript's OpenAIFiles.getFileId error message exactly.
 func openAIFileID(file types.ProviderReference) (string, error) {
 	fileID, ok := file["openai"]
-	if !ok || strings.TrimSpace(fileID) == "" {
-		return "", fmt.Errorf("file reference is missing an 'openai' file id.") //nolint:staticcheck // matches TS SDK's exact error text
+	if !ok || providerutils.JSTrim(fileID) == "" {
+		return "", providererrors.NewArgumentError("file", "file reference is missing an 'openai' file id.", nil)
 	}
 	return fileID, nil
 }
@@ -287,29 +359,37 @@ func openAIFileID(file types.ProviderReference) (string, error) {
 // UploadFile (TS OpenAIFilesOptions: purpose?: string, expiresAfter?: number).
 type openAIFilesUploadOptions struct {
 	purpose      string
-	expiresAfter *int64
+	hasPurpose   bool
+	expiresAfter *float64
 }
 
 func parseOpenAIFilesOptions(providerOptions map[string]interface{}) (openAIFilesUploadOptions, error) {
 	var out openAIFilesUploadOptions
-	openaiOpts, ok := providerOptions["openai"].(map[string]interface{})
-	if !ok {
+	raw, present := providerOptions["openai"]
+	if !present || raw == nil {
 		return out, nil
 	}
+	invalid := func(msg string) error {
+		return providererrors.NewArgumentError("providerOptions", "invalid openai provider options", errors.New(msg))
+	}
+	openaiOpts, ok := providerutils.NormalizeProviderOptionsObject(raw)
+	if !ok {
+		return out, invalid("Invalid input: expected object")
+	}
+	// TS z.string().optional() / z.number().optional(): null is invalid.
 	if v, ok := openaiOpts["purpose"]; ok {
 		s, ok := v.(string)
 		if !ok {
-			return out, fmt.Errorf("providerOptions.openai.purpose must be a string")
+			return out, invalid("Invalid input: expected string at purpose")
 		}
-		out.purpose = s
+		out.purpose, out.hasPurpose = s, true
 	}
-	if v, ok := openaiOpts["expiresAfter"]; ok && v != nil {
-		n, ok := v.(float64)
-		if !ok {
-			return out, fmt.Errorf("providerOptions.openai.expiresAfter must be a number")
+	if v, ok := openaiOpts["expiresAfter"]; ok {
+		n, ok := numericValue(v)
+		if !ok || math.IsNaN(n) || math.IsInf(n, 0) { // zod 4 z.number() rejects NaN and +-Infinity
+			return out, invalid("Invalid input: expected number at expiresAfter")
 		}
-		seconds := int64(n)
-		out.expiresAfter = &seconds
+		out.expiresAfter = &n
 	}
 	return out, nil
 }
@@ -335,6 +415,13 @@ func inlineFileBytes(data types.FileData) ([]byte, error) {
 		return data.Data, nil
 	case types.FileDataTypeText:
 		return []byte(data.Text), nil
+	case types.FileDataTypeStream:
+		// TS convertInlineFileDataToUint8Array (skill files): the stream is
+		// cancelled and streaming upload is unsupported.
+		if closer, ok := data.Stream.(io.Closer); ok {
+			_ = closer.Close()
+		}
+		return nil, &providererrors.UnsupportedFunctionalityError{Functionality: "streaming file upload"}
 	default:
 		return nil, fmt.Errorf("unsupported file data type %q", data.Type)
 	}
@@ -345,4 +432,19 @@ func chooseFilename(filename string) string {
 		return "blob"
 	}
 	return filename
+}
+
+func filesString(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
+// openAICompatStatusError is the error of a non-2xx response under TS
+// openaiFailedResponseHandler (createJsonErrorResponseHandler with
+// openaiErrorDataSchema).
+func openAICompatStatusError(provider string, cause *internalhttp.HTTPStatusError) error {
+	pe, _ := providerutils.OpenAICompatibleAPIError(provider, cause)
+	return pe
 }

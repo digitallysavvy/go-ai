@@ -1,10 +1,14 @@
 package fireworks
 
 import (
-	"fmt"
+	"context"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
@@ -18,6 +22,13 @@ type Provider struct {
 type Config struct {
 	// APIKey is the Fireworks AI API key
 	APIKey string
+
+	// APIKeyFunc resolves the API key for every request instead of APIKey
+	// (TS `apiKey` as a function, 7716e189ee). Its error fails the request;
+	// its result is sent as is, an empty string included, and the
+	// environment is not read. Setting both APIKey and APIKeyFunc fails
+	// every request with an InvalidArgumentError.
+	APIKeyFunc providerutils.APIKeyFunc `json:"-"`
 
 	// BaseURL is the base URL for the Fireworks AI API (optional)
 	BaseURL string
@@ -36,10 +47,15 @@ type Config struct {
 
 // New creates a new Fireworks AI provider with the given configuration
 func New(cfg Config) *Provider {
+	// TS loadApiKey: the key defaults to the FIREWORKS_API_KEY environment variable.
+	if cfg.APIKeyFunc == nil {
+		cfg.APIKey = providerutils.APIKeyOrEnv(cfg.APIKey, "FIREWORKS_API_KEY")
+	}
 	baseURL := cfg.BaseURL
 	if baseURL == "" {
 		baseURL = "https://api.fireworks.ai/inference"
 	}
+	baseURL = trimBaseURL(baseURL)
 
 	client := http.NewClient(http.Config{
 		BaseURL: baseURL,
@@ -47,6 +63,15 @@ func New(cfg Config) *Provider {
 			"Authorization": "Bearer " + cfg.APIKey,
 			"Content-Type":  "application/json",
 		}, cfg.Headers), version.ProviderUserAgent("fireworks")),
+		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
+		HeadersFuncCtx: func(ctx context.Context) (map[string]string, error) {
+			if cfg.APIKeyFunc != nil {
+				return providerutils.RequestAuthHeaderFunc(ctx, cfg.Headers, providerutils.ResolveAPIKeyOptions{
+					APIKey: cfg.APIKey, APIKeyFunc: cfg.APIKeyFunc, EnvVar: "FIREWORKS_API_KEY", Description: "Fireworks API key",
+				}, "Authorization", "Bearer ")
+			}
+			return providerutils.RequestAuthHeader(cfg.Headers, cfg.APIKey, "FIREWORKS_API_KEY", "Fireworks API key", "Authorization", "Bearer ")
+		},
 	})
 
 	return &Provider{
@@ -66,6 +91,29 @@ func CreateFireworks(cfg Config) *Provider {
 // Name returns the provider name
 func (p *Provider) Name() string {
 	return "fireworks"
+}
+
+// CompletionModel returns a text completion model (TS provider.completionModel,
+// an OpenAICompatibleCompletionLanguageModel with includeUsage: true).
+func (p *Provider) CompletionModel(modelID string) (provider.LanguageModel, error) {
+	baseURL := p.config.BaseURL
+	if baseURL == "" {
+		baseURL = "https://api.fireworks.ai/inference"
+	}
+	return openai.New(openai.Config{
+		APIKey:            p.config.APIKey,
+		APIKeyFunc:        p.config.APIKeyFunc,
+		APIKeyEnvVar:      "FIREWORKS_API_KEY",
+		APIKeyDescription: "Fireworks API key",
+		BaseURL:           trimBaseURL(baseURL) + "/v1",
+		Headers:           p.config.Headers,
+		Name:              "fireworks",
+		OpenAICompatible:  true,
+		// TS fireworksErrorStructure.
+		CompatErrorStructure: fireworksCompatAPIError,
+		IncludeUsage:         true,
+		UserAgentName:        "fireworks",
+	}).CompletionModel(modelID)
 }
 
 // LanguageModel returns a language model by ID
@@ -97,20 +145,27 @@ func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
 
 // SpeechModel returns a speech synthesis model by ID
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return nil, fmt.Errorf("Fireworks AI does not support speech synthesis") //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
+	return nil, providererrors.NewNoSuchModelError(modelID, "speechModel")
 }
 
 // TranscriptionModel returns a speech-to-text model by ID
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("Fireworks AI does not support transcription") //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
+	return nil, providererrors.NewNoSuchModelError(modelID, "transcriptionModel")
 }
 
 // RerankingModel returns a reranking model by ID
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("Fireworks AI does not support reranking") //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
+	return nil, providererrors.NewNoSuchModelError(modelID, "rerankingModel")
 }
 
 // Client returns the HTTP client for making API requests
 func (p *Provider) Client() *http.Client {
 	return p.client
+}
+
+// trimBaseURL mirrors TS withoutTrailingSlash and also accepts TS-style base
+// URLs that already carry the "/v1" segment: every request path in this
+// package starts with "/v1/", so ".../v1" must not double it.
+func trimBaseURL(baseURL string) string {
+	return strings.TrimSuffix(providerutils.WithoutTrailingSlash(baseURL), "/v1")
 }

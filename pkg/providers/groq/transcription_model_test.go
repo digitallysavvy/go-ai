@@ -31,7 +31,7 @@ func TestGroqTranscription_ExtractsText(t *testing.T) {
 	if result.Text != "Hello world!" {
 		t.Fatalf("Text = %q", result.Text)
 	}
-	if gotPath != "/audio/transcriptions" {
+	if gotPath != "/v1/audio/transcriptions" {
 		t.Fatalf("path = %q", gotPath)
 	}
 }

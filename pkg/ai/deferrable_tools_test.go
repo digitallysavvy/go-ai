@@ -187,12 +187,10 @@ func TestDeferrableTools_ErrorResult(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Tool result should be present but marked as provider-executed
-	if len(result.ToolResults) != 1 {
-		t.Fatalf("expected 1 tool result, got %d", len(result.ToolResults))
-	}
-	if !result.ToolResults[0].ProviderExecuted {
-		t.Error("expected tool result to be marked as provider-executed")
+	// A provider-executed call without a result yet is not a tool result (TS
+	// toolResults holds tool-result content parts only).
+	if len(result.ToolResults) != 0 {
+		t.Fatalf("expected no tool results, got %d", len(result.ToolResults))
 	}
 }
 
@@ -320,10 +318,11 @@ func TestDeferrableTools_MixedLocalAndProvider(t *testing.T) {
 	}
 
 	providerTool := types.Tool{
-		Name:             "tool-search-bm25",
-		Description:      "Search using BM25",
-		Parameters:       map[string]interface{}{"type": "object"},
-		ProviderExecuted: true,
+		Name:                    "tool-search-bm25",
+		Description:             "Search using BM25",
+		Parameters:              map[string]interface{}{"type": "object"},
+		ProviderExecuted:        true,
+		SupportsDeferredResults: true,
 		Execute: func(ctx context.Context, input map[string]interface{}, options types.ToolExecutionOptions) (interface{}, error) {
 			t.Fatal("provider-executed tool should not be executed locally")
 			return nil, nil
@@ -356,6 +355,10 @@ func TestDeferrableTools_MixedLocalAndProvider(t *testing.T) {
 			return &types.GenerateResult{
 				Text:         "Weather is 72 degrees, found search results",
 				FinishReason: types.FinishReasonStop,
+				// The provider delivers the deferred result of call_2.
+				Content: []types.ContentPart{types.ToolResultContent{
+					ToolCallID: "call_2", ToolName: "tool-search-bm25", Result: "found",
+				}},
 			}, nil
 		},
 	}
@@ -742,5 +745,26 @@ func TestNonDeferredProviderToolDoesNotContinue(t *testing.T) {
 	}
 	if len(result.Steps) != 1 {
 		t.Errorf("expected 1 step, got %d", len(result.Steps))
+	}
+}
+
+// TS convertLanguageModelContent throws "Tool call <id> not found." for a
+// tool-result part that answers no tool call of the response unless the tool
+// is a provider tool that supports deferred results.
+func TestGenerateText_ToolResultWithoutCallThrows(t *testing.T) {
+	t.Parallel()
+	model := &testutil.MockLanguageModel{
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{
+				FinishReason: types.FinishReasonStop,
+				Content: []types.ContentPart{types.ToolResultContent{
+					ToolCallID: "orphan", ToolName: "t", Result: "x",
+				}},
+			}, nil
+		},
+	}
+	_, err := GenerateText(context.Background(), GenerateTextOptions{Model: model, Prompt: "hi"})
+	if err == nil || err.Error() != "Tool call orphan not found." {
+		t.Fatalf("err = %v, want Tool call orphan not found.", err)
 	}
 }

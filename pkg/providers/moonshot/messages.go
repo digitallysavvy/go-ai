@@ -2,10 +2,11 @@ package moonshot
 
 import (
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -56,14 +57,12 @@ func convertToMoonshotChatMessages(modelID string, messages []types.Message, res
 		}
 
 		if msgOpts != nil && msgOpts.Partial && msg.Role != types.RoleAssistant {
-			return nil, nil, &providererrors.InvalidArgumentError{
-				Field:   "prompt",
+			return nil, nil, &providererrors.InvalidPromptError{ // TS InvalidPromptError
 				Message: "Moonshot AI Partial Mode requires `partial: true` on an assistant message.",
 			}
 		}
-		if msgOpts != nil && len(msgOpts.Tools) > 0 && msg.Role != types.RoleSystem {
-			return nil, nil, &providererrors.InvalidArgumentError{
-				Field:   "prompt",
+		if msgOpts != nil && msgOpts.HasTools && msg.Role != types.RoleSystem {
+			return nil, nil, &providererrors.InvalidPromptError{ // TS InvalidPromptError
 				Message: "Moonshot dynamic tools must be configured on a system message.",
 			}
 		}
@@ -72,8 +71,7 @@ func convertToMoonshotChatMessages(modelID string, messages []types.Message, res
 		case types.RoleSystem:
 			if msgOpts != nil && len(msgOpts.Tools) > 0 {
 				if extractMoonshotText(msg.Content) != "" {
-					return nil, nil, &providererrors.InvalidArgumentError{
-						Field:   "prompt",
+					return nil, nil, &providererrors.InvalidPromptError{ // TS InvalidPromptError
 						Message: "A Moonshot dynamic-tool system message must use empty content because the API forbids content alongside tools.",
 					}
 				}
@@ -81,7 +79,7 @@ func convertToMoonshotChatMessages(modelID string, messages []types.Message, res
 					details := "Moonshot documents dynamic tool loading only for Kimi K3. The dynamic system message has been omitted."
 					warnings = append(warnings, types.Warning{
 						Type:    "unsupported",
-						Feature: fmt.Sprintf("dynamic tool loading for model %q", modelID),
+						Feature: fmt.Sprintf("dynamic tool loading for model \"%s\"", modelID),
 						Details: details,
 						Message: details,
 					})
@@ -136,14 +134,12 @@ func convertToMoonshotChatMessages(modelID string, messages []types.Message, res
 		case types.RoleAssistant:
 			if msgOpts != nil && msgOpts.Partial {
 				if index != len(messages)-1 {
-					return nil, nil, &providererrors.InvalidArgumentError{
-						Field:   "prompt",
+					return nil, nil, &providererrors.InvalidPromptError{ // TS InvalidPromptError
 						Message: "Moonshot AI Partial Mode requires the partial assistant message to be the final message.",
 					}
 				}
 				if responseFormatType == "json_object" {
-					return nil, nil, &providererrors.InvalidArgumentError{
-						Field:   "prompt",
+					return nil, nil, &providererrors.InvalidPromptError{ // TS InvalidPromptError
 						Message: "Moonshot AI Partial Mode cannot be combined with JSON object response format.",
 					}
 				}
@@ -159,7 +155,8 @@ func convertToMoonshotChatMessages(modelID string, messages []types.Message, res
 				}
 			}
 
-			hasToolCalls := len(msg.ToolCalls) > 0
+			toolCalls := providerutils.AssistantToolCalls(msg)
+			hasToolCalls := len(toolCalls) > 0
 			assistantMsg := map[string]interface{}{"role": "assistant"}
 			if hasToolCalls {
 				if text.Len() > 0 {
@@ -180,7 +177,7 @@ func convertToMoonshotChatMessages(modelID string, messages []types.Message, res
 				assistantMsg["reasoning_content"] = reasoning.String()
 			}
 			if hasToolCalls {
-				assistantMsg["tool_calls"] = moonshotWireToolCalls(msg.ToolCalls)
+				assistantMsg["tool_calls"] = moonshotWireToolCalls(toolCalls)
 			}
 			out = append(out, assistantMsg)
 
@@ -222,12 +219,17 @@ func moonshotWireToolCalls(toolCalls []types.ToolCall) []map[string]interface{} 
 	result := make([]map[string]interface{}, 0, len(toolCalls))
 	for _, tc := range toolCalls {
 		arguments := tc.RawArguments
+		if arguments != "" {
+			// TS JSON.stringify(part.input): an invalid call's raw text is
+			// sent as its JSON string literal.
+			arguments = prompt.StringifyToolCallInput(arguments)
+		}
 		if arguments == "" {
 			args := tc.Arguments
 			if args == nil {
 				args = map[string]interface{}{}
 			}
-			if b, err := json.Marshal(args); err == nil {
+			if b, err := jsonstr.Marshal(args); err == nil {
 				arguments = string(b)
 			}
 		}
@@ -244,32 +246,7 @@ func moonshotWireToolCalls(toolCalls []types.ToolCall) []map[string]interface{} 
 }
 
 func extractMoonshotToolResultText(tr types.ToolResultContent) string {
-	if tr.Output != nil {
-		switch tr.Output.Type {
-		case types.ToolResultOutputText, types.ToolResultOutputErrorText:
-			if v, ok := tr.Output.Value.(string); ok {
-				return v
-			}
-		case types.ToolResultOutputExecutionDenied:
-			if tr.Output.Reason != "" {
-				return tr.Output.Reason
-			}
-			return "Tool call execution denied."
-		case types.ToolResultOutputJSON, types.ToolResultOutputContent, types.ToolResultOutputErrorJSON:
-			if b, err := json.Marshal(tr.Output.Value); err == nil {
-				return string(b)
-			}
-		}
-	}
-	if tr.Result != nil {
-		if s, ok := tr.Result.(string); ok {
-			return s
-		}
-		if b, err := json.Marshal(tr.Result); err == nil {
-			return string(b)
-		}
-	}
-	return tr.Error
+	return prompt.ToolResultText(tr)
 }
 
 // topLevelMoonshotMediaType returns the portion of a media type before "/",
@@ -321,7 +298,14 @@ func convertMoonshotFilePart(fc types.FileContent) (map[string]interface{}, erro
 				Functionality: "file part media type " + normalized.MediaType,
 			}
 		}
-		ref, err := providerutils.ResolveProviderReference(normalized.FileData.Reference, "moonshot")
+		// TS resolves the "moonshotai" key; "moonshot" is accepted as the Go
+		// provider's own name.
+		ref, err := providerutils.ResolveProviderReference(normalized.FileData.Reference, "moonshotai")
+		if err != nil {
+			if alt, ok := normalized.FileData.Reference["moonshot"]; ok {
+				ref, err = alt, nil
+			}
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -359,10 +343,19 @@ func convertMoonshotFilePart(fc types.FileContent) (map[string]interface{}, erro
 			return map[string]interface{}{"type": "video_url", "video_url": map[string]interface{}{"url": url}}, nil
 		case "text":
 			var textContent string
-			if normalized.FileData.Type == types.FileDataTypeURL {
+			switch {
+			case normalized.FileData.Type == types.FileDataTypeURL:
 				textContent = normalized.FileData.URL
-			} else {
-				textContent = string(normalized.FileData.Data)
+			case normalized.FileData.DataString != "":
+				// TS TextDecoder over convertBase64ToUint8Array (atob
+				// throws on an invalid string).
+				b, err := fileutil.ConvertBase64ToBytes(normalized.FileData.DataString)
+				if err != nil {
+					return nil, err
+				}
+				textContent = prompt.DecodeUTF8Text(b)
+			default:
+				textContent = prompt.DecodeUTF8Text(normalized.FileData.Data)
 			}
 			return map[string]interface{}{"type": "text", "text": textContent}, nil
 		default:
@@ -383,6 +376,16 @@ func convertMoonshotFilePart(fc types.FileContent) (map[string]interface{}, erro
 // (e.g. an unresolved "image/*" wildcard from supportedUrls negotiation).
 func formatMoonshotMediaURL(fd types.FileData, supportedMediaTypes []string, topLevelMediaType string) (string, error) {
 	mediaType := fd.MediaType
+	if fd.Type == types.FileDataTypeData {
+		// TS resolveFullMediaType: a bare or wildcard type on inline bytes
+		// is sniffed from the bytes.
+		// A base64 string is sniffed from its prefix only (decodePrefix).
+		resolved, err := moonshotResolveDataMediaType(mediaType, fd)
+		if err != nil {
+			return "", err
+		}
+		mediaType = resolved
+	}
 	allowed := containsMoonshotMediaType(supportedMediaTypes, mediaType)
 	if !allowed && fd.Type == types.FileDataTypeURL && (mediaType == topLevelMediaType || mediaType == topLevelMediaType+"/*") {
 		allowed = true
@@ -395,5 +398,30 @@ func formatMoonshotMediaURL(fd types.FileData, supportedMediaTypes []string, top
 	if fd.Type == types.FileDataTypeURL {
 		return fd.URL, nil
 	}
-	return "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(fd.Data), nil
+	// TS convertToBase64 returns a base64 string unchanged.
+	payload := fd.DataString
+	if payload == "" {
+		payload = base64.StdEncoding.EncodeToString(fd.Data)
+	}
+	return "data:" + mediaType + ";base64," + payload, nil
+}
+
+// moonshotResolveDataMediaType is TS resolveFullMediaType for an inline
+// (data) file part given as bytes or as a base64 string.
+func moonshotResolveDataMediaType(mediaType string, fd types.FileData) (string, error) {
+	if fd.DataString == "" {
+		return prompt.ResolveFullMediaType(mediaType, fd.Data, true)
+	}
+	if full, err := prompt.ResolveFullMediaType(mediaType, nil, false); err == nil {
+		return full, nil
+	}
+	top, _, _ := strings.Cut(mediaType, "/")
+	detected, ok, err := fileutil.DetectMediaTypeSignatureBase64(fd.DataString, top)
+	if err != nil {
+		return "", err
+	}
+	if ok && detected != "" {
+		return detected, nil
+	}
+	return prompt.ResolveFullMediaType(mediaType, nil, true)
 }

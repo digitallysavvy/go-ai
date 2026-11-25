@@ -11,7 +11,9 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	retryutil "github.com/digitallysavvy/go-ai/pkg/internal/retry"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
@@ -92,7 +94,14 @@ type Experimental_SpeechResult = GenerateSpeechResult
 // NoSpeechGeneratedError is returned when a speech model returns no audio.
 type NoSpeechGeneratedError struct {
 	Responses []SpeechModelResponseMetadata
+
+	// Cause is the provider error that preceded the failure, when a speech
+	// stream reported one before ending without audio.
+	Cause error
 }
+
+// Unwrap returns the underlying cause, if any.
+func (e *NoSpeechGeneratedError) Unwrap() error { return e.Cause }
 
 func (e *NoSpeechGeneratedError) Error() string {
 	return "No speech audio generated."
@@ -114,20 +123,31 @@ func GenerateSpeech(ctx context.Context, opts GenerateSpeechOptions) (*GenerateS
 	}
 	opts.ExperimentalTelemetry = effectiveTelemetrySettings(opts.Telemetry, opts.ExperimentalTelemetry)
 	callID := newCallID()
-	ctx = telemetry.FireOnStart(ctx, telemetry.TelemetryStartEvent{
-		CallID:        callID,
-		OperationType: "ai.generateSpeech",
-		ModelProvider: opts.Model.Provider(),
-		ModelID:       opts.Model.ModelID(),
-		Settings:      opts.ExperimentalTelemetry,
-		Text:          telemetryInputValue(opts.ExperimentalTelemetry, opts.Text),
-		Headers:       opts.Headers,
-	})
-
 	providerOptions := opts.ProviderOptions
 	if providerOptions == nil {
 		providerOptions = map[string]interface{}{}
 	}
+	// TS GenerateSpeechStartEvent: voice, outputFormat, instructions, speed,
+	// language, maxRetries (the prepared value) and providerOptions
+	// (speech-events.ts, r91 core1-05 speech site).
+	telemetryMaxRetries := preparedMaxRetries(opts.MaxRetries)
+	ctx = telemetry.FireOnStart(ctx, telemetry.TelemetryStartEvent{
+		CallID:          callID,
+		OperationType:   "ai.generateSpeech",
+		ModelProvider:   opts.Model.Provider(),
+		ModelID:         opts.Model.ModelID(),
+		Settings:        opts.ExperimentalTelemetry,
+		Text:            telemetryInputValue(opts.ExperimentalTelemetry, opts.Text),
+		Headers:         opts.Headers,
+		Voice:           opts.Voice,
+		OutputFormat:    opts.OutputFormat,
+		Instructions:    opts.Instructions,
+		Speed:           opts.Speed,
+		Language:        opts.Language,
+		MaxRetries:      &telemetryMaxRetries,
+		ProviderOptions: providerOptions,
+	})
+
 	callOptions := &provider.SpeechGenerateOptions{
 		Text:            opts.Text,
 		Voice:           opts.Voice,
@@ -147,7 +167,6 @@ func GenerateSpeech(ctx context.Context, opts GenerateSpeechOptions) (*GenerateS
 		err = retryutil.Do(ctx, retryutil.Config{
 			MaxRetries:   maxRetries,
 			InitialDelay: 2 * time.Second,
-			MaxDelay:     60 * time.Second,
 			Multiplier:   2,
 			Jitter:       false,
 			ShouldRetry:  isGatewayCallRetryable,
@@ -185,18 +204,34 @@ func GenerateSpeech(ctx context.Context, opts GenerateSpeechOptions) (*GenerateS
 	mediaType := resolveGeneratedSpeechMediaType(raw.Audio, responseHeaders, opts.OutputFormat)
 	logModelWarnings(warnings, opts.Model.Provider(), opts.Model.ModelID())
 	audioByteLength := int64(len(raw.Audio))
-	format := generatedAudioFormat(mediaType)
+	format, formatErr := generatedAudioFormat(mediaType)
+	if formatErr != nil {
+		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, CallID: callID, Error: formatErr})
+		return nil, formatErr
+	}
 	telemetry.FireOnEnd(ctx, telemetry.TelemetryFinishEvent{
-		CallID:           callID,
-		OperationType:    "ai.generateSpeech",
-		ModelProvider:    opts.Model.Provider(),
-		ModelID:          opts.Model.ModelID(),
-		Settings:         opts.ExperimentalTelemetry,
-		AudioByteLength:  &audioByteLength,
-		AudioMediaType:   mediaType,
-		AudioFormat:      format,
-		ProviderMetadata: providerMetadata,
+		CallID:          callID,
+		OperationType:   "ai.generateSpeech",
+		ModelProvider:   opts.Model.Provider(),
+		ModelID:         opts.Model.ModelID(),
+		Settings:        opts.ExperimentalTelemetry,
+		AudioByteLength: &audioByteLength,
+		AudioMediaType:  mediaType,
+		AudioFormat:     format,
+		// TS GenerateSpeechEndEvent `providerMetadata: result.providerMetadata`:
+		// the model's own value, undefined when it reported none, so no
+		// ai.response.providerMetadata attribute is recorded for it (the
+		// result's `{}` default is DefaultSpeechResult's).
+		ProviderMetadata: raw.ProviderMetadata,
 		ProviderUsage:    raw.Usage,
+		Warnings:         warnings,
+		// TS getTelemetryResponseMetadata: timestamp, modelId and headers;
+		// the response body stays out of the end event.
+		Response: &telemetry.TelemetryAudioResponse{
+			Timestamp: responses[0].Timestamp,
+			ModelID:   responses[0].ModelID,
+			Headers:   responses[0].Headers,
+		},
 	})
 	return &GenerateSpeechResult{
 		Audio: GeneratedAudioFile{
@@ -231,6 +266,11 @@ func speechResponseMetadata(response *types.ResponseMetadata, model provider.Spe
 //
 // Deprecated: use GenerateSpeech.
 func ExperimentalGenerateSpeech(ctx context.Context, opts GenerateSpeechOptions) (*GenerateSpeechResult, error) {
+	LogWarnings(LogWarningsOptions{Warnings: []types.Warning{{
+		Type:    "deprecated",
+		Setting: "experimental_generateSpeech",
+		Message: "Use generateSpeech instead.",
+	}}})
 	return GenerateSpeech(ctx, opts)
 }
 
@@ -266,7 +306,7 @@ func responseAudioMediaType(headers map[string]string) string {
 		if !strings.EqualFold(name, "content-type") {
 			continue
 		}
-		normalized := strings.ToLower(strings.TrimSpace(strings.SplitN(value, ";", 2)[0]))
+		normalized := providerutils.JSToLower(providerutils.JSTrim(strings.SplitN(value, ";", 2)[0]))
 		if normalized == "" {
 			return ""
 		}
@@ -281,7 +321,7 @@ func responseAudioMediaType(headers map[string]string) string {
 // outputFormatMediaType maps the caller's requested outputFormat to a media
 // type for headerless raw formats that can't be sniffed from the bytes.
 func outputFormatMediaType(outputFormat string) string {
-	switch strings.ToLower(strings.TrimSpace(outputFormat)) {
+	switch providerutils.JSToLower(providerutils.JSTrim(outputFormat)) {
 	case "pcm", "audio/pcm":
 		return "audio/pcm"
 	case "audio/l16":
@@ -295,13 +335,19 @@ func outputFormatMediaType(outputFormat string) string {
 	}
 }
 
-func generatedAudioFormat(mediaType string) string {
-	if mediaType == "audio/mpeg" {
-		return "mp3"
+// generatedAudioFormat derives the audio format from a media type. Mirrors TS
+// DefaultGeneratedAudioFile: "audio/mpeg" and unparseable media types map to
+// mp3, and an empty subtype ("audio/") is an InvalidResponseDataError.
+func generatedAudioFormat(mediaType string) (string, error) {
+	format := "mp3"
+	if mediaType != "" {
+		parts := strings.Split(mediaType, "/")
+		if len(parts) == 2 && mediaType != "audio/mpeg" {
+			format = parts[1]
+		}
 	}
-	parts := strings.Split(mediaType, "/")
-	if len(parts) == 2 && parts[1] != "" {
-		return parts[1]
+	if format == "" {
+		return "", providererrors.NewInvalidResponseDataError(mediaType, "Could not determine audio format from media type: "+mediaType)
 	}
-	return "mp3"
+	return format, nil
 }

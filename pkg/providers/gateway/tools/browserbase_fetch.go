@@ -34,9 +34,12 @@ type BrowserbaseFetchTool types.Tool
 // browserbaseFetch/browserbaseFetchToolFactory
 // (packages/gateway/src/tool/browserbase-fetch.ts).
 func NewBrowserbaseFetch(config BrowserbaseFetchConfig) BrowserbaseFetchTool {
+	// url is TS z.string().url(), which zod's toJSONSchema renders as
+	// format "uri". Provider tool calls are validated against this schema.
 	properties := map[string]interface{}{
 		"url": map[string]interface{}{
 			"type":        "string",
+			"format":      "uri",
 			"description": "URL of the page to fetch.",
 		},
 		"allow_redirects": map[string]interface{}{
@@ -57,15 +60,16 @@ func NewBrowserbaseFetch(config BrowserbaseFetchConfig) BrowserbaseFetchTool {
 			"description": "Output format. raw returns the response body unchanged, markdown returns page content as Markdown, and json returns structured content using schema.",
 		},
 		"schema": map[string]interface{}{
-			"type":        "object",
-			"description": "JSON Schema for structured extraction. Only use with format set to json.",
+			"type":                 "object",
+			"propertyNames":        map[string]interface{}{"type": "string"},
+			"additionalProperties": map[string]interface{}{},
+			"description":          "JSON Schema for structured extraction. Only use with format set to json.",
 		},
 	}
 
 	tool := types.Tool{
 		Name:             "browserbase_fetch",
 		Description:      "Fetch a web page using Browserbase and return its content as raw, markdown, or structured JSON.",
-		Title:            "Browserbase Fetch",
 		Parameters:       map[string]interface{}{"type": "object", "properties": properties, "required": []string{"url"}},
 		OutputSchema:     browserbaseFetchOutputSchema(),
 		ProviderExecuted: true,
@@ -84,29 +88,92 @@ func NewBrowserbaseFetch(config BrowserbaseFetchConfig) BrowserbaseFetchTool {
 	return BrowserbaseFetchTool(tool)
 }
 
-func browserbaseFetchOutputSchema() map[string]interface{} {
-	return map[string]interface{}{
-		"oneOf": []interface{}{
-			map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"id": map[string]interface{}{"type": "string"},
-					"content": map[string]interface{}{
-						"oneOf": []interface{}{
-							map[string]interface{}{"type": "string"},
-							map[string]interface{}{"type": "object"},
-						},
-					},
-					"contentType": map[string]interface{}{"type": "string"},
-					"encoding":    map[string]interface{}{"type": "string"},
-					"headers":     map[string]interface{}{"type": "object", "additionalProperties": map[string]interface{}{"type": "string"}},
-					"statusCode":  map[string]interface{}{"type": "number"},
+// browserbaseFetchOutputSchemaJSON is the TS output schema (packages/gateway/src/tool/browserbase-fetch.ts) as zod's
+// toJSONSchema renders it (draft-07, io "input"). ValidateUIMessages checks
+// tool outputs against it, so nullable fields are anyOf [T, null] and the
+// required lists match zod's non-optional fields.
+const browserbaseFetchOutputSchemaJSON = `{
+	"anyOf": [
+		{
+			"type": "object",
+			"properties": {
+				"id": {
+					"type": "string"
 				},
-				"required": []string{"id", "content", "contentType", "encoding", "headers", "statusCode"},
+				"content": {
+					"anyOf": [
+						{
+							"type": "string"
+						},
+						{
+							"type": "object",
+							"propertyNames": {
+								"type": "string"
+							},
+							"additionalProperties": {}
+						}
+					]
+				},
+				"contentType": {
+					"type": "string"
+				},
+				"encoding": {
+					"type": "string"
+				},
+				"headers": {
+					"type": "object",
+					"propertyNames": {
+						"type": "string"
+					},
+					"additionalProperties": {
+						"type": "string"
+					}
+				},
+				"statusCode": {
+					"type": "number"
+				}
 			},
-			searchErrorSchema([]string{"api_error", "configuration_error", "execution_error", "invalid_input", "rate_limit", "timeout", "unknown"}),
+			"required": [
+				"id",
+				"content",
+				"contentType",
+				"encoding",
+				"headers",
+				"statusCode"
+			]
 		},
-	}
+		{
+			"type": "object",
+			"properties": {
+				"error": {
+					"type": "string",
+					"enum": [
+						"api_error",
+						"configuration_error",
+						"execution_error",
+						"invalid_input",
+						"rate_limit",
+						"timeout",
+						"unknown"
+					]
+				},
+				"statusCode": {
+					"type": "number"
+				},
+				"message": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"error",
+				"message"
+			]
+		}
+	]
+}`
+
+func browserbaseFetchOutputSchema() map[string]interface{} {
+	return mustDecodeToolSchema(browserbaseFetchOutputSchemaJSON)
 }
 
 func browserbaseFetchArgs(config BrowserbaseFetchConfig) map[string]interface{} {

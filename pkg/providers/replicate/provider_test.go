@@ -88,21 +88,26 @@ func TestImageModelBuildAndConvertErrors(t *testing.T) {
 	p := New(Config{APIKey: "k"})
 	m := NewImageModel(p, "img-model")
 	n := 3
-	body := m.buildRequestBody(&provider.ImageGenerateOptions{
+	body, _, _, err := m.buildRequest(&provider.ImageGenerateOptions{
 		Prompt: "draw",
 		N:      &n,
 		Size:   "1280x720",
 	})
-	if body["version"] != "img-model" {
-		t.Fatalf("version mismatch: %#v", body["version"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := body["version"]; ok {
+		t.Fatalf("unversioned model must not send version: %#v", body["version"])
 	}
 	input := body["input"].(map[string]interface{})
-	if input["num_outputs"] != 3 || input["width"] != 1280 || input["height"] != 720 {
+	if input["num_outputs"] != 3 || input["size"] != "1280x720" {
 		t.Fatalf("input mismatch: %#v", input)
 	}
 
-	if _, err := m.convertResponse(t.Context(), replicateImagePrediction{Output: nil}); err == nil {
-		t.Fatal("convertResponse should fail when image URL is missing")
+	// A nil output fails earlier in DoGenerate ("completed without output");
+	// convertResponse itself has no images to download.
+	if res, err := m.convertResponse(t.Context(), replicateImagePrediction{Output: nil}); err != nil || len(res.Images) != 0 {
+		t.Fatalf("convertResponse(nil output) = %v, %v", res, err)
 	}
 }
 
@@ -135,7 +140,9 @@ func TestVideoModelHelpers(t *testing.T) {
 	if _, ok := input["pollIntervalMs"]; ok {
 		t.Fatalf("pollIntervalMs should not be forwarded in input: %#v", input)
 	}
-	if input["motion_bucket"] != 127 {
+	// Option values are read through their JSON form (typed-option
+	// normalization), so the number is a float64 with the same wire text.
+	if input["motion_bucket"] != float64(127) {
 		t.Fatalf("provider option should be forwarded: %#v", input)
 	}
 

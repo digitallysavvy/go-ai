@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/digitallysavvy/go-ai/pkg/internal/sdkversion"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -75,7 +76,7 @@ func TestAlibabaEmbeddingModelRequestOptionsAndOrdering(t *testing.T) {
 	if capturedAuth != "Bearer test-api-key" || capturedProviderHeader != "provider" || capturedRequestHeader != "request" {
 		t.Fatalf("headers auth=%q provider=%q request=%q", capturedAuth, capturedProviderHeader, capturedRequestHeader)
 	}
-	if !strings.HasPrefix(capturedUserAgent, "ai-sdk-alibaba/0.5.3 ") {
+	if !strings.HasPrefix(capturedUserAgent, "ai-sdk-alibaba/"+sdkversion.Version+" ") {
 		t.Fatalf("User-Agent = %q", capturedUserAgent)
 	}
 	wantBody := map[string]interface{}{

@@ -1,12 +1,16 @@
 package version
 
-import "github.com/digitallysavvy/go-ai/pkg/providerutils"
+import (
+	"github.com/digitallysavvy/go-ai/pkg/internal/sdkversion"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+)
 
 // Version is the Go AI SDK release version. The TS SDK versions each
 // provider package independently (openai's VERSION, anthropic's VERSION,
 // etc. are all different); Go ships as a single module, so this one
 // constant stands in for every TS package's own VERSION import below.
-const Version = "0.5.3"
+// The value lives in pkg/internal/sdkversion so pkg/telemetry can report it.
+const Version = sdkversion.Version
 
 // UserAgent returns the user-agent suffix used by the pkg/ai operation
 // wrappers (GenerateText, StreamText, Embed, Transcribe, Batch, GenerateVideo,

@@ -49,13 +49,13 @@ func (s *interactionsRetryServer) getCount() int {
 
 func backgroundStream(t *testing.T, base string) provider.TextStream {
 	t.Helper()
-	// Agents run in the background: POST, then stream the interaction by id.
-	model, err := New(Config{APIKey: "k", BaseURL: base}).InteractionsAgent(InteractionsAgentDeepResearch)
+	model, err := New(Config{APIKey: "k", BaseURL: base}).Interactions(ModelGemini25Flash)
 	if err != nil {
 		t.Fatal(err)
 	}
 	st, err := model.DoStream(context.Background(), &provider.GenerateOptions{
-		Prompt: types.Prompt{Text: "x"},
+		Prompt:          types.Prompt{Text: "x"},
+		ProviderOptions: map[string]interface{}{"google": map[string]interface{}{"background": true}},
 	})
 	if err != nil {
 		t.Fatalf("DoStream: %v", err)
@@ -117,10 +117,10 @@ func TestInteractionsBackgroundStreamResumesWithLastEventID(t *testing.T) {
 	srv := &interactionsRetryServer{handler: func(n int, w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		if n == 1 {
-			_, _ = fmt.Fprint(w, "id: e1\ndata: {\"event_type\":\"interaction.created\",\"event_id\":\"e1\",\"interaction\":{\"id\":\"i1\"}}\n\n")
+			_, _ = fmt.Fprint(w, "data: {\"event_type\":\"interaction.created\",\"event_id\":\"e1\",\"interaction\":{\"id\":\"i1\"}}\n\n")
 			return
 		}
-		_, _ = fmt.Fprint(w, "id: e2\ndata: {\"event_type\":\"interaction.completed\",\"event_id\":\"e2\",\"interaction\":{\"id\":\"i1\",\"status\":\"completed\"}}\n\n")
+		_, _ = fmt.Fprint(w, "data: {\"event_type\":\"interaction.completed\",\"event_id\":\"e2\",\"interaction\":{\"id\":\"i1\",\"status\":\"completed\"}}\n\n")
 	}}
 	ts := srv.serve(t)
 	defer ts.Close()
@@ -134,5 +134,28 @@ func TestInteractionsBackgroundStreamResumesWithLastEventID(t *testing.T) {
 	}
 	if srv.getCount() != 2 || !strings.Contains(srv.gets[1], "last_event_id=e1") {
 		t.Fatalf("gets = %v", srv.gets)
+	}
+}
+
+// A failed connect is retried (TS openReader catch) instead of failing the
+// stream on the first error.
+func TestInteractionsBackgroundStreamRetriesFailedConnect(t *testing.T) {
+	shortRetryDelay(t)
+	srv := &interactionsRetryServer{handler: func(n int, w http.ResponseWriter, _ *http.Request) {
+		if n == 1 {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "data: {\"event_type\":\"interaction.completed\",\"event_id\":\"e1\",\"interaction\":{\"id\":\"i1\",\"status\":\"completed\"}}\n\n")
+	}}
+	ts := srv.serve(t)
+	defer ts.Close()
+
+	if _, err := drainRetryStream(backgroundStream(t, ts.URL)); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if srv.getCount() != 2 {
+		t.Fatalf("GET requests = %d, want 2", srv.getCount())
 	}
 }

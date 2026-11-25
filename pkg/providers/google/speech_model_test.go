@@ -6,6 +6,8 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"github.com/digitallysavvy/go-ai/pkg/internal/sdkversion"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -57,7 +59,7 @@ func TestGoogleSpeechModelRequestAndWAVResponse(t *testing.T) {
 	if capturedKey != "test-key" {
 		t.Fatalf("x-goog-api-key = %q", capturedKey)
 	}
-	if !strings.HasPrefix(capturedUserAgent, "ai-sdk-google/0.5.3 ") {
+	if !strings.HasPrefix(capturedUserAgent, "ai-sdk-google/"+sdkversion.Version+" ") {
 		t.Fatalf("User-Agent = %q", capturedUserAgent)
 	}
 	contents := capturedBody["contents"].([]interface{})
@@ -77,7 +79,12 @@ func TestGoogleSpeechModelRequestAndWAVResponse(t *testing.T) {
 	if len(result.Audio) != 44+len(pcm) || string(result.Audio[:4]) != "RIFF" {
 		t.Fatalf("audio result len=%d", len(result.Audio))
 	}
-	if len(result.Warnings) != 2 {
+	// TS 3c6fb4322c: language is forwarded as speechConfig.languageCode
+	// (no language warning); only speed warns.
+	if lc := gen["speechConfig"].(map[string]interface{})["languageCode"]; lc != "en" {
+		t.Fatalf("languageCode = %#v", lc)
+	}
+	if len(result.Warnings) != 1 {
 		t.Fatalf("warnings = %#v", result.Warnings)
 	}
 	meta := result.ProviderMetadata["google"].(map[string]interface{})
@@ -253,7 +260,7 @@ func TestParseGeminiSampleRate(t *testing.T) {
 	tests := []struct {
 		name     string
 		mimeType string
-		want     int
+		want     int64
 	}{
 		{"typical", "audio/L16;rate=24000", 24000},
 		{"no match", "audio/L16", 0},
@@ -263,8 +270,12 @@ func TestParseGeminiSampleRate(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := parseGeminiSampleRate(tt.mimeType); got != tt.want {
-				t.Fatalf("parseGeminiSampleRate(%q) = %d, want %d", tt.mimeType, got, tt.want)
+			want := tt.want
+			if want > math.MaxInt { // 32-bit: Atoi cannot read it, so it is unknown
+				want = 0
+			}
+			if got := parseGeminiSampleRate(tt.mimeType); int64(got) != want {
+				t.Fatalf("parseGeminiSampleRate(%q) = %d, want %d", tt.mimeType, got, want)
 			}
 		})
 	}
@@ -283,11 +294,14 @@ func TestAddGeminiWAVHeaderClampsOutOfRangeSampleRate(t *testing.T) {
 		wantRate   uint32
 	}{
 		{"negative", -1, 0},
-		{"overflows uint32", int64Max(), 0},
+		{"overflows uint32", math.MaxInt, 0},
 		{"valid", 24000, 24000},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			if uint64(tt.sampleRate) == math.MaxInt && uint64(math.MaxInt) <= math.MaxUint32 {
+				t.Skip("no int exceeds uint32 on a 32-bit platform")
+			}
 			out := addGeminiWAVHeader(pcm, tt.sampleRate)
 			if len(out) < 28 {
 				t.Fatalf("wav header too short: %d bytes", len(out))
@@ -303,10 +317,4 @@ func TestAddGeminiWAVHeaderClampsOutOfRangeSampleRate(t *testing.T) {
 			}
 		})
 	}
-}
-
-// int64Max returns math.MaxInt64 as an int, without adding a "math" import
-// just for one constant.
-func int64Max() int {
-	return 1<<63 - 1
 }

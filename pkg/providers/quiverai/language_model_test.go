@@ -247,7 +247,7 @@ func TestLanguageModelWarnsAndOmitsStructuredOutput(t *testing.T) {
 	}
 }
 
-func TestLanguageModelOmitsReasoningNoneAndWarns(t *testing.T) {
+func TestLanguageModelMapsReasoningNoneToLow(t *testing.T) {
 	for _, method := range []string{"DoGenerate", "DoStream"} {
 		t.Run(method, func(t *testing.T) {
 			var requestBody map[string]interface{}
@@ -294,17 +294,20 @@ func TestLanguageModelOmitsReasoningNoneAndWarns(t *testing.T) {
 				warnings = chunk.Warnings
 			}
 
+			// TS 61a315e333: an unsupported "none" maps to the lowest level.
 			found := false
 			for _, w := range warnings {
-				if w.Type == "unsupported" && w.Feature == "reasoning effort none" {
+				if w.Type == "compatibility" && w.Feature == "reasoning" &&
+					w.Details == `reasoning "none" is not directly supported by this model. mapped to effort "low".` {
 					found = true
 				}
 			}
 			if !found {
-				t.Fatalf("%s warnings = %+v, want reasoning-effort-none warning", method, warnings)
+				t.Fatalf("%s warnings = %+v, want reasoning none compatibility warning", method, warnings)
 			}
-			if _, hasReasoning := requestBody["reasoning"]; hasReasoning {
-				t.Fatalf("%s: reasoning field should be omitted, got %v", method, requestBody["reasoning"])
+			reasoning, _ := requestBody["reasoning"].(map[string]interface{})
+			if reasoning["effort"] != "low" {
+				t.Fatalf("%s: reasoning = %v, want effort low", method, requestBody["reasoning"])
 			}
 		})
 	}
@@ -828,4 +831,35 @@ func writeSSE(w http.ResponseWriter, events []map[string]interface{}) {
 		_, _ = w.Write([]byte("\n\n"))
 	}
 	_, _ = w.Write([]byte("data: [DONE]\n\n"))
+}
+
+// The struct-level EncryptedContent of a replayed reasoning part must not
+// reach the wire either: TS rebuilds the part's quiverai options from itemId
+// and reasoningSummary only.
+func TestLanguageModelDropsStructEncryptedReasoningContent(t *testing.T) {
+	var requestBody map[string]interface{}
+	p, _ := newQuiverTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&requestBody)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(quiverResponse(nil, "", nil))
+	})
+	model, err := p.LanguageModel(ModelArrow2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = model.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Messages: []types.Message{{
+		Role: types.RoleAssistant,
+		Content: []types.ContentPart{types.ReasoningContent{
+			Text: "private", EncryptedContent: "blob",
+			ProviderOptions: map[string]interface{}{"quiverai": map[string]interface{}{"itemId": "rs_1"}},
+		}},
+	}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input, _ := requestBody["input"].([]interface{})
+	item, _ := input[0].(map[string]interface{})
+	if _, has := item["encrypted_content"]; has {
+		t.Fatalf("reasoning item leaked encrypted_content: %+v", item)
+	}
 }

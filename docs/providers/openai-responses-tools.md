@@ -118,6 +118,10 @@ ct := openaitool.NewCustomTool(
 tool := ct.ToTool("sentiment-analyzer")
 ```
 
+### Streaming Input
+
+While streaming, a custom tool's input deltas are the raw text the model produced (not JSON-encoded). The `tool-input-start` chunk sets `ToolCall.InputEncoding` to `"text"` so UI message streams accumulate the deltas as a string; the final tool call input is still JSON-encoded.
+
 ### Wire Format
 
 When `ct.ToTool("name")` is passed through `responses.PrepareTools()`, it serializes to:
@@ -177,7 +181,10 @@ searchTool := openaitool.ToolSearch(openaitool.ToolSearchArgs{
         "required": []string{"query"},
     },
     Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
-        query, _ := input["query"].(string)
+        // The call input is {arguments, call_id}; arguments match Parameters.
+        args, _ := input["arguments"].(map[string]interface{})
+        query, _ := args["query"].(string)
+        _ = query
         // Return tool names matching the query
         return []string{"get_weather", "search_web"}, nil
     },
@@ -212,6 +219,23 @@ Shell tools allow the model to interact with a sandboxed environment. There are 
 ```go
 import "github.com/digitallysavvy/go-ai/pkg/providers/openai/responses"
 ```
+
+### Client-executed tools
+
+Like the TypeScript SDK, `NewComputerTool`, `NewLocalShellTool`, `NewShellTool` and
+`NewApplyPatchTool` are client-executed: `ProviderExecuted` is false and `Execute` is
+nil, so the model's call is returned to you unexecuted. Attach your implementation
+with `responses.WithExecute` (or assign `tool.Execute`):
+
+```go
+tool := responses.WithExecute(responses.NewShellTool(),
+    func(ctx context.Context, input map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+        return runShell(ctx, input)
+    })
+```
+
+Shell calls made inside a hosted container (`container_auto` / `container_reference`)
+are still provider-executed; that is decided per call from the response, not from the tool.
 
 ### Local Shell Tool
 
@@ -283,6 +307,15 @@ type ShellNetworkPolicy struct {
     DomainSecrets  []ShellDomainSecret
 }
 ```
+
+#### Shell results
+
+`local_shell_call`, `shell_call` and `shell_call_output` output items are decoded
+in both `DoGenerate` and `DoStream`. The call becomes a tool call named after the
+declared tool (`shell`/`local_shell` by default). With a hosted container
+environment (`container_auto` or `container_reference`) the call is
+provider-executed and its output arrives as a tool result
+(`{output: [{stdout, stderr, outcome}]}`); otherwise your tool executes it.
 
 ### Apply Patch Tool
 

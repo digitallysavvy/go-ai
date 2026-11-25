@@ -3,13 +3,12 @@ package fishaudio
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"fmt"
 	"mime/multipart"
 	"net/http"
-	"net/textproto"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -49,6 +48,9 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	if opts == nil {
 		opts = &provider.TranscriptionOptions{}
 	}
+	if err := validateTranscriptionOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	currentDate := time.Now()
 
 	body, contentType, err := m.buildMultipartBody(opts)
@@ -58,10 +60,11 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 
 	var response fishAudioTranscriptionResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/v1/asr",
-		Body:    body,
-		Headers: internalhttp.MergeHeaders(opts.Headers, map[string]string{"Content-Type": contentType}),
+		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaFishAudioTr),
+		Method:           http.MethodPost,
+		Path:             "/v1/asr",
+		Body:             body,
+		Headers:          internalhttp.MergeHeaders(opts.Headers, map[string]string{"Content-Type": contentType}),
 	}, &response)
 	if err != nil {
 		return nil, handleError(err)
@@ -85,7 +88,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 			Timestamp: currentDate,
 			ModelID:   m.modelID,
 			Headers:   providerutils.ExtractHeaders(httpResp.Headers),
-			Body:      response,
+			Body:      providerutils.RawJSONBody(httpResp.Body),
 		},
 	}
 	// `language_code` is absent from the documented response schema but is
@@ -116,7 +119,7 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 
 	audio := opts.Audio
 	if len(audio) == 0 && opts.AudioBase64 != "" {
-		decoded, err := base64.StdEncoding.DecodeString(opts.AudioBase64)
+		decoded, err := fileutil.ConvertBase64ToBytes(opts.AudioBase64)
 		if err != nil {
 			return nil, "", fmt.Errorf("fish-audio: failed to decode base64 audio: %w", err)
 		}
@@ -131,12 +134,8 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 	// media type (`new File([blob], 'audio', { type: mediaType })`), so build
 	// the part headers explicitly to preserve that.
 	filename := "audio." + fishAudioExtension(opts.MimeType)
-	header := textproto.MIMEHeader{}
-	header.Set("Content-Disposition", fmt.Sprintf(`form-data; name="audio"; filename=%q`, filename))
-	if opts.MimeType != "" {
-		header.Set("Content-Type", opts.MimeType)
-	}
-	part, err := writer.CreatePart(header)
+	// A File with an empty type is sent as application/octet-stream.
+	part, err := providerutils.CreateFormDataFile(writer, "audio", filename, opts.MimeType)
 	if err != nil {
 		return nil, "", err
 	}
@@ -144,8 +143,14 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 		return nil, "", err
 	}
 
-	if fishOpts != nil && fishOpts.Language != "" {
-		if err := writer.WriteField("language", fishOpts.Language); err != nil {
+	// TS `language != null`: an empty string is sent too (a typed options
+	// struct cannot tell "" from unset).
+	rawOpts, _ := providerutils.NormalizeOptionsJSON(opts.ProviderOptions)["fishAudio"].(map[string]interface{})
+	if language, isString := rawOpts["language"].(string); isString || (fishOpts != nil && fishOpts.Language != "") {
+		if !isString {
+			language = fishOpts.Language
+		}
+		if err := providerutils.WriteFormDataField(writer, "language", language); err != nil {
 			return nil, "", err
 		}
 	}
@@ -157,7 +162,7 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 	if fishOpts != nil && fishOpts.IgnoreTimestamps != nil {
 		ignoreTimestamps = *fishOpts.IgnoreTimestamps
 	}
-	if err := writer.WriteField("ignore_timestamps", fmt.Sprintf("%t", ignoreTimestamps)); err != nil {
+	if err := providerutils.WriteFormDataField(writer, "ignore_timestamps", fmt.Sprintf("%t", ignoreTimestamps)); err != nil {
 		return nil, "", err
 	}
 
@@ -168,20 +173,5 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 }
 
 func fishAudioExtension(mimeType string) string {
-	switch mimeType {
-	case "audio/mpeg", "audio/mp3":
-		return "mp3"
-	case "audio/wav", "audio/wave", "audio/x-wav":
-		return "wav"
-	case "audio/webm":
-		return "webm"
-	case "audio/mp4", "audio/m4a":
-		return "m4a"
-	case "audio/flac":
-		return "flac"
-	case "audio/ogg":
-		return "ogg"
-	default:
-		return "wav"
-	}
+	return providerutils.MediaTypeToExtension(mimeType)
 }

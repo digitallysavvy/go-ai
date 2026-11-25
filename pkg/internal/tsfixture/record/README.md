@@ -1,0 +1,128 @@
+# Wire replay recordings
+
+`pkg/providers/testdata/tswire/*.jsonl.gz` hold what the TypeScript AI SDK
+tests actually do. The recorder runs the real TS tests (`vitest`) with two
+hooks and writes one JSON line per test:
+
+- every `model.do*()` call: the arguments, the result (or error) and the model
+  (class, id, provider name, plain config settings); for `doStream`, also the
+  stream parts the test read (`parts`, with `streamDone` once it read them all
+  or `streamError` when the stream failed; recordings made since review round
+  81);
+- every HTTP request the test server saw (method, URL, headers, body) and the
+  response it served, and, for tests that inject a mock `fetch` into the model
+  config (or the language model a decision model wraps), the exchange that
+  `fetch` produced (marked `mockFetch`).
+
+Go replays a recording through the Go provider of the same name
+(`TestTSWire`, `tsfixture.RunWire`): the Go model gets the same call options,
+a local server answers with the recorded responses, and the requests the Go
+model sends and the values it returns are diffed against the TS ones. Unlike
+`testdata/tscases` (extracted literals and vitest snapshots) this covers every
+test that talks to the test server, including helper-built responses,
+multi-request flows (async image/video, polling), multipart and binary bodies.
+
+## Recording
+
+```sh
+pkg/internal/tsfixture/record/prepare.sh <ai repo at the target commit> /tmp/ts-scratch
+cd /tmp/ts-scratch && ./rec/run.sh openai groq mistral ...      # -> rec/out/<pkg>.jsonl
+python3 <go-ai>/pkg/internal/tsfixture/record/finish.py rec/out <go-ai>/pkg/providers/testdata/tswire
+```
+
+`prepare.sh` copies the packages into a scratch directory (the TS checkout is
+not modified), installs dependencies with pnpm, and needs no build: the vitest
+config resolves `@ai-sdk/*` to `src`. It also truncates two kinds of large
+test data so the recordings stay small: the 40 KB sample mp3 files become 64
+bytes, and JSON strings over 3000 characters in `__fixtures__` are cut to 300
+(`trunc_fixtures.py`). Recorded TS results are computed from the truncated
+inputs, so Go and TS see the same data.
+
+With `NO_INSTALL=1`, `prepare.sh` links the TS checkout's installed
+`node_modules` instead of running pnpm (run with the checkout's
+`node_modules/.bin` on `PATH`, and delete the `.vite` caches vitest leaves in
+the linked directories afterwards). Round 85 re-recorded the provb suites and
+anthropic, amazon-bedrock, google, google-vertex, groq, mistral, cohere,
+elevenlabs, gateway, heygen, perplexity, cerebras, quiverai and topaz at
+`30548ee7f9` this way; the google-vertex Anthropic labels tests need
+`google-auth-library`, which that checkout does not install, so they are not
+in the recording (the suite skips them anyway).
+
+Port wave 1 (2026-11-25) re-recorded every suite at `a457990a33`
+(ai@7.0.181) the same way, adding `liquid` and `scaledown`. The TS run was
+not clean in a few packages (anthropic 11, openai 21, xai 5, deepseek 3,
+google 1 failing tests: truncated stream fixtures and snapshot drift in the
+borrowed `node_modules`); the recording keeps what each test did, and the Go
+replay passes on it with the skips listed in the suites. Earlier fal recordings had
+reached the real fal hosts (the test ran with network access); the new ones
+replay the mocked responses.
+
+Port wave 2 added `doExtract` to the recorder hooks and re-recorded the
+packages with extraction models (`scaledown`, `gateway`, `anthropic`,
+`openai`, `google`) at `a457990a33` the same way; only the tests that call
+`doExtract` were taken from the new run, every other recorded test is kept
+byte for byte. `TestTSWire` replays them through `wireExtract`. The Gateway
+Live model's `doCreateClientSecret` / `parseServerEvent` /
+`serializeClientEvent` calls are in the wave-1 recording but are not replayed
+(no Go replay kind for realtime calls); the gateway Live unit twins cover them.
+
+`finish.py` gzips with a fixed mtime (reproducible bytes) and splits a package
+into `<pkg>__<test-file>.jsonl.gz` when one file would exceed ~900 KB.
+
+## Running
+
+```sh
+go test ./pkg/providers/ -run TestTSWire                # all recorded packages
+TSWIRE_PKG=cohere go test ./pkg/providers/ -run TestTSWire
+TSWIRE_REPORT=1 go test -json ./pkg/providers/ -run TestTSWire   # log every difference instead of failing
+TSWIRE_ERRORS=1 ...                                    # also compare error wording
+```
+
+The Anthropic, Google, Vertex and Bedrock suites are registered in
+`pkg/providers/ts_wire_anthgoog_test.go`. They pass the `responseFormat` schema
+as raw JSON (`WireSuite.RawSchemas`) so schema key order is compared, replay
+Vertex Anthropic through its sub-provider, and send the fixed Google speech and
+Cloud TTS hosts to the replay server with a host-rewriting transport. The
+`anthropic-aws` tests exercise provider settings, environment variables and
+credentials (nothing a Go provider can be replayed against), so no recording is
+kept. Bedrock `doStream` tests whose response the test server serves as text
+chunks are skipped (the recording stores the binary event-stream frames as
+text; the case suites replay them); responses captured from a mock `fetch` are
+binary bodies and replay faithfully. The Anthropic and Google decision-model
+tests are recorded but skipped: a Go map carries the questions and the choice
+criteria, so the prompt orders them by key where TS uses insertion order.
+
+One recording can also be replayed through other Go providers built on the
+same TS class: `TestR82provbCompatChatWireThroughProviders`
+(`pkg/internal/tsfixture`) replays the openai-compatible chat tests through
+gmicloud, together, fireworks, zai and ollama. `WireSuite.MetadataKeyAlias`
+and `ProviderOptionsKeyAlias` map the TS test provider name onto the Go
+provider's key, and `PrepareTest` rewrites a recorded test to what the TS
+provider (not the bare class) sends, e.g. its `includeUsage`; tests whose
+class settings differ from the TS provider's are skipped with the reason.
+
+Packages whose Go provider needs package-private setup replay in-package:
+`fal` (fixed hosts), `azure` (URL layout selected by the resource name) and
+`openai` (typed provider tools, provider names).
+
+## What is compared
+
+- requests: method, path (Go may add a fixed version prefix, `WireSuite.GoAdds`),
+  query, every header the TS request carried (except transport noise), the JSON
+  body (null/empty values ignored, key order not significant), multipart parts
+  (name, filename, content type, bytes; JSON text values compare as JSON);
+- results: embeddings, rerank ranking, images/audio/transcripts, warnings,
+  provider metadata, response headers/body/model id, language-model content,
+  usage and finish reason (`WireSuite.LanguageResults`), video operations;
+- stream parts (with `LanguageResults`, when the recording carries them): the
+  TS parts against the Go stream under the case-replay stream conventions
+  (`CanonStream`, `Normalize`; a Go response timestamp or model id TS does not
+  report is ignored). `WireSuite.SkipResults` keeps a test's request
+  comparison while leaving its result out.
+
+Known harness limits (tests are skipped or the field ignored, each with the
+reason in `Skip` or in `wire_run.go`): operations are opaque, TS calls that pass
+functions (webhook factories), responses the recorder cannot carry
+(controlled streams), provider settings that are code (extensions,
+`transformRequestBody`), JSON key order inside text the model sees (Go maps),
+Go headers beyond the TS ones, error wording.

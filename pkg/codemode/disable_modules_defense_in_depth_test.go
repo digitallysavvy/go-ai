@@ -41,36 +41,42 @@ func TestEngineRejectsDynamicImport_WithStaticCheckBypassed(t *testing.T) {
 	}
 
 	specifiers := []string{"qjs:std", "qjs:os", "qjs:bjson", "./x", "/x"}
-	for _, spec := range specifiers {
-		spec := spec
-		t.Run(spec, func(t *testing.T) {
-			// drive runs on a goroutine runInSandbox spawns internally, so
-			// every assertion below is reported via a returned error
-			// rather than t.Fatalf (unsafe to call off the test's own
-			// goroutine) and checked after runInSandbox returns.
-			_, _, _, err := runInSandbox(context.Background(), policy, func(jsCtx *qjs.Context) (string, bool, bool, error) {
-				p, eerr := jsCtx.EvalNoAutoAwait("probe.js", qjs.Code(`import('`+spec+`')`))
-				if eerr != nil {
-					return "", false, false, eerr
+	// The separator between `import` and `(` may be any ECMAScript
+	// whitespace (round 30: `import<NBSP>(` slipped past the static scan),
+	// so the engine block is checked for those spellings too.
+	separators := []string{"", "\u00a0", "\u3000", "\ufeff"}
+	for _, sep := range separators {
+		for _, spec := range specifiers {
+			spec, sep := spec, sep
+			t.Run(fmt.Sprintf("%q%s", sep, spec), func(t *testing.T) {
+				// drive runs on a goroutine runInSandbox spawns internally, so
+				// every assertion below is reported via a returned error
+				// rather than t.Fatalf (unsafe to call off the test's own
+				// goroutine) and checked after runInSandbox returns.
+				_, _, _, err := runInSandbox(context.Background(), policy, func(jsCtx *qjs.Context) (string, bool, bool, error) {
+					p, eerr := jsCtx.EvalNoAutoAwait("probe.js", qjs.Code(`import`+sep+`('`+spec+`')`))
+					if eerr != nil {
+						return "", false, false, eerr
+					}
+					if !p.IsPromise() {
+						return "", false, false, fmt.Errorf("expected import(%q) to produce a promise even with the static check bypassed", spec)
+					}
+					if _, rerr := jsCtx.RunPendingJobs(); rerr != nil {
+						return "", false, false, rerr
+					}
+					if got := p.PromiseState(); got != qjs.PromiseStateRejected {
+						return "", false, false, fmt.Errorf("expected the engine itself to reject import(%q) with the static check bypassed, got state %v", spec, got)
+					}
+					reason := p.PromiseResult().Exception()
+					if reason == nil || !strings.Contains(reason.Error(), "disabled") {
+						return "", false, false, fmt.Errorf("expected a 'disabled' rejection reason for import(%q), got %v", spec, reason)
+					}
+					return "", true, false, nil
+				})
+				if err != nil {
+					t.Fatalf("defense-in-depth check failed: %v", err)
 				}
-				if !p.IsPromise() {
-					return "", false, false, fmt.Errorf("expected import(%q) to produce a promise even with the static check bypassed", spec)
-				}
-				if _, rerr := jsCtx.RunPendingJobs(); rerr != nil {
-					return "", false, false, rerr
-				}
-				if got := p.PromiseState(); got != qjs.PromiseStateRejected {
-					return "", false, false, fmt.Errorf("expected the engine itself to reject import(%q) with the static check bypassed, got state %v", spec, got)
-				}
-				reason := p.PromiseResult().Exception()
-				if reason == nil || !strings.Contains(reason.Error(), "disabled") {
-					return "", false, false, fmt.Errorf("expected a 'disabled' rejection reason for import(%q), got %v", spec, reason)
-				}
-				return "", true, false, nil
 			})
-			if err != nil {
-				t.Fatalf("defense-in-depth check failed: %v", err)
-			}
-		})
+		}
 	}
 }

@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -79,9 +81,9 @@ func ShouldResolveNativeSubscription(auth string, env map[string]string, hasDire
 
 // ClientApp returns the value adapters send as `User-Agent` / `x-client-app`
 // (b2d0306), e.g. ClientApp("claude-code", "1.0.0") =
-// "ai-sdk/harness-claude-code/1.0.0".
+// "ai-sdk-harness-claude-code/1.0.0".
 func ClientApp(harnessID, version string) string {
-	return fmt.Sprintf("ai-sdk/harness-%s/%s", harnessID, version)
+	return fmt.Sprintf("ai-sdk-harness-%s/%s", harnessID, version)
 }
 
 // ManagedHeaderNames are headers the harness manages itself; callers may not
@@ -96,14 +98,22 @@ func NormalizeHeaders(headers map[string]string) (map[string]string, error) {
 		return nil, nil
 	}
 	normalized := make(map[string]string, len(headers))
-	for name, value := range headers {
+	// Go map iteration is random; TS reports the first forbidden header in
+	// key (insertion) order. Go has no insertion order, so use sorted order
+	// for a deterministic result.
+	names := make([]string, 0, len(headers))
+	for name := range headers {
+		names = append(names, name)
+	}
+	sort.Slice(names, func(i, j int) bool { return strings.ToLower(names[i]) < strings.ToLower(names[j]) })
+	for _, name := range names {
 		lower := strings.ToLower(name)
 		for _, managed := range ManagedHeaderNames {
 			if lower == managed {
 				return nil, fmt.Errorf("HarnessAgent: `headers` must not include the managed header `%s`.", lower) //nolint:staticcheck // matches TS SDK's exact error text
 			}
 		}
-		normalized[lower] = value
+		normalized[lower] = headers[name]
 	}
 	return normalized, nil
 }
@@ -121,6 +131,18 @@ func CurrentOS() string { return runtime.GOOS }
 // `shellQuote`.
 func ShellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
+}
+
+// HostDisconnectTimeoutFlag returns the bridge CLI flag
+// ` --host-disconnect-timeout-ms '<ms>'` for a positive timeout and "" for
+// zero or a negative value (TS a54f0fd8c6 appends it whenever the setting is
+// defined; the bridge ignores a value that is not a positive finite number,
+// so only the command line differs).
+func HostDisconnectTimeoutFlag(timeout time.Duration) string {
+	if timeout <= 0 {
+		return ""
+	}
+	return " --host-disconnect-timeout-ms " + ShellQuote(providerutils.JSNumberString(float64(timeout)/float64(time.Millisecond)))
 }
 
 // ResolveSandboxHomeDir re-exports harness.ResolveSandboxHomeDir (TS utils

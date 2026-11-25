@@ -36,7 +36,7 @@ func TestFilesAPI_PollingURLEncodesProviderFileName(t *testing.T) {
 					})
 				default:
 					polledPath = r.URL.EscapedPath()
-					_ = json.NewEncoder(w).Encode(map[string]interface{}{"name": tt.name, "state": "ACTIVE", "uri": "u"})
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{"name": tt.name, "mimeType": "text/plain", "state": "ACTIVE", "uri": "u"})
 				}
 			}))
 			defer srv.Close()

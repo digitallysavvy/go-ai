@@ -1,10 +1,7 @@
 package alibaba
 
 import (
-	"encoding/json"
-	"fmt"
 	"io"
-	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -19,14 +16,21 @@ type alibabaStream struct {
 	err    error
 
 	toolCallTracker *streaming.StreamingToolCallTracker
-	// Finish reason captured from final chunk
+	// Finish reason captured from final chunk; finishSeen records a
+	// non-null finish_reason (TS `!= null`, so "" counts).
 	finishReason string
+	finishSeen   bool
+	// finishErrored mirrors TS finishReason={unified:"error"} after a parse
+	// error chunk (TS #23814); a later finish_reason overrides it.
+	finishErrored bool
 	// Usage captured from final chunk
 	usage *types.Usage
 	// flushQueue holds fully-assembled chunks to emit before reading more SSE events.
 	// Tool calls are enqueued here only when finish_reason is received (flush).
 	flushQueue        []*provider.StreamChunk
 	isActiveReasoning bool
+	isActiveText      bool // TS activeText: the text block "0" is open
+	endQueued         bool
 	includeRawChunks  bool
 	responseHeaders   map[string]string
 	metadataEmitted   bool
@@ -84,21 +88,21 @@ func (s *alibabaStream) Next() (*provider.StreamChunk, error) {
 		// Get next SSE event
 		event, err := s.parser.Next()
 		if err != nil {
+			if err == io.EOF && s.queueEnd() {
+				continue
+			}
 			s.err = err
 			return nil, err
 		}
 
-		// Check for stream completion
+		// TS parseJsonEventStream drops the [DONE] frame and keeps reading;
+		// flush() runs at the end of the body (the io.EOF branch above).
 		if streaming.IsStreamDone(event) {
-			s.err = io.EOF
-			return nil, io.EOF
+			continue
 		}
 		rawQueued := false
 		if s.includeRawChunks {
-			var raw interface{}
-			if err := json.Unmarshal([]byte(event.Data), &raw); err != nil {
-				raw = event.Data
-			}
+			raw := streaming.RawChunkValue(event.Data)
 			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 				Type: provider.ChunkTypeRaw,
 				Raw:  raw,
@@ -108,10 +112,22 @@ func (s *alibabaStream) Next() (*provider.StreamChunk, error) {
 
 		// Parse the event data as JSON
 		var chunk alibabaStreamChunk
-		if err := json.Unmarshal([]byte(event.Data), &chunk); err != nil {
+		// TS alibabaChatChunkSchema has no error member: a frame without
+		// `choices` (for example an {"error": ...} envelope) or with a
+		// mistyped member is a parse failure carrying a typed error.
+		msg, perr := providerutils.CheckChatChunk(event.Data, providerutils.ChatChunkShape{Kind: providerutils.ChunkKindAlibaba})
+		if perr == nil {
+			if derr := providerutils.UnmarshalChunk([]byte(event.Data), &chunk); derr != nil {
+				msg, perr = providerutils.ChunkParseFailure(event.Data, derr)
+			}
+		}
+		if perr != nil {
+			s.finishReason, s.finishSeen = "", false
+			s.finishErrored = true
 			errorChunk := &provider.StreamChunk{
 				Type: provider.ChunkTypeError,
-				Text: fmt.Sprintf("failed to parse stream chunk: %v", err),
+				Text: msg,
+				Err:  perr,
 			}
 			if rawQueued {
 				s.flushQueue = append(s.flushQueue, errorChunk)
@@ -119,14 +135,15 @@ func (s *alibabaStream) Next() (*provider.StreamChunk, error) {
 			}
 			return errorChunk, nil
 		}
-		if !s.metadataEmitted && (chunk.ID != "" || chunk.Model != "" || chunk.Created != 0 || len(s.responseHeaders) > 0) {
+		// TS isFirstChunk: the first valid chunk always yields response-metadata.
+		if !s.metadataEmitted {
 			metadata := &provider.ResponseMetadata{
 				ID:      chunk.ID,
 				ModelID: chunk.Model,
 				Headers: s.responseHeaders,
 			}
-			if chunk.Created != 0 {
-				metadata.Timestamp = time.Unix(chunk.Created, 0)
+			if chunk.Created != nil { // TS created != null: 0 is the epoch
+				metadata.Timestamp = alibabaCreatedTimestamp(*chunk.Created)
 			}
 			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 				Type:             provider.ChunkTypeResponseMetadata,
@@ -141,18 +158,6 @@ func (s *alibabaStream) Next() (*provider.StreamChunk, error) {
 			return result, nil
 		}
 	}
-}
-
-// emitParsedChunk decides how a freshly built chunk should be delivered:
-// returned immediately (chunk, true) if nothing is queued ahead of it, or
-// appended behind the pending flushQueue (nil, false) for the caller's
-// Next() loop to continue draining.
-func (s *alibabaStream) emitParsedChunk(chunk *provider.StreamChunk) (*provider.StreamChunk, bool) {
-	if len(s.flushQueue) == 0 {
-		return chunk, true
-	}
-	s.flushQueue = append(s.flushQueue, chunk)
-	return nil, false
 }
 
 // processChunk processes a single Alibaba stream chunk. Returns
@@ -173,8 +178,9 @@ func (s *alibabaStream) processChunk(chunk *alibabaStreamChunk) (*provider.Strea
 	delta := choice.Delta
 
 	// Capture finish reason if present
-	if choice.FinishReason != "" {
-		s.finishReason = choice.FinishReason
+	if choice.FinishReason != nil {
+		s.finishReason, s.finishSeen = *choice.FinishReason, true
+		s.finishErrored = false
 	}
 
 	// Capture usage if present
@@ -182,116 +188,104 @@ func (s *alibabaStream) processChunk(chunk *alibabaStreamChunk) (*provider.Strea
 		s.usage = convertAlibabaUsageToTypes(chunk.Usage)
 	}
 
-	// Handle reasoning content (Alibaba thinking mode)
+	// TS handles reasoning, content and tool calls independently, in that
+	// order. Chunks are appended behind anything already queued for this event.
 	if delta.ReasoningContent != "" {
-		var extra []*provider.StreamChunk
 		if !s.isActiveReasoning {
+			// TS ends an open text block before a reasoning block starts.
+			s.endText()
 			s.isActiveReasoning = true
-			extra = []*provider.StreamChunk{
-				{Type: provider.ChunkTypeReasoningStart, ID: "reasoning-0"},
-			}
+			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningStart, ID: "reasoning-0"})
 		}
-		reasoningChunk := &provider.StreamChunk{
+		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 			Type:      provider.ChunkTypeReasoning,
 			Reasoning: delta.ReasoningContent,
 			ID:        "reasoning-0",
-		}
-		if choice.FinishReason != "" {
-			s.isActiveReasoning = false
-			s.flushQueue = append(extra, reasoningChunk, &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"}, s.buildFinishChunk())
-			return nil, false
-		}
-		if len(extra) > 0 {
-			s.flushQueue = append(extra, reasoningChunk)
-			return nil, false
-		}
-		return s.emitParsedChunk(reasoningChunk)
+		})
 	}
-
-	// Handle text content - end reasoning if active
 	if delta.Content != "" {
 		if s.isActiveReasoning {
 			s.isActiveReasoning = false
-			endChunk := &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"}
-			textChunk := &provider.StreamChunk{Type: provider.ChunkTypeText, Text: delta.Content}
-			if choice.FinishReason != "" {
-				s.flushQueue = append([]*provider.StreamChunk{endChunk, textChunk}, s.buildFinishChunk())
-			} else {
-				s.flushQueue = []*provider.StreamChunk{endChunk, textChunk}
-			}
-			return nil, false
+			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"})
 		}
-		if choice.FinishReason != "" {
-			textChunk := &provider.StreamChunk{
-				Type: provider.ChunkTypeText,
-				Text: delta.Content,
-			}
-			if len(s.flushQueue) > 0 {
-				s.flushQueue = append(s.flushQueue, textChunk, s.buildFinishChunk())
-				return nil, false
-			}
-			s.flushQueue = append(s.flushQueue, s.buildFinishChunk())
-			return textChunk, true
+		// TS: text-start / text-delta / text-end with id "0".
+		if !s.isActiveText {
+			s.isActiveText = true
+			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: "0"})
 		}
-		return s.emitParsedChunk(&provider.StreamChunk{
-			Type: provider.ChunkTypeText,
-			Text: delta.Content,
-		})
+		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeText, Text: delta.Content, ID: "0"})
 	}
-
-	// Handle tool call deltas — only accumulate, never emit mid-stream.
-	// Tool calls are finalized and emitted only when finish_reason is received.
+	// Tool call deltas only accumulate; the tracker finalizes at stream end
+	// (TS flush()).
 	if len(delta.ToolCalls) > 0 {
+		if s.isActiveReasoning {
+			s.isActiveReasoning = false
+			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"})
+		}
+		s.endText()
 		for _, tc := range delta.ToolCalls {
 			s.accumulateToolCall(tc)
+			if s.toolCallTracker.Failed() {
+				// TS processDelta threw: the stream ends with the error (no
+				// later part, tool call or finish).
+				s.err = io.EOF
+				break
+			}
 		}
-		if choice.FinishReason != "" {
-			s.flushToolCalls()
-			return nil, false
-		}
-		return nil, false
 	}
-
-	// If we have a finish reason but no content, flush tool calls then finish.
-	if choice.FinishReason != "" {
-		s.flushToolCalls()
-		return nil, false
-	}
-
-	// Empty chunk, get next
 	return nil, false
 }
 
+// endText closes the open text block "0" (TS text-end).
+func (s *alibabaStream) endText() {
+	if s.isActiveText {
+		s.isActiveText = false
+		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeTextEnd, ID: "0"})
+	}
+}
+
 // accumulateToolCall accumulates tool call data from a delta chunk.
-// Tool calls are never emitted mid-stream; call flushToolCalls() at finish_reason.
 func (s *alibabaStream) accumulateToolCall(tc alibabaToolCallDelta) {
-	for _, chunk := range s.toolCallTracker.Track(tc.Index, tc.ID, tc.Function.Name, tc.Function.Arguments) {
+	for _, chunk := range s.toolCallTracker.TrackWirePtr(tc.Index, tc.ID, tc.Function.Name, tc.Function.Arguments) {
 		c := chunk
 		s.flushQueue = append(s.flushQueue, &c)
 	}
 }
 
-// flushToolCalls enqueues all accumulated tool calls onto flushQueue followed by
-// a finish chunk. Must be called only when finish_reason is received.
-func (s *alibabaStream) flushToolCalls() {
+// queueEnd mirrors TS flush(): close the reasoning block, finalize tool calls
+// and enqueue the terminal finish part (reason "interrupted" when no finish_reason
+// arrived, "error" after a parse/error chunk). It reports whether it queued anything and queues at most once.
+func (s *alibabaStream) queueEnd() bool {
+	if s.endQueued {
+		return false
+	}
+	s.endQueued = true
 	if s.isActiveReasoning {
 		s.isActiveReasoning = false
-		s.flushQueue = append([]*provider.StreamChunk{
-			{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"},
-		}, s.flushQueue...)
+		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"})
 	}
+	s.endText()
 	for _, chunk := range s.toolCallTracker.Flush() {
 		c := chunk
 		s.flushQueue = append(s.flushQueue, &c)
 	}
 	s.flushQueue = append(s.flushQueue, s.buildFinishChunk())
+	return true
 }
 
 // buildFinishChunk creates a finish chunk with accumulated data
 func (s *alibabaStream) buildFinishChunk() *provider.StreamChunk {
+	// A clean end without the provider's completion signal is interrupted
+	// (TS #23814).
+	reason := types.FinishReasonInterrupted
+	if s.finishSeen {
+		reason = providerutils.MapOpenAIFinishReason(s.finishReason) // TS mapAlibabaFinishReason
+	} else if s.finishErrored {
+		reason = types.FinishReasonError
+	}
 	return &provider.StreamChunk{
 		Type:            provider.ChunkTypeFinish,
-		FinishReason:    providerutils.MapOpenAIFinishReason(s.finishReason),
+		FinishReason:    reason,
 		RawFinishReason: s.finishReason,
 		Usage:           s.usage,
 	}
@@ -309,7 +303,7 @@ func (s *alibabaStream) Err() error {
 type alibabaStreamChunk struct {
 	ID      string                `json:"id,omitempty"`
 	Object  string                `json:"object,omitempty"`
-	Created int64                 `json:"created,omitempty"`
+	Created *float64              `json:"created,omitempty"`
 	Model   string                `json:"model,omitempty"`
 	Choices []alibabaStreamChoice `json:"choices"`
 	Usage   *AlibabaUsage         `json:"usage,omitempty"`
@@ -319,7 +313,7 @@ type alibabaStreamChunk struct {
 type alibabaStreamChoice struct {
 	Index        int                `json:"index"`
 	Delta        alibabaStreamDelta `json:"delta"`
-	FinishReason string             `json:"finish_reason,omitempty"`
+	FinishReason *string            `json:"finish_reason,omitempty"`
 }
 
 // alibabaStreamDelta represents the delta content in a stream chunk
@@ -340,8 +334,8 @@ type alibabaToolCallDelta struct {
 
 // alibabaToolCallFunctionDelta represents a tool call function delta
 type alibabaToolCallFunctionDelta struct {
-	Name      string `json:"name,omitempty"`
-	Arguments string `json:"arguments,omitempty"`
+	Name      streaming.WireName `json:"name"`
+	Arguments *string            `json:"arguments"`
 }
 
 // convertAlibabaUsageToTypes converts Alibaba usage to types.Usage

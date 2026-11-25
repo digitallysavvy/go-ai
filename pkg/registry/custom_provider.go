@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
@@ -18,10 +19,22 @@ type CustomProviderOptions struct {
 	RerankingModels     map[string]provider.RerankingModel
 	VideoModels         map[string]provider.VideoModelV3
 
-	// EvaluationModels maps model ID -> evaluation model. Evaluation is
+	// DecisionModels maps model ID -> decision model. Decision is
 	// experimental and not part of the stable Provider contract, mirroring
-	// TypeScript's customProvider({ evaluationModels }).
-	EvaluationModels map[string]provider.EvaluationModel
+	// TypeScript's customProvider({ decisionModels }).
+	DecisionModels map[string]provider.DecisionModel
+
+	// EvaluationModels is the pre-rename form of DecisionModels. When
+	// DecisionModels is set it takes precedence.
+	//
+	// Deprecated: Use DecisionModels instead.
+	EvaluationModels map[string]provider.EvaluationModel //nolint:staticcheck // deprecated compatibility field
+
+	// ExtractionModels maps model ID -> extraction model. A value is a
+	// provider.ExtractionModel instance or a string model ID resolved through
+	// the SetDefaultProvider provider (TS customProvider({ extractionModels })).
+	// Extraction is experimental and not part of the stable Provider contract.
+	ExtractionModels map[string]interface{}
 
 	FilesFactory  func() provider.FilesAPI
 	SkillsFactory func() provider.SkillsAPI
@@ -138,19 +151,65 @@ func (p *customProvider) VideoModel(modelID string) (provider.VideoModelV3, erro
 	return nil, noSuchModel(modelID, "videoModel")
 }
 
-// EvaluationModel implements provider.EvaluationModelProvider, resolving
-// evaluation models registered in EvaluationModels before falling back to a
-// Fallback provider that also implements it. Evaluation is experimental and
+// DecisionModel implements provider.DecisionModelProvider, resolving
+// decision models registered in DecisionModels before falling back to a
+// Fallback provider that also implements it. Decision is experimental and
 // not part of the stable Provider contract, mirroring TypeScript's
-// customProvider({ evaluationModels }).
+// customProvider({ decisionModels }).
+func (p *customProvider) DecisionModel(modelID string) (provider.DecisionModel, error) {
+	// Mirrors TypeScript: `decisionModels ?? evaluationModels`.
+	if p.opts.DecisionModels != nil {
+		if model := p.opts.DecisionModels[modelID]; model != nil {
+			return model, nil
+		}
+	} else if model := p.opts.EvaluationModels[modelID]; model != nil {
+		return provider.AdaptEvaluationModel(model), nil //nolint:staticcheck // deprecated compatibility path
+	}
+
+	if p.opts.Fallback != nil {
+		model, ok, err := provider.DecisionModelFromProvider(p.opts.Fallback, modelID)
+		if ok {
+			if err != nil {
+				return nil, err
+			}
+			if model != nil {
+				return model, nil
+			}
+		}
+	}
+
+	return nil, noSuchModel(modelID, "decisionModel")
+}
+
+// ExtractionModel implements provider.ExtractionModelProvider (TS
+// customProvider({ extractionModels })): an own alias is resolved first, then
+// a Fallback provider that also implements it; an unknown ID is a
+// NoSuchModelError. The resolved model's specification version is checked.
+func (p *customProvider) ExtractionModel(modelID string) (provider.ExtractionModel, error) {
+	if model, ok := p.opts.ExtractionModels[modelID]; ok {
+		return ai.ResolveExtractionModel(model)
+	}
+	if fallback, ok := p.opts.Fallback.(provider.ExtractionModelProvider); ok {
+		model, err := fallback.ExtractionModel(modelID)
+		if err != nil {
+			return nil, err
+		}
+		if model != nil {
+			return ai.ResolveExtractionModel(model)
+		}
+	}
+	return nil, noSuchModel(modelID, "extractionModel")
+}
+
+// EvaluationModel is the deprecated form of DecisionModel.
+//
+// Deprecated: Use DecisionModel instead.
 func (p *customProvider) EvaluationModel(modelID string) (provider.EvaluationModel, error) {
-	if model := p.opts.EvaluationModels[modelID]; model != nil {
-		return model, nil
+	model, err := p.DecisionModel(modelID)
+	if err != nil {
+		return nil, err
 	}
-	if fallback, ok := p.opts.Fallback.(provider.EvaluationModelProvider); ok {
-		return fallback.EvaluationModel(modelID)
-	}
-	return nil, noSuchModel(modelID, "evaluationModel")
+	return provider.AsEvaluationModel(model), nil
 }
 
 type customProviderWithFiles struct {

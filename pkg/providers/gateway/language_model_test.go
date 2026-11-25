@@ -48,6 +48,7 @@ func TestGatewayTextStreamMapsV4PartsAndFiltersRaw(t *testing.T) {
 			"",
 			`data: {"type":"finish","finishReason":"stop"}`,
 			"",
+			"",
 		}, "\n")),
 		body: io.NopCloser(strings.NewReader("")),
 	}
@@ -139,6 +140,11 @@ func TestGatewayTextStreamErrorChunkAttachesStructuredPayload(t *testing.T) {
 	if chunk == nil {
 		t.Fatalf("stream.Next() chunk = nil, err = %v", err)
 	}
+	// TS forwards the error part like any other part: the stream keeps going
+	// (finish follows), so the error rides on the chunk, not on Next().
+	if err != nil {
+		t.Fatalf("stream.Next() err = %v, want nil", err)
+	}
 	if chunk.Type != provider.ChunkTypeError {
 		t.Fatalf("chunk.Type = %v, want ChunkTypeError", chunk.Type)
 	}
@@ -212,7 +218,9 @@ func TestGatewayLanguageModelConvertContentPart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("image URL conversion error = %v", err)
 	}
-	if imageURL["type"] != "image" || imageURL["image"] != "https://example.com/image.png" {
+	// V4 has no image part: images travel as file parts.
+	urlData, _ := imageURL["data"].(map[string]interface{})
+	if imageURL["type"] != "file" || urlData["type"] != "url" || urlData["url"] != "https://example.com/image.png" {
 		t.Fatalf("image URL part = %#v", imageURL)
 	}
 
@@ -221,12 +229,10 @@ func TestGatewayLanguageModelConvertContentPart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("image bytes conversion error = %v", err)
 	}
-	encodedImage := imageData["image"].(string)
-	if !strings.HasPrefix(encodedImage, "data:image/png;base64,") {
-		t.Fatalf("image data prefix = %q", encodedImage)
-	}
-	if !strings.Contains(encodedImage, base64.StdEncoding.EncodeToString(imageBytes)) {
-		t.Fatalf("image data missing encoded payload: %q", encodedImage)
+	imgData, _ := imageData["data"].(map[string]interface{})
+	if imageData["type"] != "file" || imageData["mediaType"] != "image/png" || imgData["type"] != "data" ||
+		imgData["data"] != base64.StdEncoding.EncodeToString(imageBytes) {
+		t.Fatalf("image bytes part = %#v", imageData)
 	}
 
 	fileBytes := []byte("file-bytes")
@@ -271,8 +277,9 @@ func TestGatewayLanguageModelConvertContentPart(t *testing.T) {
 	if _, ok := reasoningPart["providerOptions"]; !ok {
 		t.Fatalf("reasoning file missing provider options: %#v", reasoningPart)
 	}
-	if _, ok := reasoningPart["providerMetadata"].(map[string]interface{}); !ok {
-		t.Fatalf("reasoning file metadata type = %T", reasoningPart["providerMetadata"])
+	// LanguageModelV4ReasoningFilePart has no providerMetadata.
+	if _, ok := reasoningPart["providerMetadata"]; ok {
+		t.Fatalf("reasoning file part must not carry providerMetadata: %#v", reasoningPart)
 	}
 
 	base64Data := "YWxyZWFkeQ=="
@@ -317,7 +324,7 @@ func TestGatewayLanguageModelConvertContentPart(t *testing.T) {
 		t.Fatalf("tool result file block = %#v", fileBlock)
 	}
 
-	_, err = model.convertContentPart(types.CustomContent{Kind: "xai.citation"})
+	_, err = model.convertContentPart(types.SourceContent{SourceType: "url", URL: "https://x.test"})
 	if err == nil || !strings.Contains(err.Error(), "unsupported content part type") {
 		t.Fatalf("unsupported part error = %v", err)
 	}

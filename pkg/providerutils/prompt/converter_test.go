@@ -3,6 +3,7 @@ package prompt
 import (
 	"encoding/base64"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -870,8 +871,11 @@ func TestToGoogleMessagesExecutionDeniedToolResult(t *testing.T) {
 
 	fr := parts[0]["functionResponse"].(map[string]interface{})
 	resp := fr["response"].(map[string]interface{})
-	content, _ := resp["content"].(string)
-	// TS SDK: content = output.reason ?? 'Tool execution denied.' — no prefix added
+	// TS #22209: execution-denied is sent under response.error.
+	if _, hasContent := resp["content"]; hasContent {
+		t.Errorf("response has content key: %#v", resp)
+	}
+	content, _ := resp["error"].(string)
 	if content != "User rejected the tool call" {
 		t.Errorf("denial content = %q, want %q", content, "User rejected the tool call")
 	}
@@ -899,7 +903,7 @@ func TestToGoogleMessagesExecutionDeniedNoReason(t *testing.T) {
 	parts := result[0]["parts"].([]map[string]interface{})
 	fr := parts[0]["functionResponse"].(map[string]interface{})
 	resp := fr["response"].(map[string]interface{})
-	content, _ := resp["content"].(string)
+	content, _ := resp["error"].(string)
 	if content != "Tool call execution denied." {
 		t.Errorf("denial content = %q, want %q", content, "Tool call execution denied.")
 	}
@@ -1403,5 +1407,75 @@ func TestToOpenAIMessagesPromptCacheBreakpointToolResultWithoutOption(t *testing
 	result := ToOpenAIMessages(msgs)
 	if _, isString := result[0]["content"].(string); !isString {
 		t.Fatalf("expected plain string content without the option, got %#v", result[0]["content"])
+	}
+}
+
+// Ported from packages/google/src/convert-to-google-messages.test.ts (TS
+// #22209): error-text / error-json outputs use response.error, successful
+// results keep response.content.
+func TestToGoogleMessagesToolErrorSemantics(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		output types.ToolResultOutput
+		key    string
+		want   interface{}
+	}{
+		{"error-text", types.ToolResultOutput{Type: types.ToolResultOutputErrorText, Value: "boom"}, "error", "boom"},
+		{"error-json", types.ToolResultOutput{Type: types.ToolResultOutputErrorJSON, Value: map[string]interface{}{"code": "E42"}}, "error", map[string]interface{}{"code": "E42"}},
+		{"text", types.ToolResultOutput{Type: types.ToolResultOutputText, Value: "ok"}, "content", "ok"},
+		{"json", types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: map[string]interface{}{"a": 1}}, "content", map[string]interface{}{"a": 1}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			output := tc.output
+			result := ToGoogleMessages([]types.Message{{
+				Role:    types.RoleTool,
+				Content: []types.ContentPart{types.ToolResultContent{ToolCallID: "c1", ToolName: "deploy", Output: &output}},
+			}}, false)
+			parts := result[0]["parts"].([]map[string]interface{})
+			resp := parts[0]["functionResponse"].(map[string]interface{})["response"].(map[string]interface{})
+			other := "content"
+			if tc.key == "content" {
+				other = "error"
+			}
+			if _, ok := resp[other]; ok {
+				t.Fatalf("unexpected %q key: %#v", other, resp)
+			}
+			if !reflect.DeepEqual(resp[tc.key], tc.want) {
+				t.Fatalf("response[%s] = %#v, want %#v", tc.key, resp[tc.key], tc.want)
+			}
+		})
+	}
+}
+
+// Ported from packages/openai/src/chat/convert-to-openai-chat-messages.test.ts
+// (TS #22209): OpenAI's own chat converter wraps tool errors as {"error":
+// value}; the shared openai-compatible behavior stays verbatim.
+func TestToOpenAIMessagesWrapsToolErrorsOnlyWhenRequested(t *testing.T) {
+	build := func(output types.ToolResultOutput) []types.Message {
+		return []types.Message{{
+			Role:    types.RoleTool,
+			Content: []types.ContentPart{types.ToolResultContent{ToolCallID: "c1", ToolName: "deploy", Output: &output}},
+		}}
+	}
+	for _, tc := range []struct {
+		name         string
+		output       types.ToolResultOutput
+		wrapped, raw string
+	}{
+		{"error-text", types.ToolResultOutput{Type: types.ToolResultOutputErrorText, Value: "boom"}, `{"error":"boom"}`, "boom"},
+		{"error-json", types.ToolResultOutput{Type: types.ToolResultOutputErrorJSON, Value: map[string]interface{}{"code": "E42"}}, `{"error":{"code":"E42"}}`, `{"code":"E42"}`},
+		{"text", types.ToolResultOutput{Type: types.ToolResultOutputText, Value: "ok"}, "ok", "ok"},
+		{"json", types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: map[string]interface{}{"a": 1}}, `{"a":1}`, `{"a":1}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ToOpenAIMessages(build(tc.output), ToOpenAIMessagesOptions{WrapToolErrorOutputs: true})
+			if got[0]["content"] != tc.wrapped {
+				t.Errorf("wrapped content = %v, want %s", got[0]["content"], tc.wrapped)
+			}
+			got = ToOpenAIMessages(build(tc.output))
+			if got[0]["content"] != tc.raw {
+				t.Errorf("default content = %v, want %s", got[0]["content"], tc.raw)
+			}
+		})
 	}
 }

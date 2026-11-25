@@ -35,7 +35,7 @@ func TestLanguageAndEmbeddingHelpers(t *testing.T) {
 	max := 50
 	temp := 0.1
 
-	body := lm.buildRequestBody(&provider.GenerateOptions{
+	body, _ := lm.buildRequestBody(&provider.GenerateOptions{
 		Prompt: types.Prompt{
 			Text:   "hi",
 			System: "sys",

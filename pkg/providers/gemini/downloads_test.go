@@ -178,59 +178,42 @@ func TestDownloadToolResultFiles_RejectsUnsupportedURLScheme(t *testing.T) {
 	}
 }
 
-// TestDownloadToolResultFiles_DataURLIsNotDownloaded verifies that a
-// "data:" URL — one of the three schemes validateDownloadUrl accepts — is
-// left as-is rather than downloaded (TS: a data: URL never reaches
-// downloadBlob in practice, since it's always natively supported) or
-// rejected as an unsupported scheme.
-func TestDownloadToolResultFiles_DataURLIsNotDownloaded(t *testing.T) {
-	called := false
-	m := &LanguageModel{
-		cfg: Config{
-			ToolResultDownloadMaxBytes: DefaultToolResultDownloadMaxBytes,
-			ToolResultDownload: func(ctx context.Context, url string, maxBytes int64) ([]byte, string, error) {
-				called = true
-				return nil, "", nil
-			},
-		},
-	}
-
-	dataURL := "data:image/png;base64,iVBORw0KGgo="
-	messages := []types.Message{
-		{
-			Role: types.RoleTool,
-			Content: []types.ContentPart{
-				types.ToolResultContent{
-					ToolCallID: "call-1",
-					ToolName:   "get_image",
-					Output: &types.ToolResultOutput{
-						Type: types.ToolResultOutputContent,
-						Content: []types.ToolResultContentBlock{
-							types.FileContentBlock{
-								URL:       dataURL,
-								MediaType: "image/png",
-							},
-						},
-					},
+// TestDownloadToolResultFiles_DataURLIsDownloadedAndInlined: TS passes a
+// data: URL (never matched by the gs:// supported patterns) through
+// downloadBlob and inlines the bytes, base64 or not.
+func TestDownloadToolResultFiles_DataURLIsDownloadedAndInlined(t *testing.T) {
+	for _, dataURL := range []string{"data:text/plain;base64,aGk=", "data:text/plain,hi"} {
+		var gotURL string
+		m := &LanguageModel{
+			cfg: Config{
+				ToolResultDownloadMaxBytes: DefaultToolResultDownloadMaxBytes,
+				ToolResultDownload: func(ctx context.Context, url string, maxBytes int64) ([]byte, string, error) {
+					gotURL = url
+					return []byte("hi"), "text/plain", nil
 				},
 			},
-		},
-	}
-
-	out, err := m.downloadToolResultFiles(context.Background(), messages, nil)
-	if err != nil {
-		t.Fatalf("downloadToolResultFiles: %v", err)
-	}
-	if called {
-		t.Error("downloader must not be called for a data: URL")
-	}
-	tr := out[0].Content[0].(types.ToolResultContent)
-	fb := tr.Output.Content[0].(types.FileContentBlock)
-	if fb.URL != dataURL {
-		t.Errorf("expected the data: URL to be left unchanged, got %q", fb.URL)
-	}
-	if !strings.HasPrefix(fb.URL, "data:") {
-		t.Fatalf("test setup error: fb.URL = %q", fb.URL)
+		}
+		messages := []types.Message{{
+			Role: types.RoleTool,
+			Content: []types.ContentPart{types.ToolResultContent{
+				ToolCallID: "call-1", ToolName: "t",
+				Output: &types.ToolResultOutput{
+					Type:    types.ToolResultOutputContent,
+					Content: []types.ToolResultContentBlock{types.FileContentBlock{URL: dataURL, MediaType: "text/plain"}},
+				},
+			}},
+		}}
+		out, err := m.downloadToolResultFiles(context.Background(), messages, nil)
+		if err != nil {
+			t.Fatalf("downloadToolResultFiles: %v", err)
+		}
+		if gotURL != dataURL {
+			t.Errorf("downloader got %q, want %q", gotURL, dataURL)
+		}
+		fb := out[0].Content[0].(types.ToolResultContent).Output.Content[0].(types.FileContentBlock)
+		if fb.URL != "" || string(fb.Data) != "hi" {
+			t.Errorf("expected inlined bytes, got URL=%q Data=%q", fb.URL, fb.Data)
+		}
 	}
 }
 
@@ -295,5 +278,55 @@ func TestBuildRequest_VertexGemini3GCSToolResultSkipsDownload(t *testing.T) {
 	}
 	if called {
 		t.Error("unsupported gs:// URL must not reach the downloader")
+	}
+}
+
+// TS detectMediaType({topLevelType:'image'}) needs full signatures (GIF87a/
+// GIF89a, BMP with zero reserved bytes, avif/heic ftyp brands) and the Blob
+// type keeps the lowercased Content-Type with its parameters.
+func TestDownloadToolResultFiles_TSMediaTypeDetectionAndBlobType(t *testing.T) {
+	run := func(data []byte, contentType, mediaType string) string {
+		m := &LanguageModel{cfg: Config{
+			ToolResultDownload: func(context.Context, string, int64) ([]byte, string, error) {
+				return data, contentType, nil
+			},
+		}}
+		out, err := m.downloadToolResultFiles(context.Background(), []types.Message{{
+			Role: types.RoleTool,
+			Content: []types.ContentPart{types.ToolResultContent{
+				ToolCallID: "c", ToolName: "t",
+				Output: &types.ToolResultOutput{Type: types.ToolResultOutputContent, Content: []types.ToolResultContentBlock{
+					types.FileContentBlock{URL: "https://example.com/f", MediaType: mediaType},
+				}},
+			}},
+		}}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out[0].Content[0].(types.ToolResultContent).Output.Content[0].(types.FileContentBlock).MediaType
+	}
+	if got := run([]byte("GIF-not-a-gif"), "", "image/*"); got != "image/*" {
+		t.Errorf("bare GIF prefix detected as %q", got)
+	}
+	if got := run([]byte("BM plain text"), "", "image/*"); got != "image/*" {
+		t.Errorf("bare BM prefix detected as %q", got)
+	}
+	if got := run([]byte("GIF89a...."), "", "image/*"); got != "image/gif" {
+		t.Errorf("GIF89a detected as %q", got)
+	}
+	if got := run([]byte("not an image"), "Text/Plain; Charset=UTF-8", "text/*"); got != "text/plain; charset=utf-8" {
+		t.Errorf("blob type = %q, want lowercased with parameters", got)
+	}
+}
+
+func TestMarshalJSONCompactKeepsLineSeparatorsRaw(t *testing.T) {
+	// JS JSON.stringify writes U+2028/U+2029 as is; Go's encoder escapes them.
+	ls, ps := string(rune(0x2028)), string(rune(0x2029))
+	if got := marshalJSONCompact("a" + ls + "b" + ps + "c"); got != "\"a"+ls+"b"+ps+"c\"" {
+		t.Fatalf("got %q", got)
+	}
+	// A literal backslash followed by the text u2028 stays an escaped backslash.
+	if got := marshalJSONCompact("a\\u2028b"); got != "\"a\\\\u2028b\"" {
+		t.Fatalf("literal backslash text changed: %q", got)
 	}
 }

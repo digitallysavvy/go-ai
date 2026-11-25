@@ -9,7 +9,8 @@
 package cartesia
 
 import (
-	"fmt"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"os"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -33,6 +34,10 @@ type Config struct {
 	// APIVersion is the Cartesia API version sent via the Cartesia-Version
 	// header (optional, defaults to DefaultAPIVersion).
 	APIVersion string
+
+	// Headers are custom HTTP headers sent with every request (TS provider
+	// settings `headers`).
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // Provider represents the Cartesia provider.
@@ -55,10 +60,14 @@ func New(config Config) *Provider {
 
 	client := internalhttp.NewClient(internalhttp.Config{
 		BaseURL: config.BaseURL,
-		Headers: version.WithUserAgentSuffix(map[string]string{
+		Headers: version.WithUserAgentSuffix(internalhttp.MergeHeaders(map[string]string{
 			"Authorization":    "Bearer " + config.APIKey,
 			"Cartesia-Version": config.APIVersion,
-		}, version.ProviderUserAgent("cartesia")),
+		}, config.Headers), version.ProviderUserAgent("cartesia")),
+		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
+		HeadersFunc: func() (map[string]string, error) {
+			return providerutils.RequestAuthHeader(config.Headers, config.APIKey, "CARTESIA_API_KEY", "Cartesia", "Authorization", "Bearer ")
+		},
 	})
 
 	return &Provider{
@@ -79,17 +88,17 @@ func (p *Provider) Name() string {
 
 // LanguageModel returns a language model (not supported by Cartesia).
 func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error) {
-	return nil, fmt.Errorf("cartesia does not provide language models")
+	return nil, &providererrors.NoSuchModelError{ModelID: modelID, ModelType: "languageModel", Message: "Cartesia does not provide language models"}
 }
 
 // EmbeddingModel returns an embedding model (not supported by Cartesia).
 func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
-	return nil, fmt.Errorf("cartesia does not provide embedding models")
+	return nil, &providererrors.NoSuchModelError{ModelID: modelID, ModelType: "embeddingModel", Message: "Cartesia does not provide embedding models"}
 }
 
 // ImageModel returns an image model (not supported by Cartesia).
 func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
-	return nil, fmt.Errorf("cartesia does not provide image models")
+	return nil, &providererrors.NoSuchModelError{ModelID: modelID, ModelType: "imageModel", Message: "Cartesia does not provide image models"}
 }
 
 // SpeechModel returns a text-to-speech model.
@@ -104,5 +113,5 @@ func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionMod
 
 // RerankingModel returns a reranking model (not supported by Cartesia).
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("cartesia does not provide reranking models")
+	return nil, providererrors.NewNoSuchModelError(modelID, "rerankingModel")
 }

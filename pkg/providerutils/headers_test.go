@@ -42,112 +42,42 @@ func TestExtractHeaders(t *testing.T) {
 	}
 }
 
+// TS doStream returns response.headers beside the stream: the wrapper
+// reports them through provider.StreamResponseHeaders and passes every part
+// through unchanged, with no header part (review round 87e).
 func TestWithResponseMetadata(t *testing.T) {
-	base := &stubStream{
-		chunks: []*provider.StreamChunk{
-			{Type: provider.ChunkTypeText, Text: "hello"},
-			{Type: provider.ChunkTypeFinish},
-		},
-	}
-	wrapped := WithResponseMetadata(base, http.Header{"X-Test": {"1"}}, "m1")
-
-	first, err := wrapped.Next()
-	if err != nil {
-		t.Fatalf("first Next() error = %v", err)
-	}
-	if first.Type != provider.ChunkTypeResponseMetadata {
-		t.Fatalf("first chunk type = %v, want response metadata", first.Type)
-	}
-	if first.ResponseMetadata == nil || first.ResponseMetadata.ModelID != "m1" {
-		t.Fatalf("missing response metadata: %+v", first)
-	}
-	if first.ResponseMetadata.Headers["X-Test"] != "1" {
-		t.Fatalf("missing propagated headers: %+v", first.ResponseMetadata.Headers)
-	}
-
-	second, err := wrapped.Next()
-	if err != nil {
-		t.Fatalf("second Next() error = %v", err)
-	}
-	if second.Type != provider.ChunkTypeText || second.Text != "hello" {
-		t.Fatalf("second chunk = %+v", second)
-	}
-}
-
-func TestWithResponseMetadataPreservesLeadingStreamStart(t *testing.T) {
-	base := &stubStream{
-		chunks: []*provider.StreamChunk{
-			{Type: provider.ChunkTypeStreamStart},
-			{Type: provider.ChunkTypeText, Text: "hello"},
-		},
-	}
-	wrapped := WithResponseMetadata(base, http.Header{"X-Test": {"1"}}, "m1")
-
-	first, err := wrapped.Next()
-	if err != nil {
-		t.Fatalf("first Next() error = %v", err)
-	}
-	if first.Type != provider.ChunkTypeStreamStart {
-		t.Fatalf("first chunk type = %v, want stream-start", first.Type)
-	}
-
-	second, err := wrapped.Next()
-	if err != nil {
-		t.Fatalf("second Next() error = %v", err)
-	}
-	if second.Type != provider.ChunkTypeResponseMetadata {
-		t.Fatalf("second chunk type = %v, want response metadata", second.Type)
-	}
-
-	third, err := wrapped.Next()
-	if err != nil {
-		t.Fatalf("third Next() error = %v", err)
-	}
-	if third.Type != provider.ChunkTypeText || third.Text != "hello" {
-		t.Fatalf("third chunk = %+v", third)
-	}
-}
-
-func TestWithResponseMetadataKeepsRawBeforeMetadataAfterStreamStart(t *testing.T) {
 	base := &stubStream{
 		chunks: []*provider.StreamChunk{
 			{Type: provider.ChunkTypeStreamStart},
 			{Type: provider.ChunkTypeRaw, Raw: map[string]interface{}{"id": "raw-1"}},
 			{Type: provider.ChunkTypeText, Text: "hello"},
+			{Type: provider.ChunkTypeFinish},
 		},
 	}
 	wrapped := WithResponseMetadata(base, http.Header{"X-Test": {"1"}}, "m1")
-
-	first, err := wrapped.Next()
-	if err != nil {
-		t.Fatalf("first Next() error = %v", err)
+	rh, ok := wrapped.(provider.StreamResponseHeaders)
+	if !ok || rh.ResponseHeaders()["X-Test"] != "1" {
+		t.Fatalf("ResponseHeaders not reported: %T", wrapped)
 	}
-	if first.Type != provider.ChunkTypeStreamStart {
-		t.Fatalf("first chunk type = %v, want stream-start", first.Type)
+	var got []provider.ChunkType
+	for {
+		ch, err := wrapped.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, ch.Type)
 	}
-
-	second, err := wrapped.Next()
-	if err != nil {
-		t.Fatalf("second Next() error = %v", err)
+	want := []provider.ChunkType{provider.ChunkTypeStreamStart, provider.ChunkTypeRaw, provider.ChunkTypeText, provider.ChunkTypeFinish}
+	if len(got) != len(want) {
+		t.Fatalf("parts = %v, want %v", got, want)
 	}
-	if second.Type != provider.ChunkTypeRaw {
-		t.Fatalf("second chunk type = %v, want raw", second.Type)
-	}
-
-	third, err := wrapped.Next()
-	if err != nil {
-		t.Fatalf("third Next() error = %v", err)
-	}
-	if third.Type != provider.ChunkTypeResponseMetadata {
-		t.Fatalf("third chunk type = %v, want response metadata", third.Type)
-	}
-
-	fourth, err := wrapped.Next()
-	if err != nil {
-		t.Fatalf("fourth Next() error = %v", err)
-	}
-	if fourth.Type != provider.ChunkTypeText || fourth.Text != "hello" {
-		t.Fatalf("fourth chunk = %+v", fourth)
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("parts = %v, want %v", got, want)
+		}
 	}
 }
 

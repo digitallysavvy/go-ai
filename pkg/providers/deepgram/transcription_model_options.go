@@ -57,4 +57,35 @@ type TranscriptionModelOptions struct {
 
 	// FillerWords includes filler words (um, uh, etc.) in the transcript.
 	FillerWords *bool `json:"fillerWords,omitempty"`
+
+	// Streaming holds options for live transcription over the /v1/listen
+	// WebSocket (TranscriptionModel.DoStream). DoTranscribe ignores it with
+	// an unsupported warning.
+	Streaming *StreamingOptions `json:"streaming,omitempty"`
+}
+
+// StreamingOptions are Deepgram live transcription options (TS
+// deepgramTranscriptionModelOptionsSchema.streaming).
+type StreamingOptions struct {
+	// InterimResults returns revisable transcripts before a segment is
+	// finalized.
+	InterimResults *bool `json:"interimResults,omitempty"`
+
+	// Endpointing is the silence duration in milliseconds (a non-negative
+	// integer), or false to disable endpointing.
+	Endpointing interface{} `json:"endpointing,omitempty"`
+
+	// Channels is the number of interleaved input audio channels (default
+	// one).
+	Channels *int `json:"channels,omitempty"`
+
+	// Multichannel transcribes each input channel independently.
+	Multichannel *bool `json:"multichannel,omitempty"`
+
+	// VADEvents emits speech-start events in raw chunks.
+	VADEvents *bool `json:"vadEvents,omitempty"`
+
+	// UtteranceEndMs is the silence duration in milliseconds (at least
+	// 1000) before an utterance-end event.
+	UtteranceEndMs *int `json:"utteranceEndMs,omitempty"`
 }

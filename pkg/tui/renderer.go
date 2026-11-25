@@ -2,6 +2,7 @@ package tui
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -16,8 +17,11 @@ import (
 
 	"github.com/rivo/uniseg"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
+	"github.com/digitallysavvy/go-ai/pkg/jsonparser"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 var errInterrupted = errors.New("Interrupted")
@@ -29,6 +33,7 @@ const (
 	colorReasoning = "\x1b[94m"
 	colorTool      = "\x1b[95m"
 	colorError     = "\x1b[91m"
+	colorApproval  = "\x1b[93m"
 
 	activeControls              = "↑/↓ · PgUp/PgDn · Esc/Ctrl+C"
 	doneControls                = "↑/↓ · PgUp/PgDn · q/Esc/Ctrl+C"
@@ -97,6 +102,15 @@ type TerminalRenderer struct {
 	lastPaint      paintState
 	streamCounter  int
 	lastStreamID   string
+
+	// pendingToolResults is set once a tool output arrived in this stream, so
+	// the next step shows "Processing tool results..." (TS
+	// hasPendingToolResults).
+	pendingToolResults bool
+
+	// approvalSectionID is the section of the tool call that awaits an
+	// approval decision (TS #toolApprovalSectionId); empty when none does.
+	approvalSectionID string
 }
 
 type paintState struct {
@@ -113,6 +127,7 @@ const (
 	sectionAssistant chatSectionKind = "assistant"
 	sectionReasoning chatSectionKind = "reasoning"
 	sectionTool      chatSectionKind = "tool"
+	sectionApproval  chatSectionKind = "approval"
 	sectionError     chatSectionKind = "error"
 )
 
@@ -136,6 +151,12 @@ type toolSectionState struct {
 	deniedReason     string
 	status           string
 	providerExecuted bool
+	// inputComplete is set once the full input arrived (TS input-available).
+	inputComplete bool
+	// outputDenied is set once the tool output was denied (TS
+	// output-denied); a denied approval response alone renders as a plain
+	// tool section with the "denied" status (TS approval-responded).
+	outputDenied bool
 }
 
 func NewTerminalRenderer(options TerminalRendererOptions) *TerminalRenderer {
@@ -288,6 +309,7 @@ func (r *TerminalRenderer) RenderStream(ctx context.Context, result AgentTUIStre
 	r.totalTokens = nil
 	r.outputTokens = nil
 	r.outputTokensPS = nil
+	r.pendingToolResults = false
 	if options.SubmittedPromptSet || options.SubmittedPrompt != "" {
 		r.addSubmittedPromptLocked(options.SubmittedPrompt, contextSize)
 	}
@@ -304,8 +326,18 @@ func (r *TerminalRenderer) RenderStream(ctx context.Context, result AgentTUIStre
 	streamCtx, cancelStream := context.WithCancel(ctx)
 	defer cancelStream()
 	interrupt := make(chan struct{}, 1)
+	// listenerDone is closed when the stream-key listener has returned. The
+	// renderer waits for it before it paints the final status, so a key the
+	// user presses after "Done" is read by waitForExit, never swallowed (or
+	// raced over the shared key reader) by a listener that is still winding down.
+	listenerDone := make(chan struct{})
 	if _, ok := r.input.(TerminalKeyReader); ok || isTerminalInput(r.input) {
-		go r.listenForStreamKeys(streamCtx, cancelStream, interrupt, options)
+		go func() {
+			defer close(listenerDone)
+			r.listenForStreamKeys(streamCtx, cancelStream, interrupt, options)
+		}()
+	} else {
+		close(listenerDone)
 	}
 
 	for {
@@ -322,9 +354,8 @@ func (r *TerminalRenderer) RenderStream(ctx context.Context, result AgentTUIStre
 				r.mu.Lock()
 				r.status = "Interrupted"
 				r.paintLocked("", false, true, contextSize)
-				if !options.ContinueSession {
-					r.stopLocked()
-				}
+				// TS stops the session on an interrupt whatever continueSession is.
+				r.stopLocked()
 				r.mu.Unlock()
 				return nil, errInterrupted
 			default:
@@ -336,9 +367,8 @@ func (r *TerminalRenderer) RenderStream(ctx context.Context, result AgentTUIStre
 				r.mu.Lock()
 				r.status = "Interrupted"
 				r.paintLocked("", false, true, contextSize)
-				if !options.ContinueSession {
-					r.stopLocked()
-				}
+				// TS stops the session on an interrupt whatever continueSession is.
+				r.stopLocked()
 				r.mu.Unlock()
 				return nil, errInterrupted
 			}
@@ -357,12 +387,19 @@ func (r *TerminalRenderer) RenderStream(ctx context.Context, result AgentTUIStre
 			r.applyUsage(*chunk.Usage)
 		}
 		if chunk.Type == provider.ChunkTypeError {
-			r.addErrorSectionLocked("Error", streamChunkErrorText(*chunk))
+			// TS adds the section when it observes the chunk and again from
+			// readUIMessageStream's onError, which fires for the same chunk.
+			text := streamChunkErrorText(*chunk)
+			r.addErrorSectionLocked("Error", text)
+			r.addErrorSectionLocked("Error", text)
 		}
 		r.renderModel(model, display)
 		r.paintLocked("", false, true, contextSize)
 		r.mu.Unlock()
 	}
+
+	cancelStream()
+	<-listenerDone
 
 	finalStep := result.Stream.FinalStep()
 	r.mu.Lock()
@@ -385,9 +422,8 @@ func (r *TerminalRenderer) RenderStream(ctx context.Context, result AgentTUIStre
 			r.mu.Lock()
 			r.status = "Interrupted"
 			r.paintLocked("", false, true, contextSize)
-			if !options.ContinueSession {
-				r.stopLocked()
-			}
+			// TS stops the session on an interrupt whatever continueSession is.
+			r.stopLocked()
 			r.mu.Unlock()
 			return nil, errInterrupted
 		}
@@ -406,15 +442,21 @@ func (r *TerminalRenderer) ReadToolApproval(ctx context.Context, request AgentTU
 	r.mu.Lock()
 	r.startLocked(options)
 	r.status = "Approve " + formatToolApprovalTitle(request) + "? y/n · " + activeControls
+	finishToolApprovalRequest := r.showToolApprovalRequestLocked(request)
 	r.paintLocked("", false, true, contextSize)
 	r.mu.Unlock()
 
 	for {
 		key, err := readTerminalKey(ctx, r.input, &r.keyReader)
 		if err != nil {
+			r.mu.Lock()
 			if errors.Is(err, io.EOF) {
+				finishToolApprovalRequest("denied")
+				r.mu.Unlock()
 				return AgentTUIToolApprovalResponse{Approved: false, Reason: "Denied by user."}, nil
 			}
+			r.approvalSectionID = ""
+			r.mu.Unlock()
 			return AgentTUIToolApprovalResponse{}, err
 		}
 		switch key.Type {
@@ -422,13 +464,20 @@ func (r *TerminalRenderer) ReadToolApproval(ctx context.Context, request AgentTU
 			switch strings.ToLower(key.Value) {
 			case "y":
 				r.mu.Lock()
+				// 25972d7857: y is ignored until the end of the input was shown.
+				if r.toolApprovalContinuesBelowViewportLocked() {
+					r.mu.Unlock()
+					continue
+				}
 				r.status = "Approved · " + processingStatus
+				finishToolApprovalRequest("approved")
 				r.paintLocked("", false, true, contextSize)
 				r.mu.Unlock()
 				return AgentTUIToolApprovalResponse{Approved: true}, nil
 			case "n":
 				r.mu.Lock()
 				r.status = "Denied · " + processingStatus
+				finishToolApprovalRequest("denied")
 				r.paintLocked("", false, true, contextSize)
 				r.mu.Unlock()
 				return AgentTUIToolApprovalResponse{Approved: false, Reason: "Denied by user."}, nil
@@ -467,6 +516,108 @@ func (r *TerminalRenderer) ReadToolApproval(ctx context.Context, request AgentTU
 	}
 }
 
+// showToolApprovalRequestLocked shows the tool call that the next approval
+// decision applies to: its section is expanded with the exact input, marked as
+// the one awaiting the decision, and scrolled into view, whatever the tool
+// display mode (TS showToolApprovalRequest, 2d2fc466c4). It returns a function
+// that records the decision in the section header and restores how the section
+// was displayed before.
+func (r *TerminalRenderer) showToolApprovalRequestLocked(request AgentTUIToolApprovalRequest) func(decision string) {
+	prefix := ""
+	if r.lastStreamID != "" {
+		prefix = r.lastStreamID + ":"
+	}
+	id := prefix + "tool:" + request.ToolCallID
+	var previous *chatSection
+	for i := range r.sections {
+		if r.sections[i].id == id {
+			section := r.sections[i]
+			previous = &section
+			break
+		}
+	}
+
+	r.approvalSectionID = id
+	r.upsertSection(chatSection{
+		id:         id,
+		kind:       sectionApproval,
+		title:      "Tool · " + nonEmpty(request.Title, request.ToolName),
+		rightTitle: "approve? y/n",
+		content:    approvalInputText(request),
+	})
+	r.scrollSectionIntoViewLocked(id)
+
+	return func(decision string) {
+		if previous != nil {
+			restored := *previous
+			restored.rightTitle = decision
+			r.upsertSection(restored)
+		} else {
+			// the section only existed for the decision, e.g. with hidden tools:
+			kept := r.sections[:0]
+			for _, section := range r.sections {
+				if section.id != id {
+					kept = append(kept, section)
+				}
+			}
+			r.sections = kept
+		}
+		r.approvalSectionID = ""
+		r.scrollOffset = 0
+	}
+}
+
+// scrollSectionIntoViewLocked ends the section at the bottom of the viewport,
+// or starts it at the top when it is taller than the viewport.
+func (r *TerminalRenderer) scrollSectionIntoViewLocked(id string) {
+	start, end, ok := r.sectionLineRange(id)
+	if !ok {
+		return
+	}
+	height := r.bodyContentHeight()
+	firstVisibleLine := minInt(start, end-height)
+	r.scrollOffset = r.clampScrollOffset(r.bodyLineCount() - height - firstVisibleLine)
+}
+
+// toolApprovalContinuesBelowViewportLocked reports whether the input of the
+// tool call that awaits the approval decision continues below the visible part
+// of the transcript.
+func (r *TerminalRenderer) toolApprovalContinuesBelowViewportLocked() bool {
+	if r.approvalSectionID == "" {
+		return false
+	}
+	_, end, ok := r.sectionLineRange(r.approvalSectionID)
+	if !ok {
+		return false
+	}
+	height := r.bodyContentHeight()
+	firstVisibleLine := maxInt(0, r.bodyLineCount()-height-r.scrollOffset)
+	// the last line of the section is its border:
+	return end-1 > firstVisibleLine+height
+}
+
+func (r *TerminalRenderer) sectionLineRange(id string) (start, end int, ok bool) {
+	width := r.width() - 4
+	for _, section := range r.sections {
+		end = start + len(renderSectionLines(section, width))
+		if section.id == id {
+			return start, end, true
+		}
+		start = end
+	}
+	return 0, 0, false
+}
+
+// handleResizeLocked repaints after a terminal resize, keeping the tool call
+// that awaits an approval decision in view.
+func (r *TerminalRenderer) handleResizeLocked() {
+	if r.approvalSectionID != "" {
+		r.scrollSectionIntoViewLocked(r.approvalSectionID)
+	}
+	r.frameBuffer.Reset()
+	r.repaintLastLocked()
+}
+
 func (r *TerminalRenderer) Stop() {
 	r.mu.Lock()
 	r.stopLocked()
@@ -490,13 +641,13 @@ func (r *TerminalRenderer) startLocked(options TerminalSessionOptions) {
 		r.stopResizeWatcher = startTerminalResizeWatcher(r.output, func() {
 			r.mu.Lock()
 			defer r.mu.Unlock()
-			r.frameBuffer.Reset()
-			r.repaintLastLocked()
+			r.handleResizeLocked()
 		})
 	}
 }
 
 func (r *TerminalRenderer) stopLocked() {
+	r.approvalSectionID = ""
 	if !r.interactive {
 		return
 	}
@@ -513,12 +664,42 @@ func (r *TerminalRenderer) stopLocked() {
 	r.interactive = false
 }
 
+// observeStatus mirrors TS observeUIMessageStream: statusForStreamChunk takes
+// precedence, then any chunk that starts visible assistant output switches to
+// the streaming status.
 func (r *TerminalRenderer) observeStatus(chunk *provider.StreamChunk) {
+	next := ""
 	switch chunk.Type {
+	case provider.ChunkTypeStartStep:
+		if r.pendingToolResults {
+			next = processingToolResultsStatus
+		} else {
+			next = processingStatus
+		}
+		r.pendingToolResults = false
 	case provider.ChunkTypeToolResult:
-		r.status = processingToolResultsStatus
+		// A result that only asks for approval is not a tool output.
+		if _, inputErr := chunk.Raw.(toolInputErrorMarker); inputErr {
+			// TS tool-input-error does not change the status line.
+		} else if chunk.ToolResult == nil || chunk.ToolResult.ApprovalStatus != types.ToolApprovalStatusUserApproval {
+			next = processingToolResultsStatus
+			r.pendingToolResults = true
+		}
+	case provider.ChunkTypeToolOutputDenied:
+		next = processingToolResultsStatus
+		r.pendingToolResults = true
 	case provider.ChunkTypeToolCall:
-		r.status = executingToolsStatus
+		next = executingToolsStatus
+	case provider.ChunkTypeToolApprovalResponse:
+		if chunk.ToolApprovalResponse != nil && chunk.ToolApprovalResponse.Approved {
+			next = executingToolsStatus
+		}
+	}
+	if next != "" {
+		r.status = next
+		return
+	}
+	switch chunk.Type {
 	case provider.ChunkTypeTextStart, provider.ChunkTypeText, provider.ChunkTypeReasoningStart, provider.ChunkTypeReasoning, provider.ChunkTypeToolInputStart, provider.ChunkTypeToolInputDelta:
 		r.status = streamingStatus
 	}
@@ -568,7 +749,7 @@ func (r *TerminalRenderer) listenForStreamKeys(ctx context.Context, cancelStream
 }
 
 func (r *TerminalRenderer) waitForExit(ctx context.Context, options TerminalSessionOptions) error {
-	if (options.WaitForExitSet && !options.WaitForExit) || options.ContinueSession || !supportsTerminalWaitInput(r.input) {
+	if (options.WaitForExitSet && !options.WaitForExit) || !supportsTerminalWaitInput(r.input) {
 		return nil
 	}
 	for {
@@ -722,9 +903,16 @@ func (r *TerminalRenderer) paintLocked(input string, inputActive bool, cursorVis
 		input:            input,
 		inputActive:      inputActive,
 		cursorVisible:    cursorVisible,
-		status:           r.status,
+		status:           r.paintStatusLocked(),
 	})
 	r.frameBuffer.Present(frame)
+}
+
+func (r *TerminalRenderer) paintStatusLocked() string {
+	if r.toolApprovalContinuesBelowViewportLocked() {
+		return "Scroll to the end to approve · n to deny · " + activeControls
+	}
+	return r.status
 }
 
 func (r *TerminalRenderer) repaintLastLocked() {
@@ -830,6 +1018,7 @@ type renderModel struct {
 	reasoning    map[string]string
 	tools        map[string]*toolSectionState
 	activeTextID string
+	approvals    map[string]string // approval id -> tool call id
 }
 
 func newRenderModel(display displayModes, streamID string) *renderModel {
@@ -839,6 +1028,7 @@ func newRenderModel(display displayModes, streamID string) *renderModel {
 		text:      map[string]string{},
 		reasoning: map[string]string{},
 		tools:     map[string]*toolSectionState{},
+		approvals: map[string]string{},
 	}
 }
 
@@ -896,13 +1086,51 @@ func (m *renderModel) apply(chunk provider.StreamChunk) {
 			tool := m.ensureTool(chunk.ToolCall.ID, chunk.ToolCall.ToolName, chunk.ToolCall.Title)
 			tool.input = chunk.ToolCall.Arguments
 			tool.inputText = chunk.ToolCall.RawArguments
+			tool.inputComplete = true
 			tool.providerExecuted = chunk.ToolCall.ProviderExecuted
 			tool.status = "executing"
+		}
+	case provider.ChunkTypeToolApprovalRequest:
+		if req := chunk.ToolApprovalRequest; req != nil {
+			tool := m.ensureTool(nonEmpty(req.ToolCallID, req.ToolCall.ID), req.ToolCall.ToolName, req.ToolCall.Title)
+			if tool.input == nil && req.ToolCall.Arguments != nil {
+				tool.input = req.ToolCall.Arguments
+			}
+			tool.status = "approval requested"
+			if req.ApprovalID != "" {
+				m.approvals[req.ApprovalID] = tool.id
+			}
+		}
+	case provider.ChunkTypeToolApprovalResponse:
+		if resp := chunk.ToolApprovalResponse; resp != nil {
+			id := nonEmpty(m.approvals[resp.ApprovalID], resp.ToolCallID, resp.ToolCall.ID)
+			if id != "" {
+				tool := m.ensureTool(id, resp.ToolCall.ToolName, resp.ToolCall.Title)
+				if resp.Approved {
+					tool.status = "executing"
+				} else {
+					tool.status = "denied"
+					tool.deniedReason = nonEmpty(resp.Reason, "denied")
+				}
+			}
+		}
+	case provider.ChunkTypeToolOutputDenied:
+		if chunk.ToolResult != nil {
+			tool := m.ensureTool(chunk.ToolResult.ToolCallID, chunk.ToolResult.ToolName, chunk.ToolResult.Title)
+			tool.status = "denied"
+			tool.outputDenied = true
+			tool.deniedReason = nonEmpty(tool.deniedReason, "denied")
 		}
 	case provider.ChunkTypeToolResult:
 		if chunk.ToolResult != nil {
 			tool := m.ensureTool(chunk.ToolResult.ToolCallID, chunk.ToolResult.ToolName, chunk.ToolResult.Title)
-			tool.input = chunk.ToolResult.Input
+			// A result that carries no input (an approval request or an
+			// output chunk from a ChatTransport) keeps the input the call
+			// already had, like TS where the part retains its input.
+			if chunk.ToolResult.Input != nil {
+				tool.input = chunk.ToolResult.Input
+			}
+			tool.inputComplete = true
 			tool.output = chunk.ToolResult.Result
 			tool.status = "done"
 			if chunk.ToolResult.Error != nil {
@@ -912,12 +1140,16 @@ func (m *renderModel) apply(chunk provider.StreamChunk) {
 			case types.ToolApprovalStatusUserApproval:
 				tool.status = "approval requested"
 				tool.output = nil
+				if chunk.ToolResult.ApprovalID != "" {
+					m.approvals[chunk.ToolResult.ApprovalID] = tool.id
+				}
 			case types.ToolApprovalStatusApproved:
 				if chunk.ToolResult.ProviderExecuted && chunk.ToolResult.Result == nil && chunk.ToolResult.Error == nil {
 					tool.status = "executing"
 				}
 			case types.ToolApprovalStatusDenied:
 				tool.status = "denied"
+				tool.outputDenied = true
 				if chunk.ToolResult.ApprovalReason != nil && *chunk.ToolResult.ApprovalReason != "" {
 					tool.deniedReason = *chunk.ToolResult.ApprovalReason
 				} else {
@@ -974,11 +1206,11 @@ func (m *renderModel) sections() []chatSection {
 		switch {
 		case strings.HasPrefix(key, "text:"):
 			id := strings.TrimPrefix(key, "text:")
-			content := strings.TrimSpace(m.text[id])
+			content := jsTrim(m.text[id])
 			sections = append(sections, chatSection{id: m.sectionID("assistant", id), kind: sectionAssistant, title: "Assistant", content: content})
 		case strings.HasPrefix(key, "reasoning:"):
 			id := strings.TrimPrefix(key, "reasoning:")
-			sections = append(sections, chatSection{id: m.sectionID("reasoning", id), kind: sectionReasoning, title: "Reasoning", content: strings.TrimSpace(m.reasoning[id]), collapsed: collapsed})
+			sections = append(sections, chatSection{id: m.sectionID("reasoning", id), kind: sectionReasoning, title: "Reasoning", content: jsTrim(m.reasoning[id]), collapsed: collapsed})
 		case strings.HasPrefix(key, "tool:"):
 			id := strings.TrimPrefix(key, "tool:")
 			if tool := m.tools[id]; tool != nil {
@@ -1003,9 +1235,9 @@ func (m *renderModel) sectionIDPrefix() string {
 func (m *renderModel) isVisible(key string) bool {
 	switch {
 	case strings.HasPrefix(key, "text:"):
-		return strings.TrimSpace(m.text[strings.TrimPrefix(key, "text:")]) != ""
+		return jsTrim(m.text[strings.TrimPrefix(key, "text:")]) != ""
 	case strings.HasPrefix(key, "reasoning:"):
-		return m.display.reasoning != TerminalPartDisplayHidden && strings.TrimSpace(m.reasoning[strings.TrimPrefix(key, "reasoning:")]) != ""
+		return m.display.reasoning != TerminalPartDisplayHidden && jsTrim(m.reasoning[strings.TrimPrefix(key, "reasoning:")]) != ""
 	case strings.HasPrefix(key, "tool:"):
 		return m.display.tools != TerminalPartDisplayHidden
 	}
@@ -1035,18 +1267,34 @@ func (m *renderModel) shouldCollapse(index int, key string) bool {
 func renderToolSection(sectionID string, tool *toolSectionState, collapsed bool) chatSection {
 	name := nonEmpty(tool.title, tool.toolName)
 	title := "Tool · " + name
+	if collapsed {
+		// TS renders every collapsed tool, errors and denials included, as a
+		// plain tool header with the status on the right.
+		return chatSection{id: sectionID, kind: sectionTool, title: title, rightTitle: nonEmpty(tool.status, "waiting"), collapsed: true}
+	}
 	content := toolInputText(tool)
-	if tool.output != nil {
+	if tool.output != nil || (tool.status == "done" && tool.errorText == "") {
+		// TS output-available always prints the output, even null.
 		content += "\n\nOutput:\n" + formatValue(tool.output)
 	}
 	if tool.errorText != "" {
 		return chatSection{id: sectionID, kind: sectionError, title: "Tool Error · " + name, rightTitle: "done", content: content + "\n\nError:\n" + tool.errorText, collapsed: collapsed}
 	}
-	if tool.status == "denied" {
+	if tool.status == "denied" && tool.outputDenied {
 		reason := nonEmpty(tool.deniedReason, "denied")
 		return chatSection{id: sectionID, kind: sectionError, title: "Tool Denied · " + name, rightTitle: "denied", content: content + "\n\nReason: " + reason, collapsed: collapsed}
 	}
 	return chatSection{id: sectionID, kind: sectionTool, title: title, rightTitle: nonEmpty(tool.status, "waiting"), content: content, collapsed: collapsed}
+}
+
+// approvalInputText is the "Input:" block of an approval section. TS prints
+// the input in the key order the model sent it; the raw input text keeps that
+// order, so it is used when it describes the same input as request.Input.
+func approvalInputText(request AgentTUIToolApprovalRequest) string {
+	if tree, ok := orderedInputTree(request.RawInput, request.Input); ok {
+		return "Input:\n" + prettyJSON(tree, "")
+	}
+	return "Input:\n" + formatValue(request.Input)
 }
 
 func formatToolApprovalTitle(request AgentTUIToolApprovalRequest) string {
@@ -1054,37 +1302,153 @@ func formatToolApprovalTitle(request AgentTUIToolApprovalRequest) string {
 	if title == "" {
 		title = request.ToolName
 	}
-	return "tool " + title
+	return "tool " + escapeFormatCharacters(title)
 }
 
+// toolInputText is the "Input:" block of a tool section. TS prints
+// JSON.stringify(part.input, null, 2): the input object in the key order the
+// model sent it, or, while the input is still streaming, the repaired partial
+// JSON parsed so far.
 func toolInputText(tool *toolSectionState) string {
-	if tool.input != nil {
-		return "Input:\n" + formatValue(tool.input)
+	if tool.inputComplete || tool.input != nil {
+		if tree, ok := orderedToolInput(tool); ok {
+			return "Input:\n" + prettyJSON(tree, "")
+		}
+		if tool.input != nil {
+			return "Input:\n" + formatValue(tool.input)
+		}
+		if tool.inputComplete {
+			return "Input:\n{}"
+		}
 	}
 	if tool.inputText != "" {
-		return "Input:\n" + tool.inputText
+		if tree, ok := parsePartialOrdered(tool.inputText); ok {
+			return "Input:\n" + prettyJSON(tree, "")
+		}
 	}
 	return "Input: (streaming...)"
+}
+
+// orderedToolInput returns the raw tool input text as an ordered tree when it
+// parses and describes the same input as tool.input (so a repaired or edited
+// input is still printed from tool.input).
+func orderedToolInput(tool *toolSectionState) (interface{}, bool) {
+	return orderedInputTree(tool.inputText, tool.input)
+}
+
+// orderedInputTree parses raw as an ordered tree when it describes the same
+// input as want.
+func orderedInputTree(raw string, want interface{}) (interface{}, bool) {
+	if raw == "" {
+		return nil, false
+	}
+	tree, ok := jsonorder.Parse([]byte(raw))
+	if !ok {
+		return nil, false
+	}
+	if want == nil {
+		want = map[string]interface{}{}
+	}
+	a, errA := json.Marshal(want)
+	b, errB := json.Marshal(jsonorder.Plain(tree))
+	if errA != nil || errB != nil || !bytes.Equal(a, b) {
+		return nil, false
+	}
+	return tree, true
+}
+
+// parsePartialOrdered parses possibly incomplete JSON text, repairing it like
+// the TS parsePartialJson, and keeps the key order.
+func parsePartialOrdered(text string) (interface{}, bool) {
+	if tree, ok := jsonorder.Parse([]byte(text)); ok {
+		return tree, true
+	}
+	fixed := jsonparser.FixJSON(text)
+	if fixed == "" {
+		return nil, false
+	}
+	return jsonorder.Parse([]byte(fixed))
+}
+
+// prettyJSON is JSON.stringify(value, null, 2) for an ordered tree; a string
+// at the top level is printed as is, like formatValue.
+func prettyJSON(v interface{}, indent string) string {
+	if indent == "" {
+		if str, ok := v.(string); ok {
+			return str
+		}
+	}
+	switch x := v.(type) {
+	case *jsonorder.Object:
+		keys := x.Keys()
+		if len(keys) == 0 {
+			return "{}"
+		}
+		inner := indent + "  "
+		parts := make([]string, len(keys))
+		for i, k := range keys {
+			val, _ := x.Get(k)
+			parts[i] = inner + jsonScalar(k) + ": " + prettyJSON(val, inner)
+		}
+		return "{\n" + strings.Join(parts, ",\n") + "\n" + indent + "}"
+	case []interface{}:
+		if len(x) == 0 {
+			return "[]"
+		}
+		inner := indent + "  "
+		parts := make([]string, len(x))
+		for i, e := range x {
+			parts[i] = inner + prettyJSON(e, inner)
+		}
+		return "[\n" + strings.Join(parts, ",\n") + "\n" + indent + "]"
+	case json.Number:
+		return jsonScalar(jsonorder.Plain(x))
+	}
+	return jsonScalar(v)
+}
+
+func jsonScalar(v interface{}) string {
+	b, err := jsonstr.Marshal(v)
+	if err != nil {
+		return fmt.Sprint(v)
+	}
+	return string(b)
 }
 
 func renderSectionLines(section chatSection, width int) []string {
 	width = maxInt(8, width)
 	styleColor, border := sectionStyle(section.kind)
 	contentWidth := maxInt(1, width-4)
-	title := " " + sanitizeTerminalText(section.title, false) + " "
 	right := ""
 	if section.rightTitle != "" {
 		right = " " + sanitizeTerminalText(section.rightTitle, false) + " "
 	}
+	title := " " + escapeFormatCharacters(sanitizeTerminalText(section.title, false)) + " "
+	if section.kind == sectionApproval {
+		// shorten a long title so that the marker of the tool call that awaits
+		// the approval decision is not cut off:
+		title = truncateSectionTitle(title, width-2-visibleLength(right))
+	}
+	// Section headers are laid out by their width in terminal columns
+	// (2d2fc466c4).
 	borderWidth := maxInt(0, width-2-visibleLength(title)-visibleLength(right))
 	top := styleColor + "╭" + title + strings.Repeat(border, borderWidth) + right + "╮" + ansiReset
 	bottom := styleColor + "╰" + strings.Repeat(border, maxInt(0, width-2)) + "╯" + ansiReset
 	if section.collapsed {
 		return []string{top, bottom}
 	}
-	content := RenderMarkdown(section.content)
-	if content == "" {
-		content = colorDim + "(streaming...)" + ansiReset
+	// TS: an empty section shows the placeholder; content that merely renders
+	// to nothing does not.
+	content := colorDim + "(streaming...)" + ansiReset
+	switch {
+	case section.content == "":
+	case section.kind == sectionTool || section.kind == sectionApproval || section.kind == sectionError:
+		// tool input, tool output and errors are data: show them exactly,
+		// without markdown formatting, and make format characters visible
+		// (25972d7857).
+		content = escapeFormatCharacters(sanitizeTerminalText(section.content, true))
+	default:
+		content = RenderMarkdown(section.content)
 	}
 	var lines []string
 	for _, line := range strings.Split(content, "\n") {
@@ -1093,6 +1457,16 @@ func renderSectionLines(section chatSection, width int) []string {
 		}
 	}
 	return append(append([]string{top}, lines...), bottom)
+}
+
+func truncateSectionTitle(title string, maxWidth int) string {
+	if visibleLength(title) <= maxWidth {
+		return title
+	}
+	if maxWidth < 3 {
+		return ""
+	}
+	return sliceVisible(title, maxWidth-2) + "… "
 }
 
 func sectionLine(line string, width int, color string) string {
@@ -1111,6 +1485,8 @@ func sectionStyle(kind chatSectionKind) (string, string) {
 		return colorReasoning, "·"
 	case sectionTool:
 		return colorTool, "─"
+	case sectionApproval:
+		return colorApproval, "─"
 	case sectionError:
 		return colorError, "─"
 	default:
@@ -1201,11 +1577,15 @@ func formatValue(value interface{}) string {
 	if s, ok := value.(string); ok {
 		return s
 	}
-	data, err := json.MarshalIndent(value, "", "  ")
-	if err != nil {
+	// JSON.stringify(value, null, 2): no HTML escaping of <, > and &.
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(value); err != nil {
 		return fmt.Sprint(value)
 	}
-	return string(data)
+	return strings.TrimSuffix(buf.String(), "\n")
 }
 
 func formatTokenCount(tokens *int64, contextSize int) string {
@@ -1233,11 +1613,20 @@ func formatResponseStatistics(totalTokens, outputTokens *int64, outputTokensPS *
 	return formatTokenCount(outputTokens, 0)
 }
 
+// formatFloat is JS value.toLocaleString(undefined, { maximumFractionDigits: 1 })
+// (en-US): thousands separators, at most one fraction digit, no trailing zero.
 func formatFloat(value float64) string {
-	if math.Trunc(value) == value {
-		return formatInt(int64(value))
+	rounded := math.Round(value*10) / 10
+	whole := math.Trunc(rounded)
+	if whole == rounded {
+		return formatInt(int64(whole))
 	}
-	return strconv.FormatFloat(math.Round(value*10)/10, 'f', 1, 64)
+	frac := int64(math.Round(math.Abs(rounded-whole) * 10))
+	sign := ""
+	if rounded < 0 && whole == 0 {
+		sign = "-"
+	}
+	return sign + formatInt(int64(whole)) + "." + strconv.FormatInt(frac, 10)
 }
 
 func formatInt(value int64) string {

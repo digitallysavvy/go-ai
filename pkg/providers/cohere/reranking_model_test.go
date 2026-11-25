@@ -17,7 +17,7 @@ import (
 func TestCohereRerankingModelMetadata(t *testing.T) {
 	p := New(Config{APIKey: "k"})
 	m := NewRerankingModel(p, "rerank-v3.5")
-	if m.SpecificationVersion() != "v3" || m.Provider() != "cohere" || m.ModelID() != "rerank-v3.5" {
+	if m.SpecificationVersion() != "v4" || m.Provider() != "cohere.reranking" || m.ModelID() != "rerank-v3.5" {
 		t.Fatalf("metadata mismatch: spec=%s provider=%s model=%s", m.SpecificationVersion(), m.Provider(), m.ModelID())
 	}
 }
@@ -62,16 +62,21 @@ func TestCohereRerankingModelDoRerank(t *testing.T) {
 func TestCohereRerankingModelBuildRequestBodyAndError(t *testing.T) {
 	m := NewRerankingModel(New(Config{APIKey: "k"}), "rerank-v3.5")
 	topN := 3
-	body := m.buildRequestBody(&provider.RerankOptions{
-		Query:     "q",
-		Documents: []map[string]interface{}{{"text": "a"}},
-		TopN:      &topN,
+	body, warnings := m.buildRequestBodyWithWarnings(&provider.RerankOptions{
+		Query:           "q",
+		Documents:       []map[string]interface{}{{"text": "a"}},
+		TopN:            &topN,
+		ProviderOptions: map[string]interface{}{"cohere": map[string]interface{}{"maxTokensPerDoc": 100, "priority": 2}},
 	})
-	if body["top_n"] != 3 {
-		t.Fatalf("top_n = %#v", body["top_n"])
+	if body["top_n"] != 3 || body["max_tokens_per_doc"] != 100 || body["priority"] != 2 {
+		t.Fatalf("body = %#v", body)
 	}
-	if _, ok := body["documents"].([]map[string]interface{}); !ok {
-		t.Fatalf("documents type mismatch: %#v", body["documents"])
+	// TS converts object documents to JSON strings with a compatibility warning.
+	if docs, ok := body["documents"].([]string); !ok || len(docs) != 1 || docs[0] != `{"text":"a"}` {
+		t.Fatalf("documents = %#v", body["documents"])
+	}
+	if len(warnings) != 1 || warnings[0].Type != "compatibility" || warnings[0].Feature != "object documents" {
+		t.Fatalf("warnings = %#v", warnings)
 	}
 
 	err := m.handleError(errors.New("boom"))

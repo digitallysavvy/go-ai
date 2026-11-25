@@ -203,9 +203,9 @@ func TestTerminalRendererEscapesTitleAndPromptDisplayWhilePreservingInput(t *tes
 }
 
 // TestTerminalRendererEscapesApprovalFields mirrors TS's "escapes approval
-// %s" table for toolName and title.
+// %s" table for toolName, title and input.
 func TestTerminalRendererEscapesApprovalFields(t *testing.T) {
-	for _, field := range []string{"toolName", "title"} {
+	for _, field := range []string{"toolName", "title", "input"} {
 		t.Run(field, func(t *testing.T) {
 			out := &recordingWriter{}
 			useSync := false
@@ -219,10 +219,13 @@ func TestTerminalRendererEscapesApprovalFields(t *testing.T) {
 			})
 
 			request := AgentTUIToolApprovalRequest{ApprovalID: "approval-1", ToolCallID: "call-1", ToolName: "test"}
-			if field == "toolName" {
+			switch field {
+			case "toolName":
 				request.ToolName = securityPayload
-			} else {
+			case "title":
 				request.Title = securityPayload
+			default:
+				request.Input = securityPayload
 			}
 
 			response, err := renderer.ReadToolApproval(context.Background(), request, TerminalSessionOptions{Title: "Test"})

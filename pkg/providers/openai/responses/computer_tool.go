@@ -11,9 +11,6 @@
 package responses
 
 import (
-	"context"
-	"fmt"
-
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -63,7 +60,7 @@ type ComputerCall struct {
 
 	// PendingSafetyChecks are safety checks that must be acknowledged before
 	// continuing.
-	PendingSafetyChecks []ComputerSafetyCheck `json:"pending_safety_checks,omitempty"`
+	PendingSafetyChecks []ComputerSafetyCheck `json:"pending_safety_checks"`
 }
 
 // ComputerCallOutputScreenshot is the screenshot captured after executing a
@@ -149,12 +146,10 @@ func MapComputerActionToWire(action map[string]interface{}) map[string]interface
 //
 //	tool := responses.NewComputerTool()
 func NewComputerTool() types.Tool {
-	return types.Tool{
-		Name:             "openai.computer",
-		Description:      "Control a computer's mouse, keyboard, and screen via batched UI actions",
-		ProviderExecuted: true,
-		Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
-			return nil, fmt.Errorf("computer tool is executed by the OpenAI API, not locally")
-		},
-	}
+	return providerDefinedTool(types.Tool{
+		Name:         "openai.computer",
+		Description:  "Control a computer's mouse, keyboard, and screen via batched UI actions",
+		Parameters:   schemaFromJSON(computerInputSchemaJSON),
+		OutputSchema: schemaFromJSON(computerOutputSchemaJSON),
+	}, "openai.computer", map[string]interface{}{})
 }

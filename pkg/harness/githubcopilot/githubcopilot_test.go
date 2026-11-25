@@ -243,7 +243,7 @@ func TestBuildConfig_ForwardsLaunchAndBridgeSettings(t *testing.T) {
 	if cfg.Port != 4319 || cfg.PortEndpoint != portEndpoint || cfg.StartupTimeout.Milliseconds() != 45_000 {
 		t.Errorf("port/portEndpoint/startupTimeout = %d/%+v/%v", cfg.Port, cfg.PortEndpoint, cfg.StartupTimeout)
 	}
-	if cfg.MintBridgeToken == nil || cfg.MintBridgeToken("sbx-1") != "sbx-1" {
+	if cfg.MintBridgeToken == nil || cfg.MintBridgeToken("sbx-1") != "sbx-1" { //nolint:staticcheck // the deprecated setting is still forwarded (ACP warns)
 		t.Error("MintBridgeToken not forwarded correctly")
 	}
 	if _, err := cfg.CredentialForwarding(context.Background(), harness.CredentialForwardingOptions{
@@ -280,5 +280,31 @@ func TestCreateGitHubCopilot(t *testing.T) {
 	}
 	if h.HarnessID() != "github-copilot" {
 		t.Errorf("HarnessID() = %q, want github-copilot", h.HarnessID())
+	}
+}
+
+// TS #23940: the AI Gateway model is the COPILOT_MODEL the CLI runs with and
+// the fallback reported on stream-start parts without a model.
+func TestBuildConfig_GatewayModelFallback(t *testing.T) {
+	cfg, err := BuildConfig(Settings{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.StreamStartFallbackModelID != "openai/gpt-5.5" {
+		t.Fatalf("StreamStartFallbackModelID = %q", cfg.StreamStartFallbackModelID)
+	}
+	if cfg.ProviderAuthentication.GatewayEnv["COPILOT_MODEL"] != GatewayModel {
+		t.Fatalf("COPILOT_MODEL = %v", cfg.ProviderAuthentication.GatewayEnv["COPILOT_MODEL"])
+	}
+}
+
+// TS #23686: image tool output (`toModelOutput()`) is declared as supported.
+func TestBuildConfig_DeclaresImageToolOutput(t *testing.T) {
+	cfg, err := BuildConfig(Settings{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(cfg.NonTextContentTypes, []acp.NonTextContentType{acp.NonTextContentImage}) {
+		t.Fatalf("NonTextContentTypes = %v", cfg.NonTextContentTypes)
 	}
 }

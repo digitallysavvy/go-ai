@@ -79,8 +79,10 @@ type realtimeTestServer struct {
 
 	mu              sync.Mutex
 	received        []map[string]interface{}
+	rawReceived     []string
 	handshakeUA     string
 	handshakeAPIKey string
+	handshakeAll    stdhttp.Header
 
 	toSend    chan interface{}
 	closeConn chan struct{}
@@ -94,6 +96,7 @@ func newRealtimeTestServer(t *testing.T) *realtimeTestServer {
 			s.mu.Lock()
 			s.handshakeUA = req.Header.Get("User-Agent")
 			s.handshakeAPIKey = req.Header.Get("xi-api-key")
+			s.handshakeAll = req.Header.Clone()
 			s.mu.Unlock()
 		}
 		go func() {
@@ -116,6 +119,9 @@ func newRealtimeTestServer(t *testing.T) *realtimeTestServer {
 			if err := websocket.Message.Receive(conn, &raw); err != nil {
 				return
 			}
+			s.mu.Lock()
+			s.rawReceived = append(s.rawReceived, raw)
+			s.mu.Unlock()
 			var decoded map[string]interface{}
 			if err := json.Unmarshal([]byte(raw), &decoded); err != nil {
 				continue
@@ -1201,4 +1207,50 @@ func elevenLabsComputeWebSocketAccept(key string) string {
 	h := sha1.New() //nolint:gosec // required by the WebSocket handshake spec, not for security
 	h.Write([]byte(key + magicGUID))
 	return base64.StdEncoding.EncodeToString(h.Sum(nil))
+}
+
+// TestTranscriptionModel_DoStream_HandshakeCarriesProviderHeaders: TS
+// getHeaders() spreads the provider settings headers into the xi-api-key set
+// that the realtime WebSocket reuses; per-call headers win over them.
+func TestTranscriptionModel_DoStream_HandshakeCarriesProviderHeaders(t *testing.T) {
+	server := newRealtimeTestServer(t)
+	defer server.close()
+
+	p := New(Config{APIKey: "test-api-key", BaseURL: server.ts.URL, Headers: map[string]string{"X-Provider": "p", "X-Both": "provider"}})
+	model := NewTranscriptionModel(p, ModelScribeV2Realtime)
+	result, err := model.DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+		Audio:            newChanAudioStream([]byte{1}),
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: rate(16000)},
+		Headers:          map[string]string{"X-Both": "call"},
+	})
+	if err != nil {
+		t.Fatalf("DoStream() error = %v", err)
+	}
+	defer result.Stream.Close() //nolint:errcheck
+
+	server.toSend <- map[string]interface{}{"message_type": "session_started", "session_id": "session-1"}
+	if _, err := result.Stream.Next(); err != nil {
+		t.Fatalf("Stream.Next() (stream-start) error = %v", err)
+	}
+	server.mu.Lock()
+	h := server.handshakeAll
+	server.mu.Unlock()
+	if h.Get("X-Provider") != "p" || h.Get("X-Both") != "call" || h.Get("xi-api-key") != "test-api-key" {
+		t.Fatalf("handshake headers = %v", h)
+	}
+}
+
+// TestBuildElevenLabsRealtimeURL_QueryKeepsTSOrder: URLSearchParams keeps
+// insertion order and the URL is reported as the request body.
+func TestBuildElevenLabsRealtimeURL_QueryKeepsTSOrder(t *testing.T) {
+	u, err := buildElevenLabsRealtimeURL("https://api.elevenlabs.io", ModelScribeV2Realtime, "pcm_16000", stringPtr("en"), &StreamingOptions{
+		CommitStrategy: "manual", VadThreshold: floatPtr2(0.5), Keyterms: []string{"AI SDK", "a*b~c"}, SecondaryLanguages: []string{"es"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "model_id=" + ModelScribeV2Realtime + "&audio_format=pcm_16000&commit_strategy=manual&language_code=en&vad_threshold=0.5&keyterms=AI+SDK&keyterms=a*b%7Ec&secondary_languages=es"
+	if u.RawQuery != want {
+		t.Fatalf("query = %q, want %q", u.RawQuery, want)
+	}
 }

@@ -16,7 +16,7 @@ import (
 func attrsToMap(attrs []attribute.KeyValue) map[string]interface{} {
 	out := map[string]interface{}{}
 	for _, a := range attrs {
-		out[string(a.Key)] = a.Value.AsInterface()
+		out[string(a.Key)] = r90carryNumber(a.Value)
 	}
 	return out
 }

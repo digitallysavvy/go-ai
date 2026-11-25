@@ -504,7 +504,7 @@ The `StepResult` passed to `OnStepFinish` contains:
 - `StepNumber` (int) - The step number (0-indexed)
 - `Text` (string) - Text generated in this step
 - `ToolCalls` ([]ToolCall) - Tool calls made in this step
-- `ToolResults` ([]ToolResult) - Results from tool executions
+- `ToolResults` ([]ToolResult) - Results from successful tool executions (a failed call is a `types.ToolErrorContent` part in the step's `Content`)
 - `FinishReason` (FinishReason) - Why this step ended ("stop", "tool-calls", "length", etc.)
 - `RawFinishReason` (string) - Raw finish reason from the provider
 - `Usage` (Usage) - Token usage for this step
@@ -797,6 +797,7 @@ import (
     "os"
 
     "github.com/digitallysavvy/go-ai/pkg/agent"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
     "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
 )
 
@@ -834,10 +835,14 @@ func main() {
     // Access tool results
     fmt.Printf("\nTools used: %d\n", len(result.ToolResults))
     for _, tr := range result.ToolResults {
-        if tr.Error != nil {
-            fmt.Printf("  %s: Error - %v\n", tr.ToolName, tr.Error)
-        } else {
-            fmt.Printf("  %s: Success\n", tr.ToolName)
+        fmt.Printf("  %s: Success\n", tr.ToolName)
+    }
+    // Failed tool calls are tool-error content parts, not ToolResults.
+    for _, step := range result.Steps {
+        for _, part := range step.Content {
+            if te, ok := part.(types.ToolErrorContent); ok {
+                fmt.Printf("  %s: Error - %v\n", te.ToolName, te.Error)
+            }
         }
     }
 

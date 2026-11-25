@@ -3,9 +3,14 @@ package fireworks
 import (
 	"encoding/json"
 	"errors"
+	"math"
+	"strconv"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // fireworksErrorPayload documents Fireworks' error envelope. TS's
@@ -22,7 +27,7 @@ type fireworksErrorObject struct {
 	Object  string          `json:"object,omitempty"`
 	Type    string          `json:"type,omitempty"`
 	Code    json.RawMessage `json:"code,omitempty"`
-	Message string          `json:"message"`
+	Message *string         `json:"message"`
 }
 
 // parseFireworksProviderError unwraps an HTTPStatusError and, when the body
@@ -35,25 +40,52 @@ func parseFireworksProviderError(err error) error {
 		return nil
 	}
 	var payload fireworksErrorPayload
-	if jsonErr := json.Unmarshal(statusErr.Body, &payload); jsonErr != nil || len(payload.Error) == 0 {
+	// TS z.union([z.string(), z.object(...)]): a null error fails the schema
+	// (json.Unmarshal of null into a string would succeed with "").
+	if jsonErr := securejson.Unmarshal(statusErr.Body, &payload); jsonErr != nil || len(payload.Error) == 0 || string(payload.Error) == "null" {
 		return nil
 	}
 
 	// {"error": "plain string message"}
 	var message string
 	if jsonErr := json.Unmarshal(payload.Error, &message); jsonErr == nil {
-		if message == "" {
-			return nil
-		}
-		return providererrors.NewProviderError("fireworks", statusErr.StatusCode, "", message, err)
+		// TS errorToMessage: the string itself, an empty one included.
+		pe := providererrors.NewProviderErrorFromResponse("fireworks", 0, "", message, err)
+		pe.Data = map[string]interface{}{"error": message} // TS APICallError.data: the schema output
+		return pe
 	}
 
 	// {"error": {"object","type","code","message"}}
 	var obj fireworksErrorObject
-	if jsonErr := json.Unmarshal(payload.Error, &obj); jsonErr != nil || obj.Message == "" {
+	// TS fireworksErrorSchema: message is a required string ("" is valid).
+	if jsonErr := jsonexact.Unmarshal(payload.Error, &obj); jsonErr != nil || obj.Message == nil || !fireworksValidCode(obj.Code) {
 		return nil
 	}
-	return providererrors.NewProviderError("fireworks", statusErr.StatusCode, fireworksErrorCode(obj.Code), obj.Message, err)
+	pe := providererrors.NewProviderErrorFromResponse("fireworks", 0, fireworksErrorCode(obj.Code), *obj.Message, err)
+	var errObj map[string]interface{}
+	_ = jsonexact.Unmarshal(payload.Error, &errObj)
+	// TS APICallError.data: the schema output (undeclared keys stripped).
+	pe.Data = map[string]interface{}{"error": providerutils.PickSchemaKeys(errObj, "message", "object", "type", "param", "code")}
+	return pe
+}
+
+// fireworksValidCode is TS `code: z.union([z.string(), z.number()]).nullish()`;
+// zod's z.number() rejects a number beyond the double range (JSON.parse
+// reads it as Infinity).
+func fireworksValidCode(raw json.RawMessage) bool {
+	if len(raw) == 0 || string(raw) == "null" {
+		return true
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return true
+	}
+	var n json.Number
+	if json.Unmarshal(raw, &n) != nil {
+		return false
+	}
+	f, _ := strconv.ParseFloat(n.String(), 64) // an underflow reads as 0 (valid)
+	return !math.IsInf(f, 0)
 }
 
 // fireworksErrorCode stringifies a code that may be a JSON string or number.
@@ -70,4 +102,21 @@ func fireworksErrorCode(raw json.RawMessage) string {
 		return n.String()
 	}
 	return ""
+}
+
+// fireworksCompatAPIError is TS fireworksErrorStructure for the
+// OpenAI-compatible completion model: the Fireworks error envelope's message
+// for a matching body, else the status text with no data.
+func fireworksCompatAPIError(provider string, err error) (*providererrors.ProviderError, bool) {
+	var statusErr *internalhttp.HTTPStatusError
+	if !errors.As(err, &statusErr) {
+		return nil, false
+	}
+	if parsed := parseFireworksProviderError(err); parsed != nil {
+		if pe, ok := parsed.(*providererrors.ProviderError); ok {
+			pe.Provider = provider
+			return pe, true
+		}
+	}
+	return providererrors.NewSchemaProviderError(provider, err, nil), true
 }

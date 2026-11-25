@@ -1494,8 +1494,10 @@ func max(a, b int) int {
 	return b
 }
 
-// TestStreamTextToolExecutionOrderPreserved verifies that multiple tool call chunks
-// are executed in the order they were received from the stream.
+// TestStreamTextToolExecutionOrderPreserved verifies that with sequential
+// execution (ToolCallConcurrency 1) multiple tool call chunks are executed in
+// the order they were received from the stream. The default runs a step's
+// calls concurrently (TS #22135), so start order is not deterministic there.
 func TestStreamTextToolExecutionOrderPreserved(t *testing.T) {
 	t.Parallel()
 
@@ -1530,11 +1532,13 @@ func TestStreamTextToolExecutionOrderPreserved(t *testing.T) {
 
 	done := make(chan struct{})
 	maxSteps := 1
+	sequential := 1
 	_, err := StreamText(context.Background(), StreamTextOptions{
-		Model:    model,
-		Prompt:   "Run all tools",
-		Tools:    tools,
-		MaxSteps: &maxSteps,
+		Model:               model,
+		Prompt:              "Run all tools",
+		Tools:               tools,
+		MaxSteps:            &maxSteps,
+		ToolCallConcurrency: &sequential,
 		OnFinish: func(r *StreamTextResult) {
 			close(done)
 		},
@@ -1723,8 +1727,10 @@ func TestStreamText_ToolApprovalDeniedSkipsExecution(t *testing.T) {
 	done := make(chan struct{})
 	maxSteps := 1
 	var toolResults []types.ToolResult
+	var content []types.ContentPart
 	_, err := StreamText(context.Background(), StreamTextOptions{
 		Model:    model,
+		Prompt:   "hi",
 		Tools:    []types.Tool{tool},
 		MaxSteps: &maxSteps,
 		ToolApproval: map[string]types.ToolApprovalValue{
@@ -1732,6 +1738,7 @@ func TestStreamText_ToolApprovalDeniedSkipsExecution(t *testing.T) {
 		},
 		OnFinish: func(r *StreamTextResult) {
 			toolResults = r.ToolResults()
+			content = r.Content()
 			close(done)
 		},
 	})
@@ -1740,25 +1747,22 @@ func TestStreamText_ToolApprovalDeniedSkipsExecution(t *testing.T) {
 	}
 	<-done
 
-	if len(toolResults) != 1 {
-		t.Fatalf("expected 1 denied tool result, got %d", len(toolResults))
+	// TS toolResults holds tool-result parts only. An auto-denied call is a
+	// tool-approval-request + tool-approval-response pair in the content (the
+	// response carries no synthesized reason: TS leaves it undefined and each
+	// provider converter applies its own default denial text, audit row
+	// 58a2ad7 / G6).
+	if len(toolResults) != 0 {
+		t.Fatalf("expected no tool results, got %#v", toolResults)
 	}
-	if toolResults[0].ApprovalStatus != types.ToolApprovalStatusDenied {
-		t.Fatalf("expected denied approval status, got %s", toolResults[0].ApprovalStatus)
+	var resp *types.ToolApprovalResponseContent
+	for _, part := range content {
+		if r, ok := part.(types.ToolApprovalResponseContent); ok {
+			resp = &r
+		}
 	}
-	// No reason was supplied, so Go must leave it unset here (matching TS,
-	// which leaves `reason` undefined) rather than synthesize a default;
-	// each provider converter applies its own default denial text when it
-	// serializes the tool result (audit row 58a2ad7 / G6).
-	if toolResults[0].ApprovalReason != nil {
-		t.Fatalf("expected no synthesized denial reason, got %#v", *toolResults[0].ApprovalReason)
-	}
-	output, ok := toolResults[0].Result.(types.ToolResultOutput)
-	if !ok {
-		t.Fatalf("expected ToolResultOutput, got %T", toolResults[0].Result)
-	}
-	if output.Type != types.ToolResultOutputExecutionDenied || output.Reason != "" {
-		t.Fatalf("unexpected denied output: %#v", output)
+	if resp == nil || resp.Approved || resp.Reason != "" {
+		t.Fatalf("expected a denied approval response without reason, got %#v", resp)
 	}
 }
 
@@ -1790,6 +1794,7 @@ func TestStreamText_ToolApprovalEmitsTSApprovalChunks(t *testing.T) {
 	var chunks []provider.StreamChunk
 	_, err := StreamText(context.Background(), StreamTextOptions{
 		Model:                          model,
+		Prompt:                         "hi",
 		Tools:                          []types.Tool{tool},
 		MaxSteps:                       &maxSteps,
 		ExperimentalToolApprovalSecret: []byte{},
@@ -2087,8 +2092,12 @@ func TestStreamText_UsesStepTextForContinuedPrompt(t *testing.T) {
 		t.Fatal("timed out waiting for stream completion")
 	}
 
-	if result.Text() != "firstseconddone" {
-		t.Fatalf("unexpected accumulated text: %q", result.Text())
+	// TS StreamTextResult.text is the final step's text.
+	if result.Text() != "done" {
+		t.Fatalf("unexpected final text: %q", result.Text())
+	}
+	if all, err := result.ReadAll(); err != nil || all != "firstseconddone" {
+		t.Fatalf("ReadAll (every step's text) = %q, %v", all, err)
 	}
 	var assistantTexts []string
 	for _, msg := range thirdPrompt {
@@ -2824,11 +2833,13 @@ func TestStreamTextAllowsIncompleteStreamWithPartialOutput(t *testing.T) {
 	}
 }
 
-// TestStreamText_PublishesEmptyStringPartialOutput ports TS's "stream null
-// and empty-string JSON partial outputs" case (audit row 84f5d1b / WG4): a
-// genuine first empty-string partial must be published, not suppressed by
-// comparing against the "nothing published yet" sentinel.
-func TestStreamText_PublishesEmptyStringPartialOutput(t *testing.T) {
+// TestStreamText_EmptyDeltaPublishesNoPartialOutput: TS streamText drops an
+// empty text delta without provider metadata before its output transform
+// (stream-text.ts 3145), so a stream whose only text is an empty delta
+// publishes no partial (recorded: TS partialOutputStream yields nothing, round
+// 85). The genuine empty-string partial of a JSON `""` text is covered by
+// TestR73StreamJSONOutputNullAndEmptyString.
+func TestStreamText_EmptyDeltaPublishesNoPartialOutput(t *testing.T) {
 	model := &testutil.MockLanguageModel{
 		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
 			return testutil.NewMockTextStream([]provider.StreamChunk{
@@ -2850,13 +2861,8 @@ func TestStreamText_PublishesEmptyStringPartialOutput(t *testing.T) {
 		t.Fatalf("ReadAll() error = %v", err)
 	}
 
-	partial := result.PartialOutput()
-	s, ok := partial.(string)
-	if !ok {
-		t.Fatalf("PartialOutput() = %#v (%T), want the published empty string, not the unpublished zero value", partial, partial)
-	}
-	if s != "" {
-		t.Fatalf("PartialOutput() = %q, want empty string", s)
+	if partial := result.PartialOutput(); partial != nil {
+		t.Fatalf("PartialOutput() = %#v, want nil (TS publishes no partial)", partial)
 	}
 }
 
@@ -3548,6 +3554,7 @@ func TestStreamText_ToolApprovalPauseKeepsModelFinishReasonInUIStream(t *testing
 	}
 
 	result, err := StreamText(context.Background(), StreamTextOptions{
+		Prompt:   "hi",
 		Model:    model,
 		Tools:    []types.Tool{tool},
 		StopWhen: []StopCondition{IsStepCount(5)},

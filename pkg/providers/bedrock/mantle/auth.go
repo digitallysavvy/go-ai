@@ -2,48 +2,130 @@ package mantle
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"io"
 	"net/http"
+	"os"
 
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providers/bedrock"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
+// sigV4Transport authenticates each request: a bearer token (settings.APIKey or
+// AWS_BEARER_TOKEN_BEDROCK, trimmed, read when the provider is created) when
+// one is available, otherwise SigV4 with credentials read at request time.
 type sigV4Transport struct {
 	base               http.RoundTripper
-	signer             *bedrock.AWSSigner
+	apiKey             string
+	apiKeyFunc         providerutils.APIKeyFunc
+	accessKeyID        string
+	secretAccessKey    string
+	sessionToken       string
 	credentialProvider bedrock.CredentialProvider
 	region             string
+	// baseURL resolves the Mantle endpoint at request time: credentials go
+	// only to requests of its origin (a redirect hop to another origin gets
+	// none; fails closed when the endpoint cannot be resolved).
+	baseURL func() (string, error)
+}
+
+// sameOrigin reports whether req goes to the Mantle endpoint's origin (false
+// when the endpoint is unknown).
+func (t *sigV4Transport) sameOrigin(req *http.Request) bool {
+	if t.baseURL == nil {
+		return false
+	}
+	baseURL, err := t.baseURL()
+	// A hop back to the endpoint after a foreign hop (A -> B -> A) is not
+	// re-signed: fetch never adds a dropped Authorization back.
+	return err == nil && providerutils.IsSameOrigin(req.URL.String(), baseURL) && !providerutils.IsCrossOriginRedirectHop(req)
 }
 
 func (t *sigV4Transport) RoundTrip(req *http.Request) (*http.Response, error) {
-	signer := t.signer
+	resp, err := t.roundTrip(req)
+	// A RoundTripper closes the request body, even on errors (a
+	// credential or signing failure returns before the base transport).
+	if err != nil && req.Body != nil {
+		_ = req.Body.Close()
+	}
+	return resp, err
+}
+
+func (t *sigV4Transport) roundTrip(req *http.Request) (*http.Response, error) {
+	if !t.sameOrigin(req) {
+		req = req.Clone(req.Context())
+		req.Header.Del("Authorization")
+		return t.base.RoundTrip(req)
+	}
+	if t.apiKeyFunc != nil {
+		key, err := providerutils.ResolveAPIKey(req.Context(), providerutils.ResolveAPIKeyOptions{
+			APIKey: t.apiKey, APIKeyFunc: t.apiKeyFunc, Description: "Amazon Bedrock", RequireNonEmpty: true,
+		})
+		if err != nil {
+			return nil, internalhttp.RejectFetch(err)
+		}
+		req = req.Clone(req.Context())
+		req.Header.Set("Authorization", "Bearer "+providerutils.JSTrim(key))
+		return t.base.RoundTrip(req)
+	}
+	if t.apiKey != "" {
+		req = req.Clone(req.Context())
+		req.Header.Set("Authorization", "Bearer "+t.apiKey)
+		return t.base.RoundTrip(req)
+	}
+	// TS loads the region first, at request time, and fails when it is missing.
+	region := firstNonEmpty(t.region, os.Getenv("AWS_REGION"))
+	if region == "" {
+		return nil, internalhttp.RejectFetch(providererrors.NewLoadSettingError("AWS region", "region", "AWS_REGION"))
+	}
+	var signer *bedrock.AWSSigner
 	if t.credentialProvider != nil {
 		creds, err := t.credentialProvider(req.Context())
 		if err != nil {
-			return nil, fmt.Errorf("AWS credential provider failed: %v. Please ensure your credential provider returns valid AWS credentials with AccessKeyID and SecretAccessKey fields", err)
+			return nil, internalhttp.RejectFetch(fmt.Errorf("AWS credential provider failed: %v. Please ensure your credential provider returns valid AWS credentials with accessKeyId and secretAccessKey properties.", err)) //nolint:staticcheck // message text matches TS
 		}
-		if creds.AccessKeyID == "" || creds.SecretAccessKey == "" {
-			return nil, fmt.Errorf("AWS credential provider failed: incomplete credentials. Please ensure your credential provider returns valid AWS credentials with AccessKeyID and SecretAccessKey fields")
+		// TS signs with the provider's credentials as returned; aws4fetch's
+		// AwsV4Signer then throws its TypeError for a missing key.
+		if creds.AccessKeyID == "" {
+			return nil, internalhttp.RejectFetch(errors.New("accessKeyId is a required option"))
 		}
-		signer = bedrock.NewAWSSignerForService(creds.AccessKeyID, creds.SecretAccessKey, creds.SessionToken, t.region, mantleSigningService)
+		if creds.SecretAccessKey == "" {
+			return nil, internalhttp.RejectFetch(errors.New("secretAccessKey is a required option"))
+		}
+		signer = bedrock.NewAWSSignerForService(creds.AccessKeyID, creds.SecretAccessKey, creds.SessionToken, region, mantleSigningService)
+	} else {
+		accessKeyID := firstNonEmpty(t.accessKeyID, os.Getenv("AWS_ACCESS_KEY_ID"))
+		secretAccessKey := firstNonEmpty(t.secretAccessKey, os.Getenv("AWS_SECRET_ACCESS_KEY"))
+		if accessKeyID == "" {
+			return nil, internalhttp.RejectFetch(fmt.Errorf("AWS SigV4 authentication requires AWS credentials. Please provide either:\n1. Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables\n2. Provide accessKeyId and secretAccessKey in options\n3. Use a credentialProvider function\n4. Use API key authentication with AWS_BEARER_TOKEN_BEDROCK or apiKey option\nOriginal error: AWS access key ID setting is missing. Pass it using the 'accessKeyId' parameter or the AWS_ACCESS_KEY_ID environment variable.")) //nolint:staticcheck // message text matches TS
+		}
+		if secretAccessKey == "" {
+			return nil, internalhttp.RejectFetch(fmt.Errorf("AWS SigV4 authentication requires both AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY. Please ensure both credentials are provided.\nOriginal error: AWS secret access key setting is missing. Pass it using the 'secretAccessKey' parameter or the AWS_SECRET_ACCESS_KEY environment variable.")) //nolint:staticcheck // message text matches TS
+		}
+		sessionToken := firstNonEmpty(t.sessionToken, os.Getenv("AWS_SESSION_TOKEN"))
+		signer = bedrock.NewAWSSignerForService(accessKeyID, secretAccessKey, sessionToken, region, mantleSigningService)
 	}
-	if signer == nil {
-		return t.base.RoundTrip(req)
-	}
+	// Sign a clone: a RoundTripper must not modify the caller's request.
+	req = req.Clone(req.Context())
+	// The wrapped OpenAI client may have set a stale Authorization (e.g. from
+	// OPENAI_API_KEY); it must not be part of the signed headers.
+	req.Header.Del("Authorization")
 	var body []byte
 	if req.Body != nil {
 		var err error
 		body, err = io.ReadAll(req.Body)
 		if err != nil {
-			return nil, err
+			return nil, internalhttp.RejectFetch(err)
 		}
 		_ = req.Body.Close()
 		req.Body = io.NopCloser(bytes.NewReader(body))
 		req.ContentLength = int64(len(body))
 	}
 	if err := signer.SignRequest(req, body); err != nil {
-		return nil, err
+		return nil, internalhttp.RejectFetch(err)
 	}
 	req.Body = io.NopCloser(bytes.NewReader(body))
 	return t.base.RoundTrip(req)

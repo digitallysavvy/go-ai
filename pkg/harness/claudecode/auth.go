@@ -3,13 +3,14 @@ package claudecode
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // CredentialEnvironmentVariables mirrors TS
@@ -49,7 +50,7 @@ func resolveAuthenticationMode(auth harness.Authentication, processEnv map[strin
 
 // resolveAuthenticationEnvironment mirrors TS `resolveClaudeCodeEnv`,
 // including the native-subscription fallback (`resolveClaudeCodeAuthentication`).
-func resolveAuthenticationEnvironment(ctx context.Context, auth harness.Authentication, processEnv map[string]string) map[string]string {
+func resolveAuthenticationEnvironment(ctx context.Context, auth harness.Authentication, processEnv map[string]string) (map[string]string, error) {
 	authEnv := processEnv
 	if auth.IsEnvironment() {
 		authEnv = auth.Environment
@@ -71,28 +72,39 @@ func resolveAuthenticationEnvironment(ctx context.Context, auth harness.Authenti
 	}
 	gw := harnessutil.GetAIGatewayAuthFromEnv(authEnv)
 	if auth.Mode == harness.AuthModeAIGateway || gw.APIKey != "" {
-		return pickGateway(gw)
+		return pickGateway(gw), nil
 	}
 	return pickAnthropic(ctx, authEnv, readHelper, trySubscription, authModeString)
 }
 
-func pickAnthropic(ctx context.Context, env map[string]string, readHelper func() string, trySubscription bool, authModeString string) map[string]string {
+func pickAnthropic(ctx context.Context, env map[string]string, readHelper func() string, trySubscription bool, authModeString string) (map[string]string, error) {
 	if trySubscription {
 		hasDirect := env["ANTHROPIC_API_KEY"] != "" || env["ANTHROPIC_AUTH_TOKEN"] != "" || env["CLAUDE_CODE_OAUTH_TOKEN"] != ""
-		if harnessutil.ShouldResolveNativeSubscription(authModeString, env, hasDirect) {
-			if subEnv, ok := readClaudeCodeSubscription(ctx); ok {
-				return subEnv
+		if !harnessutil.ShouldResolveNativeSubscription(authModeString, env, hasDirect) {
+			// TS resolveClaudeCodeAuthentication returns the environment
+			// resolved without the apiKeyHelper here: the helper runs only
+			// when neither a direct credential nor a subscription exists.
+			readHelper = func() string { return "" }
+		} else {
+			subEnv, ok, err := resolveClaudeCodeSubscription(ctx)
+			if err != nil {
+				return nil, err
+			}
+			if ok {
+				return subEnv, nil
 			}
 		}
 	}
 	out := map[string]string{}
 	helperKey := readHelper()
-	apiKey := env["ANTHROPIC_API_KEY"]
-	if apiKey == "" {
+	// TS uses `??`: a variable that is present but empty wins over the
+	// helper key (and then yields no credential at all).
+	apiKey, ok := env["ANTHROPIC_API_KEY"]
+	if !ok {
 		apiKey = helperKey
 	}
-	authToken := env["ANTHROPIC_AUTH_TOKEN"]
-	if authToken == "" {
+	authToken, ok := env["ANTHROPIC_AUTH_TOKEN"]
+	if !ok {
 		authToken = helperKey
 	}
 	if apiKey != "" {
@@ -107,7 +119,7 @@ func pickAnthropic(ctx context.Context, env map[string]string, readHelper func()
 	if v := env["ANTHROPIC_BASE_URL"]; v != "" {
 		out["ANTHROPIC_BASE_URL"] = v
 	}
-	return out
+	return out, nil
 }
 
 func pickGateway(gw harnessutil.AIGatewayAuth) map[string]string {
@@ -137,24 +149,43 @@ func readAPIKeyHelper() string {
 	if command == "" {
 		return ""
 	}
-	out, err := exec.Command("sh", "-c", command).Output()
+	// TS 7a5a9c6c50: `sh -c` first; only when sh is not on PATH (ENOENT,
+	// e.g. a PowerShell or cmd session on Windows) the platform shell runs
+	// it (Node execSync: /bin/sh -c, or %ComSpec% /d /s /c). Any other
+	// failure, a non-zero exit included, never runs the helper twice.
+	out, err := apiKeyHelperOutput(exec.Command("sh", "-c", command))
 	if err != nil {
-		return ""
+		if !errors.Is(err, exec.ErrNotFound) {
+			return ""
+		}
+		if out, err = apiKeyHelperOutput(systemShellCommand(command)); err != nil {
+			return ""
+		}
 	}
-	return strings.TrimSpace(string(out))
+	return providerutils.JSTrim(string(out))
 }
 
+// apiKeyHelperOutput runs a helper command with stdin and stderr ignored
+// (TS stdio ['ignore', 'pipe', 'ignore']). A variable for tests.
+var apiKeyHelperOutput = func(cmd *exec.Cmd) ([]byte, error) { return cmd.Output() }
+
 func extractAPIKeyHelperCommand(raw []byte) string {
-	var settings struct {
-		APIKeyHelper string `json:"apiKeyHelper"`
-	}
+	// TS JSON.parse + settings.apiKeyHelper: the key matches exactly (a Go
+	// struct tag would also match "ApiKeyHelper"), the last duplicate wins,
+	// and a non-string value is no command.
+	var settings map[string]json.RawMessage
 	if json.Unmarshal(raw, &settings) != nil {
 		return ""
 	}
-	return settings.APIKeyHelper
+	var command string
+	if json.Unmarshal(settings["apiKeyHelper"], &command) != nil {
+		return ""
+	}
+	return command
 }
 
-// requestTransformations mirrors TS `createClaudeCodeRequestTransformations`.
+// requestTransformations mirrors TS `createClaudeCodeRequestTransformations`
+// followed by `createClaudeCodeSubscriptionRequestTransformations`.
 // TS throws synchronously on an invalid matchUrl (`new URL(matchUrl)`),
 // failing the whole `doStart` call; the Go port propagates the same error
 // instead of silently dropping the transformation.
@@ -180,6 +211,19 @@ func requestTransformations(env, sandboxEnv map[string]string, authMode Resolved
 			MatchURL:         matchURL,
 			MatchHeaders:     map[string]string{"Authorization": "Bearer " + sandboxEnv["ANTHROPIC_AUTH_TOKEN"]},
 			TransformHeaders: map[string]string{"Authorization": "Bearer " + env["ANTHROPIC_AUTH_TOKEN"]},
+		})
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	// Mirrors TS `createClaudeCodeSubscriptionRequestTransformations`: the
+	// native-subscription OAuth token is brokered the same way.
+	if env["CLAUDE_CODE_OAUTH_TOKEN"] != "" && sandboxEnv["CLAUDE_CODE_OAUTH_TOKEN"] != "" {
+		t, err := harnessutil.CreateCredentialRequestTransformation(harnessutil.CreateCredentialRequestTransformationOptions{
+			MatchURL:         matchURL,
+			MatchHeaders:     map[string]string{"Authorization": "Bearer " + sandboxEnv["CLAUDE_CODE_OAUTH_TOKEN"]},
+			TransformHeaders: map[string]string{"Authorization": "Bearer " + env["CLAUDE_CODE_OAUTH_TOKEN"]},
 		})
 		if err != nil {
 			return nil, err

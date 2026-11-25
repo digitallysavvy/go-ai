@@ -33,11 +33,24 @@ type ProtocolVersionTransport interface {
 
 // ProtocolVersionDiscoveryTransport is implemented by transports that support
 // probing the 2026-07-28 `server/discover` method before falling back to a
-// legacy `initialize` handshake (hash e6a9927). Only HTTPTransport
-// (streamable HTTP) reports true, matching TS StreamableHTTPClientTransport;
-// stdio and legacy SSE transports do not implement this interface.
+// legacy `initialize` handshake (hash e6a9927). HTTPTransport (streamable
+// HTTP) and StdioTransport report true, matching TS
+// StreamableHTTPClientTransport and StdioMCPTransport; the legacy SSE
+// transport does not implement this interface.
 type ProtocolVersionDiscoveryTransport interface {
 	SupportsProtocolVersionDiscovery() bool
+}
+
+// ProtocolVersionDiscoveryWaiter is an optional extension of
+// ProtocolVersionDiscoveryTransport (TS MCPTransport.waitsForProtocolVersionDiscovery,
+// TS #22042). A transport that reports true always delivers a response to
+// `server/discover` (Streamable HTTP), so the client waits for it, bounded
+// only by the Connect context, instead of treating a slow response as a
+// legacy server after DefaultProtocolDiscoveryTimeoutMS. Other transports
+// (stdio, custom) keep the short probe timeout because a legacy server may
+// never answer the unknown method.
+type ProtocolVersionDiscoveryWaiter interface {
+	WaitsForProtocolVersionDiscovery() bool
 }
 
 // MCPToolParameterHeadersTransport is implemented by transports that support

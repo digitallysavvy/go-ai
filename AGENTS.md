@@ -25,7 +25,7 @@ use the rest of this file. Instead:
 
 `github.com/digitallysavvy/go-ai` is the Go AI SDK: a Go port of Vercel's
 TypeScript AI SDK (`ai` on npm), tracking it 1:1 for server-side features.
-The current parity target is `ai@7.0.127`. Intentional differences are listed in
+The current parity target is `ai@7.0.153`. Intentional differences are listed in
 `docs/08-migration-guides/known-differences.mdx`; anything else that behaves
 differently from TypeScript is a bug.
 
@@ -79,5 +79,6 @@ For docs-site changes, also run `npm ci && npm run build` in `website/`.
 - **Examples** that hold several `main` programs in one directory need a
   `//go:build ignore` tag on each file.
 - **Minimum Go version** is 1.26; CI tests 1.26 and 1.27.
-- Keep `pkg/internal/third_party/qjs` on wazero v1.9.x; newer versions break the
-  code-mode sandbox (see `.github/dependabot.yml`).
+- wazero is pinned at v1.12.0 (code mode's qjs and the fx libfx core share it).
+  Bump it only deliberately, with the full `pkg/codemode`, qjs and
+  `GOAI_FX_WASM_TEST=1 ./pkg/harness/fx/...` suites (see `.github/dependabot.yml`).

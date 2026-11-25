@@ -499,3 +499,25 @@ func TestExperimentalListBatches_ForwardsToProviderAndConverts(t *testing.T) {
 		t.Fatalf("NextCursor = %q", result.NextCursor)
 	}
 }
+
+func TestExperimentalStartBatch_RejectsMissingToolResults(t *testing.T) {
+	req := textBatchRequest("req-1", "m")
+	req.Text.Prompt = ""
+	req.Text.Messages = []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}},
+		{Role: types.RoleAssistant, Content: []types.ContentPart{types.ToolCallContent{ToolCallID: "c1", ToolName: "t", Input: "{}"}}},
+		{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "again"}}},
+	}
+	started := false
+	_, err := ExperimentalStartBatch(context.Background(), StartBatchOptions{
+		Provider: &mockBatchV4{providerName: "mock.batch", startFn: func(context.Context, provider.BatchV4StartOptions) (*provider.BatchV4StartResult, error) {
+			started = true
+			return nil, errors.New("must not start")
+		}},
+		Requests: []BatchRequest{req},
+	})
+	var missing *types.MissingToolResultsError
+	if !errors.As(err, &missing) || started {
+		t.Fatalf("err = %v started=%v, want MissingToolResultsError before start", err, started)
+	}
+}

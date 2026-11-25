@@ -54,14 +54,34 @@ func TestParseGmicloudProviderErrorFallsBackToOuterMessage(t *testing.T) {
 
 // Ported from gmicloud-error.test.ts "rejects GMI's plain-text 404 body,
 // deferring to status text": a non-JSON top-level body must not be parsed as
-// the gmicloud envelope, so callers fall back to generic status-based
-// handling.
+// the gmicloud envelope, so the message is the HTTP status text.
 func TestParseGmicloudProviderErrorRejectsPlainTextBody(t *testing.T) {
 	err := &internalhttp.HTTPStatusError{
 		StatusCode: 404,
 		Body:       []byte("No matching target server found for model foo"),
 	}
-	if parsed := parseGmicloudProviderError(err); parsed != nil {
-		t.Fatalf("parseGmicloudProviderError(plain text body) = %v, want nil", parsed)
+	parsed := parseGmicloudProviderError(err)
+	provErr, ok := parsed.(*providererrors.ProviderError)
+	if !ok || provErr.Message != "Not Found" || provErr.StatusCode != 404 {
+		t.Fatalf("parseGmicloudProviderError(plain text body) = %v, want a 404 ProviderError with the status text", parsed)
+	}
+}
+
+func TestParseGmicloudProviderErrorSchemaEdges(t *testing.T) {
+	msg := func(body string) string {
+		parsed := parseGmicloudProviderError(&internalhttp.HTTPStatusError{StatusCode: 400, Body: []byte(body)})
+		return parsed.(*providererrors.ProviderError).Message
+	}
+	if got := msg(`{"error":{"message":""}}`); got != "" {
+		t.Errorf("empty message = %q", got)
+	}
+	if got := msg(`{"error":{"message":"outer","details":"{\"error\":{\"message\":\" inner \"}}"}}`); got != " inner " {
+		t.Errorf("inner message must be returned untrimmed, got %q", got)
+	}
+	if got := msg(`{"error":{"message":"outer","code":{"x":1}}}`); got != "Bad Request" {
+		t.Errorf("object code is off schema, got %q", got)
+	}
+	if got := msg(`{"error":{"message":"outer","code":42}}`); got != "outer" {
+		t.Errorf("numeric code is valid, got %q", got)
 	}
 }

@@ -16,13 +16,41 @@ import (
 )
 
 func TestNewHTTPTransportUsesCustomHTTPClient(t *testing.T) {
-	custom := &http.Client{Timeout: 123 * time.Millisecond}
-	transport := NewHTTPTransport(HTTPTransportConfig{
+	rt := &http.Transport{}
+	custom := &http.Client{Timeout: 123 * time.Millisecond, Transport: rt}
+	transport := NewHTTPTransport(HTTPTransportConfig{InitialProtocolVersion: LatestLegacyProtocolVersion,
 		URL:        "http://localhost:9999/mcp",
 		HTTPClient: custom,
 	})
-	if transport.client != custom {
-		t.Fatal("expected custom HTTP client to be used")
+	if transport.client.Transport != rt || transport.streamClient.Transport != rt {
+		t.Fatal("expected the custom HTTP client's transport to be used")
+	}
+	if transport.client.Timeout != 123*time.Millisecond {
+		t.Fatalf("client timeout = %v, want the custom client's 123ms", transport.client.Timeout)
+	}
+}
+
+// The caller's client is not modified: NewHTTPTransport used to set its
+// redirect policy and timeout in place, which changed every other use of a
+// shared client such as http.DefaultClient.
+func TestNewHTTPTransportDoesNotModifyCustomHTTPClient(t *testing.T) {
+	custom := &http.Client{}
+	transport := NewHTTPTransport(HTTPTransportConfig{
+		URL:        "http://localhost:9999/mcp",
+		HTTPClient: custom,
+		TimeoutMS:  250,
+	})
+	if custom.CheckRedirect != nil {
+		t.Error("custom client's CheckRedirect was set")
+	}
+	if custom.Timeout != 0 {
+		t.Errorf("custom client's Timeout = %v, want 0", custom.Timeout)
+	}
+	if transport.client.CheckRedirect == nil {
+		t.Error("transport client has no redirect policy")
+	}
+	if transport.client.Timeout != 250*time.Millisecond {
+		t.Errorf("transport client timeout = %v, want 250ms", transport.client.Timeout)
 	}
 }
 
@@ -45,7 +73,7 @@ func (c *recordingSSEClient) Do(req *http.Request) (*http.Response, error) {
 
 func TestHTTPTransportUsesCustomSSEClient(t *testing.T) {
 	sse := &recordingSSEClient{}
-	transport := NewHTTPTransport(HTTPTransportConfig{
+	transport := NewHTTPTransport(HTTPTransportConfig{InitialProtocolVersion: LatestLegacyProtocolVersion,
 		URL:       "http://localhost:9999/mcp",
 		SSEClient: sse,
 	})
@@ -68,7 +96,7 @@ func TestHTTPTransportUsesCustomSSEClient(t *testing.T) {
 
 func TestHTTPTransportUsesNegotiatedProtocolVersionHeader(t *testing.T) {
 	sse := &recordingSSEClient{}
-	transport := NewHTTPTransport(HTTPTransportConfig{
+	transport := NewHTTPTransport(HTTPTransportConfig{InitialProtocolVersion: LatestLegacyProtocolVersion,
 		URL:       "http://localhost:9999/mcp",
 		SSEClient: sse,
 	})
@@ -115,7 +143,7 @@ func (c streamingResponseClient) Do(req *http.Request) (*http.Response, error) {
 }
 
 func TestHTTPTransportQueuesJSONBatchResponsesLikeTypeScript(t *testing.T) {
-	transport := NewHTTPTransport(HTTPTransportConfig{
+	transport := NewHTTPTransport(HTTPTransportConfig{InitialProtocolVersion: LatestLegacyProtocolVersion,
 		URL: "http://localhost:9999/mcp",
 		SSEClient: responseSSEClient{
 			header: http.Header{"Content-Type": []string{"application/json"}},
@@ -145,7 +173,7 @@ func TestHTTPTransportQueuesJSONBatchResponsesLikeTypeScript(t *testing.T) {
 }
 
 func TestHTTPTransportQueuesEventStreamMessagesWithoutExplicitEvent(t *testing.T) {
-	transport := NewHTTPTransport(HTTPTransportConfig{
+	transport := NewHTTPTransport(HTTPTransportConfig{InitialProtocolVersion: LatestLegacyProtocolVersion,
 		URL: "http://localhost:9999/mcp",
 		SSEClient: responseSSEClient{
 			header: http.Header{"Content-Type": []string{"text/event-stream"}},
@@ -172,7 +200,7 @@ func TestHTTPTransportQueuesEventStreamMessagesWithoutExplicitEvent(t *testing.T
 
 func TestHTTPTransportEventStreamSendReturnsBeforeStreamCloses(t *testing.T) {
 	reader, writer := io.Pipe()
-	transport := NewHTTPTransport(HTTPTransportConfig{
+	transport := NewHTTPTransport(HTTPTransportConfig{InitialProtocolVersion: LatestLegacyProtocolVersion,
 		URL:       "http://localhost:9999/mcp",
 		SSEClient: streamingResponseClient{body: reader},
 	})
@@ -217,7 +245,7 @@ func TestHTTPTransportReportsMalformedPOSTResponseSSEMessage(t *testing.T) {
 	reader, writer := io.Pipe()
 	var mu sync.Mutex
 	var errs []error
-	transport := NewHTTPTransport(HTTPTransportConfig{
+	transport := NewHTTPTransport(HTTPTransportConfig{InitialProtocolVersion: LatestLegacyProtocolVersion,
 		URL:       "http://localhost:9999/mcp",
 		SSEClient: streamingResponseClient{body: reader},
 		OnError: func(err error) {
@@ -237,10 +265,6 @@ func TestHTTPTransportReportsMalformedPOSTResponseSSEMessage(t *testing.T) {
 		t.Fatalf("Send error: %v", err)
 	}
 
-	// Syntactically invalid JSON (unlike TS, this Go port's SSE message parse
-	// step is a plain unmarshal with no separate JSON-RPC shape validation,
-	// matching the existing inbound-SSE malformed-message test), so only a
-	// JSON syntax error takes the error path.
 	if _, err := writer.Write([]byte("event: message\ndata: {not-valid-json\n\n")); err != nil {
 		t.Fatalf("write malformed SSE event: %v", err)
 	}
@@ -312,7 +336,7 @@ func (nilBodyEventStreamSSEClient) Do(req *http.Request) (*http.Response, error)
 func TestHTTPTransportSendFailsOnEventStreamResponseWithoutBody(t *testing.T) {
 	var mu sync.Mutex
 	var errs []error
-	transport := NewHTTPTransport(HTTPTransportConfig{
+	transport := NewHTTPTransport(HTTPTransportConfig{InitialProtocolVersion: LatestLegacyProtocolVersion,
 		URL:       "http://localhost:9999/mcp",
 		SSEClient: nilBodyEventStreamSSEClient{},
 		OnError: func(err error) {
@@ -345,12 +369,15 @@ func TestHTTPTransportSendFailsOnEventStreamResponseWithoutBody(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(errs) != 1 {
-		t.Fatalf("OnError calls = %d, want 1: %v", len(errs), errs)
+	// TS reports it before throwing and again in attempt()'s catch.
+	if len(errs) != 2 {
+		t.Fatalf("OnError calls = %d, want 2: %v", len(errs), errs)
 	}
-	var reportedErr *MCPClientError
-	if !errors.As(errs[0], &reportedErr) || reportedErr.Message != wantMessage {
-		t.Fatalf("OnError reported %v, want the same %q error", errs[0], wantMessage)
+	for _, e := range errs {
+		var reportedErr *MCPClientError
+		if !errors.As(e, &reportedErr) || reportedErr.Message != wantMessage {
+			t.Fatalf("OnError reported %v, want the same %q error", e, wantMessage)
+		}
 	}
 }
 
@@ -384,7 +411,7 @@ func (c statusOnlySSEClient) Do(req *http.Request) (*http.Response, error) {
 }
 
 func TestHTTPTransportAcceptedResponseCompletesSend(t *testing.T) {
-	transport := NewHTTPTransport(HTTPTransportConfig{
+	transport := NewHTTPTransport(HTTPTransportConfig{InitialProtocolVersion: LatestLegacyProtocolVersion,
 		URL:       "http://localhost:9999/mcp",
 		SSEClient: statusOnlySSEClient{status: http.StatusAccepted},
 	})
@@ -400,7 +427,7 @@ func TestHTTPTransportAcceptedResponseCompletesSend(t *testing.T) {
 }
 
 func TestHTTPTransportOKNotificationCompletesWithoutJSONRPCResponse(t *testing.T) {
-	transport := NewHTTPTransport(HTTPTransportConfig{
+	transport := NewHTTPTransport(HTTPTransportConfig{InitialProtocolVersion: LatestLegacyProtocolVersion,
 		URL: "http://localhost:9999/mcp",
 		SSEClient: &errorSSEClient{
 			status: http.StatusOK,
@@ -420,7 +447,7 @@ func TestHTTPTransportOKNotificationCompletesWithoutJSONRPCResponse(t *testing.T
 
 func TestHTTPTransportNon2xxReturnsStructuredMCPClientError(t *testing.T) {
 	sse := &errorSSEClient{status: http.StatusServiceUnavailable, body: "Service Unavailable"}
-	transport := NewHTTPTransport(HTTPTransportConfig{
+	transport := NewHTTPTransport(HTTPTransportConfig{InitialProtocolVersion: LatestLegacyProtocolVersion,
 		URL:       "http://localhost:9999/mcp",
 		SSEClient: sse,
 	})
@@ -453,7 +480,7 @@ func TestHTTPTransportNon2xxReturnsStructuredMCPClientError(t *testing.T) {
 // request before a session was ever established).
 func TestHTTPTransportPOST404MessageWithoutSessionID(t *testing.T) {
 	sse := &errorSSEClient{status: http.StatusNotFound, body: "Not Found"}
-	transport := NewHTTPTransport(HTTPTransportConfig{
+	transport := NewHTTPTransport(HTTPTransportConfig{InitialProtocolVersion: LatestLegacyProtocolVersion,
 		URL:       "http://localhost:9999/mcp",
 		SSEClient: sse,
 	})
@@ -481,7 +508,7 @@ func TestHTTPTransportPOST404MessageWithoutSessionID(t *testing.T) {
 // (now stale) session id.
 func TestHTTPTransportPOST404MessageWithSessionID(t *testing.T) {
 	sse := &errorSSEClient{status: http.StatusNotFound, body: "Not Found"}
-	transport := NewHTTPTransport(HTTPTransportConfig{
+	transport := NewHTTPTransport(HTTPTransportConfig{InitialProtocolVersion: LatestLegacyProtocolVersion,
 		URL:              "http://localhost:9999/mcp",
 		SSEClient:        sse,
 		InitialSessionID: "session-abc",
@@ -512,7 +539,7 @@ func TestHTTPTransportPOST404MessageWithSessionID(t *testing.T) {
 func TestHTTPTransportReportsErrorOnNon2xxPOST(t *testing.T) {
 	sse := &errorSSEClient{status: http.StatusInternalServerError, body: "Internal Server Error"}
 	var captured error
-	transport := NewHTTPTransport(HTTPTransportConfig{
+	transport := NewHTTPTransport(HTTPTransportConfig{InitialProtocolVersion: LatestLegacyProtocolVersion,
 		URL:       "http://localhost:9999/mcp",
 		SSEClient: sse,
 		OnError:   func(err error) { captured = err },
@@ -557,7 +584,7 @@ func TestHTTPTransportReportsErrorOnNon2xxPOST(t *testing.T) {
 func TestHTTPTransportReportsErrorOn404NotSupportedFromPOST(t *testing.T) {
 	sse := &errorSSEClient{status: http.StatusNotFound, body: "Not Found"}
 	var captured error
-	transport := NewHTTPTransport(HTTPTransportConfig{
+	transport := NewHTTPTransport(HTTPTransportConfig{InitialProtocolVersion: LatestLegacyProtocolVersion,
 		URL:       "http://localhost:9999/mcp",
 		SSEClient: sse,
 		OnError:   func(err error) { captured = err },
@@ -600,7 +627,7 @@ func TestHTTPTransportReportsErrorOn404NotSupportedFromPOST(t *testing.T) {
 func TestHTTPTransportReportsErrorOnPOSTNetworkFailure(t *testing.T) {
 	cause := errors.New("dial refused")
 	var captured error
-	transport := NewHTTPTransport(HTTPTransportConfig{
+	transport := NewHTTPTransport(HTTPTransportConfig{InitialProtocolVersion: LatestLegacyProtocolVersion,
 		URL:       "http://localhost:9999/mcp",
 		SSEClient: networkErrorSSEClient{err: cause},
 		OnError:   func(err error) { captured = err },
@@ -629,7 +656,7 @@ func TestHTTPTransportReportsErrorOnPOSTNetworkFailure(t *testing.T) {
 // SSE, and DELETE close.
 func TestHTTPTransportSetsUserAgentOnAllRequestKinds(t *testing.T) {
 	sse := &userAgentRecordingSSEClient{}
-	transport := NewHTTPTransport(HTTPTransportConfig{
+	transport := NewHTTPTransport(HTTPTransportConfig{InitialProtocolVersion: LatestLegacyProtocolVersion,
 		URL:              "http://localhost:9999/mcp",
 		SSEClient:        sse,
 		InitialSessionID: "session-abc",
@@ -670,7 +697,7 @@ func TestHTTPTransportSetsUserAgentOnAllRequestKinds(t *testing.T) {
 // withUserAgentSuffix, which appends rather than replaces.
 func TestHTTPTransportUserAgentAppendsToCallerSuppliedValue(t *testing.T) {
 	sse := &userAgentRecordingSSEClient{}
-	transport := NewHTTPTransport(HTTPTransportConfig{
+	transport := NewHTTPTransport(HTTPTransportConfig{InitialProtocolVersion: LatestLegacyProtocolVersion,
 		URL:              "http://localhost:9999/mcp",
 		SSEClient:        sse,
 		InitialSessionID: "session-abc",
@@ -726,7 +753,7 @@ func (c networkErrorSSEClient) Do(req *http.Request) (*http.Response, error) {
 
 func TestHTTPTransportNetworkErrorRemainsTransportError(t *testing.T) {
 	cause := errors.New("dial refused")
-	transport := NewHTTPTransport(HTTPTransportConfig{
+	transport := NewHTTPTransport(HTTPTransportConfig{InitialProtocolVersion: LatestLegacyProtocolVersion,
 		URL:       "http://localhost:9999/mcp",
 		SSEClient: networkErrorSSEClient{err: cause},
 	})
@@ -762,7 +789,7 @@ func (c okSSEClient) Do(req *http.Request) (*http.Response, error) {
 
 func TestHTTPTransportDeduplicatesConcurrentOAuthRefresh(t *testing.T) {
 	var refreshes int32
-	transport := NewHTTPTransport(HTTPTransportConfig{
+	transport := NewHTTPTransport(HTTPTransportConfig{InitialProtocolVersion: LatestLegacyProtocolVersion,
 		URL:       "http://localhost:9999/mcp",
 		SSEClient: okSSEClient{},
 		OAuth: &OAuthConfig{
@@ -813,7 +840,7 @@ func (c *countingSSEClient) Do(req *http.Request) (*http.Response, error) {
 func TestHTTPTransportInitialOAuthFetchCompletesBeforeConnectReturns(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
-	transport := NewHTTPTransport(HTTPTransportConfig{
+	transport := NewHTTPTransport(HTTPTransportConfig{InitialProtocolVersion: LatestLegacyProtocolVersion,
 		URL: "http://localhost:9999/mcp",
 		OAuth: &OAuthConfig{
 			RefreshTokenFunc: func(ctx context.Context, cfg *OAuthConfig) (string, time.Duration, error) {
@@ -851,7 +878,7 @@ func TestHTTPTransportInitialOAuthFetchCompletesBeforeConnectReturns(t *testing.
 
 func TestHTTPTransportRefreshWaitsAndDoesNotSendAfterAuthFailure(t *testing.T) {
 	sse := &countingSSEClient{}
-	transport := NewHTTPTransport(HTTPTransportConfig{
+	transport := NewHTTPTransport(HTTPTransportConfig{InitialProtocolVersion: LatestLegacyProtocolVersion,
 		URL:       "http://localhost:9999/mcp",
 		SSEClient: sse,
 		OAuth: &OAuthConfig{
@@ -884,7 +911,7 @@ func TestHTTPTransportRefreshWaitsAndDoesNotSendAfterAuthFailure(t *testing.T) {
 func TestHTTPTransportSuppressesOnErrorWhenCallerContextAlreadyCanceled(t *testing.T) {
 	sse := &errorSSEClient{status: http.StatusInternalServerError, body: "Internal Server Error"}
 	var captured error
-	transport := NewHTTPTransport(HTTPTransportConfig{
+	transport := NewHTTPTransport(HTTPTransportConfig{InitialProtocolVersion: LatestLegacyProtocolVersion,
 		URL:       "http://localhost:9999/mcp",
 		SSEClient: sse,
 		OnError:   func(err error) { captured = err },
@@ -906,16 +933,14 @@ func TestHTTPTransportSuppressesOnErrorWhenCallerContextAlreadyCanceled(t *testi
 	}
 }
 
-// TestHTTPTransportReportsOAuthRetryRefreshFailureOnce guards against
-// double-reporting when a 401 response triggers the retry-refresh path (the
-// scenario TS's authorizeOnce catch + outer catch double-reports for its own
-// authProvider flow): the refresh failure must be reported via OnError
-// exactly once.
-func TestHTTPTransportReportsOAuthRetryRefreshFailureOnce(t *testing.T) {
+// TestHTTPTransportReportsOAuthRetryRefreshFailureLikeTS: a failed refresh
+// after a 401 is reported like TS's failed authorizeOnce: by its own catch
+// and again by attempt()'s outer catch (twice).
+func TestHTTPTransportReportsOAuthRetryRefreshFailureLikeTS(t *testing.T) {
 	sse := &errorSSEClient{status: http.StatusUnauthorized, body: "Unauthorized"}
 	var mu sync.Mutex
 	var captured []error
-	transport := NewHTTPTransport(HTTPTransportConfig{
+	transport := NewHTTPTransport(HTTPTransportConfig{InitialProtocolVersion: LatestLegacyProtocolVersion,
 		URL:       "http://localhost:9999/mcp",
 		SSEClient: sse,
 		OnError: func(err error) {
@@ -944,22 +969,21 @@ func TestHTTPTransportReportsOAuthRetryRefreshFailureOnce(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(captured) != 1 {
-		t.Fatalf("OnError calls = %d, want exactly 1 (no double-reporting): %v", len(captured), captured)
+	if len(captured) != 2 {
+		t.Fatalf("OnError calls = %d, want 2 (TS authorizeOnce catch + outer catch): %v", len(captured), captured)
 	}
 }
 
-// TestHTTPTransportReportsRepeated401AfterSuccessfulRefreshOnce guards
-// against double-reporting when the retry-refresh succeeds but the retried
-// request still comes back 401 (refresh produced a token the server still
-// rejects): the final non-2xx error must be reported via OnError exactly
-// once, not once per attempt.
-func TestHTTPTransportReportsRepeated401AfterSuccessfulRefreshOnce(t *testing.T) {
+// TestHTTPTransportReportsRepeated401AfterSuccessfulRefreshLikeTS: the
+// retry-refresh succeeds but the retried request still comes back 401. TS
+// reports that non-ok error three times: before throwing it, in the retried
+// attempt(true)'s catch, and in the first attempt's catch around it.
+func TestHTTPTransportReportsRepeated401AfterSuccessfulRefreshLikeTS(t *testing.T) {
 	sse := &errorSSEClient{status: http.StatusUnauthorized, body: "Unauthorized"}
 	var mu sync.Mutex
 	var captured []error
 	var refreshes int32
-	transport := NewHTTPTransport(HTTPTransportConfig{
+	transport := NewHTTPTransport(HTTPTransportConfig{InitialProtocolVersion: LatestLegacyProtocolVersion,
 		URL:       "http://localhost:9999/mcp",
 		SSEClient: sse,
 		OnError: func(err error) {
@@ -996,8 +1020,8 @@ func TestHTTPTransportReportsRepeated401AfterSuccessfulRefreshOnce(t *testing.T)
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(captured) != 1 {
-		t.Fatalf("OnError calls = %d, want exactly 1 (no double-reporting across the retry): %v", len(captured), captured)
+	if len(captured) != 3 {
+		t.Fatalf("OnError calls = %d, want 3 (TS reports per catch across the retry): %v", len(captured), captured)
 	}
 }
 
@@ -1026,7 +1050,7 @@ func TestHTTPTransportEventStreamReaderExitsSilentlyWhenContextCanceled(t *testi
 	wrapped := &closeSignalingReadCloser{Reader: reader, closed: make(chan struct{})}
 	var mu sync.Mutex
 	var captured []error
-	transport := NewHTTPTransport(HTTPTransportConfig{
+	transport := NewHTTPTransport(HTTPTransportConfig{InitialProtocolVersion: LatestLegacyProtocolVersion,
 		URL:       "http://localhost:9999/mcp",
 		SSEClient: streamingResponseClient{body: wrapped},
 		OnError: func(err error) {
@@ -1076,7 +1100,7 @@ func TestHTTPTransportEventStreamReaderReportsReadFailureWhenContextLive(t *test
 	wrapped := &closeSignalingReadCloser{Reader: reader, closed: make(chan struct{})}
 	var mu sync.Mutex
 	var captured []error
-	transport := NewHTTPTransport(HTTPTransportConfig{
+	transport := NewHTTPTransport(HTTPTransportConfig{InitialProtocolVersion: LatestLegacyProtocolVersion,
 		URL:       "http://localhost:9999/mcp",
 		SSEClient: streamingResponseClient{body: wrapped},
 		OnError: func(err error) {
@@ -1112,5 +1136,31 @@ func TestHTTPTransportEventStreamReaderReportsReadFailureWhenContextLive(t *test
 	}
 	if !strings.Contains(captured[0].Error(), "failed to read event-stream response") {
 		t.Fatalf("error = %v, want it to mention failed to read event-stream response", captured[0])
+	}
+}
+
+// TS send() runs validateJSONRPCMessage on a JSON response body, so a body that
+// is JSON but not JSON-RPC fails the send instead of leaving the request
+// waiting for a response that never arrives.
+func TestHTTPTransportRejectsJSONResponseThatIsNotJSONRPC(t *testing.T) {
+	for name, body := range map[string]string{
+		"object": `{"foo":1}`,
+		"batch":  `[{"jsonrpc":"2.0","id":1,"result":{}},{"foo":1}]`,
+		"empty":  `{"jsonrpc":"2.0","id":1}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			transport := NewHTTPTransport(HTTPTransportConfig{InitialProtocolVersion: LatestLegacyProtocolVersion,
+				URL: "http://localhost:9999/mcp",
+				SSEClient: responseSSEClient{
+					header: http.Header{"Content-Type": []string{"application/json"}},
+					body:   body,
+				},
+			})
+			transport.connected = true
+			msg, _ := CreateRequest(1, "ping", nil)
+			if err := transport.Send(t.Context(), msg); err == nil {
+				t.Fatal("expected Send to fail for a body that is not JSON-RPC")
+			}
+		})
 	}
 }

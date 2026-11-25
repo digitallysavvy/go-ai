@@ -1,8 +1,11 @@
 package xai
 
 import (
+	"errors"
 	"strings"
 	"testing"
+
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
 // TestGetAPIKeyDirectValue verifies an explicit API key takes priority over env.
@@ -130,5 +133,19 @@ func TestCurrentChatModelIDConstants(t *testing.T) {
 				t.Fatalf("model ID = %q, want %q", tt.got, tt.want)
 			}
 		})
+	}
+}
+
+// TS xai provider.embeddingModel throws NoSuchModelError.
+func TestProviderUnsupportedModelTypesAreNoSuchModelErrors(t *testing.T) {
+	p := New(Config{APIKey: "k"})
+	_, err := p.EmbeddingModel("e")
+	var nsm *providererrors.NoSuchModelError
+	if !errors.As(err, &nsm) || nsm.ModelType != "embeddingModel" || nsm.ModelID != "e" {
+		t.Fatalf("embedding err = %#v", err)
+	}
+	_, err = p.RerankingModel("r")
+	if !errors.As(err, &nsm) || nsm.ModelType != "rerankingModel" {
+		t.Fatalf("reranking err = %#v", err)
 	}
 }

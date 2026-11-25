@@ -1,0 +1,101 @@
+package codemode
+
+import (
+	"context"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+)
+
+// TS `input.toolExecutionOptions?.toolCallId ?? ...` keeps an explicit empty
+// toolCallId, so nested ids are ":tool-N".
+func TestRunCodeModeHonorsEmptyToolCallID(t *testing.T) {
+	tools := ToolSet{
+		"sensitive": {
+			Name:          "sensitive",
+			Parameters:    map[string]interface{}{"type": "object"},
+			NeedsApproval: true,
+			Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+				return "ok", nil
+			},
+		},
+	}
+	pending, err := RunCodeMode(context.Background(), RunInput{
+		JS:                   `return await tools.sensitive({});`,
+		Tools:                tools,
+		ToolExecutionOptions: &types.ToolExecutionOptions{ToolCallID: ""},
+		Options:              &Options{Approval: &ApprovalOptions{Mode: ApprovalModeInterrupt}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !IsCodeModeApprovalInterrupt(pending) {
+		t.Fatalf("expected an approval interrupt, got %#v", pending)
+	}
+	interrupt := pending.(*Interrupt)
+	if interrupt.OuterToolCallID != "" || interrupt.InterruptID != ":tool-1:interrupt" {
+		t.Fatalf("outer id %q, interrupt id %q", interrupt.OuterToolCallID, interrupt.InterruptID)
+	}
+	got, err := ContinueCodeModeApproval(context.Background(), *interrupt, ApprovalResponse{ApprovalID: interrupt.InterruptID, Approved: true}, tools, nil, nil)
+	if err != nil || got != "ok" {
+		t.Fatalf("resume = %v, %v", got, err)
+	}
+}
+
+func TestExecutionPolicyRejectsLimitsAboveRunMaximum(t *testing.T) {
+	if aboveRunLimit == 0 {
+		t.Skip("32-bit int cannot exceed the run limit")
+	}
+	for _, p := range []ExecutionPolicy{{TimeoutMs: aboveRunLimit}, {MaxResultBytes: aboveRunLimit}} {
+		_, err := RunCodeMode(context.Background(), RunInput{JS: "return 1;", Options: &Options{ExecutionPolicy: &p}})
+		if err == nil || !strings.Contains(err.Error(), "must be at most 2147483647.") {
+			t.Fatalf("policy %+v: err = %v", p, err)
+		}
+	}
+	if _, err := resolveExecutionPolicy(&ExecutionPolicy{TimeoutMs: 2_147_483_647}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The continuation signature covers JSON.stringify text: U+2028 stays raw.
+func TestCanonicalJSONWritesLineSeparatorsRaw(t *testing.T) {
+	ls := string(rune(0x2028))
+	got, err := canonicalJSON(map[string]interface{}{"b": "<" + ls, "a": 1})
+	if err != nil || got != `{"a":1,"b":"<`+ls+`"}` {
+		t.Fatalf("canonicalJSON = %q, %v", got, err)
+	}
+}
+
+// TS measures JSON.stringify text: '<', '>' and '&' are one byte each.
+func TestToJSONPayloadCountsHTMLCharactersAsOneByte(t *testing.T) {
+	got, err := toJSONPayload("<>&", 5, "Tool output")
+	if err != nil || got != `"<>&"` {
+		t.Fatalf("payload = %q, %v", got, err)
+	}
+}
+
+// TS setCodeModeContinuationSigningKey() with no key rotates to a random key
+// and with no maxAgeMs resets the max age to its default.
+func TestSetCodeModeContinuationSigningKeyRotatesAndResets(t *testing.T) {
+	t.Cleanup(func() { _ = SetCodeModeContinuationSigningKey(nil, 0) })
+	if err := SetCodeModeContinuationSigningKey([]byte("fixed-key"), 5*time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	continuationSigningKeyMu.RLock()
+	key, age := string(defaultSigningKey), defaultMaxAge
+	continuationSigningKeyMu.RUnlock()
+	if key != "fixed-key" || age != 5*time.Minute {
+		t.Fatalf("key %q age %v", key, age)
+	}
+	if err := SetCodeModeContinuationSigningKey(nil, 0); err != nil {
+		t.Fatal(err)
+	}
+	continuationSigningKeyMu.RLock()
+	key2, age2 := string(defaultSigningKey), defaultMaxAge
+	continuationSigningKeyMu.RUnlock()
+	if key2 == "fixed-key" || len(key2) != 32 || age2 != time.Hour {
+		t.Fatalf("after reset: key length %d (rotated=%v) age %v", len(key2), key2 != "fixed-key", age2)
+	}
+}

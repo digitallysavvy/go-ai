@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
 func newTestImageModel(t *testing.T, handler http.HandlerFunc) (*ImageModel, *httptest.Server) {
@@ -365,5 +366,67 @@ func TestDownloadImage_RejectsPrivateIPRedirect(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "not allowed") {
 		t.Errorf("expected an SSRF validation error, got: %v", err)
+	}
+}
+
+// TestDoGenerate_MediaTypeFromSignatureTables: when the download carries no
+// usable Content-Type, the media type comes from the shared TS signature
+// tables (bmp is recognised; unknown bytes default to image/png, not jpeg).
+func TestDoGenerate_MediaTypeFromSignatureTables(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		data []byte
+		want string
+	}{
+		{"bmp", []byte{'B', 'M', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, "image/bmp"},
+		{"unknown", []byte{1, 2, 3, 4, 5, 6, 7, 8}, "image/png"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var serverURL string
+			mux := http.NewServeMux()
+			mux.HandleFunc("/dream-machine/v1/generations/image", func(w http.ResponseWriter, r *http.Request) {
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": "gen-1", "state": "queued"})
+			})
+			mux.HandleFunc("/dream-machine/v1/generations/gen-1", func(w http.ResponseWriter, r *http.Request) {
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": "gen-1", "state": "completed", "assets": map[string]interface{}{"image": serverURL + "/image"}})
+			})
+			mux.HandleFunc("/image", func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/octet-stream")
+				_, _ = w.Write(tc.data)
+			})
+			server := httptest.NewServer(mux)
+			defer server.Close()
+			serverURL = server.URL
+			model := NewImageModel(New(Config{APIKey: "k", BaseURL: server.URL}), ModelPhoton1)
+			res, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "x"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.MimeType != tc.want {
+				t.Errorf("MimeType = %q, want %q", res.MimeType, tc.want)
+			}
+		})
+	}
+}
+
+// TS getFromApi with createStatusCodeErrorResponseHandler: a failed image
+// download is an APICallError whose message is the HTTP status text.
+func TestDoGenerate_FailedDownloadIsStatusTextProviderError(t *testing.T) {
+	model, server := newTestImageModel(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost:
+			_, _ = w.Write([]byte(`{"id":"g1","state":"queued"}`))
+		case strings.HasSuffix(r.URL.Path, "/g1"):
+			_, _ = w.Write([]byte(`{"id":"g1","state":"completed","assets":{"image":"http://` + r.Host + `/img.jpg"}}`))
+		default:
+			http.Error(w, "gone", http.StatusNotFound)
+		}
+	})
+	defer server.Close()
+	_, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "x"})
+	// Unwrapped, like TS (getFromApi errors propagate unchanged).
+	pe, ok := err.(*providererrors.ProviderError)
+	if !ok || pe.StatusCode != 404 || pe.Message != "Not Found" {
+		t.Fatalf("err = %v (%#v)", err, pe)
 	}
 }

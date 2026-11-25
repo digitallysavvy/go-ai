@@ -1,0 +1,194 @@
+package mcp
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+)
+
+type r92toolsRoundTripper func(*http.Request) (*http.Response, error)
+
+func (f r92toolsRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func r92toolsASMetadata(issuer string) string {
+	return `{"issuer":"` + issuer + `","authorization_endpoint":"` + issuer + `/authorize","token_endpoint":"` + issuer + `/token","response_types_supported":["code"],"code_challenge_methods_supported":["S256"]}`
+}
+
+// TS 88b95757c1 oauth-discovery-runtime.test.ts: the configured resource
+// origin (164) and a configured authorization-server origin (173) are
+// fetched although they are loopback; a same-origin discovery redirect is
+// followed (205); a configured origin's redirect to another, private host
+// is blocked after one request (182); an explicitly injected transport is
+// used for untrusted discovery (221). The TS-only "requires a custom fetch
+// with connect-time DNS validation" error is the known difference "MCP
+// OAuth: Go always dials untrusted OAuth hops through the DNS-pinned
+// transport".
+func TestR92toolsOAuthDiscoveryTrustedOrigins(t *testing.T) {
+	var srvURL string
+	var requests atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/.well-known/oauth-protected-resource"):
+			_, _ = io.WriteString(w, `{"resource":"`+srvURL+`","authorization_servers":["`+srvURL+`"]}`)
+		case r.URL.Path == "/.well-known/oauth-authorization-server/redirected":
+			http.Redirect(w, r, srvURL+"/metadata", http.StatusFound)
+		case r.URL.Path == "/metadata":
+			_, _ = io.WriteString(w, r92toolsASMetadata(srvURL+"/redirected"))
+		case r.URL.Path == "/.well-known/oauth-authorization-server/private":
+			http.Redirect(w, r, "http://10.0.0.1/metadata", http.StatusFound)
+		case r.URL.Path == "/.well-known/oauth-authorization-server":
+			_, _ = io.WriteString(w, r92toolsASMetadata(srvURL))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	srvURL = srv.URL
+	ctx := context.Background()
+
+	prm, err := DiscoverOAuthProtectedResourceMetadata(ctx, srvURL, OAuthDiscoveryOptions{})
+	if err != nil || prm.Resource != srvURL {
+		t.Fatalf("resource origin (164): %+v, %v", prm, err)
+	}
+	as, err := DiscoverAuthorizationServerMetadata(ctx, srvURL, OAuthDiscoveryOptions{TrustedOrigin: srvURL})
+	if err != nil || as.Issuer != srvURL {
+		t.Fatalf("configured AS origin (173): %+v, %v", as, err)
+	}
+	as, err = DiscoverAuthorizationServerMetadata(ctx, srvURL+"/redirected", OAuthDiscoveryOptions{TrustedOrigin: srvURL})
+	if err != nil || as.Issuer != srvURL+"/redirected" {
+		t.Fatalf("same-origin redirect (205): %+v, %v", as, err)
+	}
+	before := requests.Load()
+	if _, err := DiscoverAuthorizationServerMetadata(ctx, srvURL+"/private", OAuthDiscoveryOptions{TrustedOrigin: srvURL}); err == nil {
+		t.Fatal("untrusted redirect from a configured origin (182) followed")
+	}
+	if n := requests.Load() - before; n != 1 {
+		t.Fatalf("untrusted redirect (182): %d requests, want 1", n)
+	}
+
+	const issuer = "https://auth.example.com"
+	var custom atomic.Int32
+	client := &http.Client{Transport: r92toolsRoundTripper(func(r *http.Request) (*http.Response, error) {
+		custom.Add(1)
+		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(r92toolsASMetadata(issuer))), Request: r}, nil
+	})}
+	as, err = DiscoverAuthorizationServerMetadata(ctx, issuer, OAuthDiscoveryOptions{HTTPClient: client})
+	if err != nil || as.Issuer != issuer || custom.Load() != 1 {
+		t.Fatalf("injected transport (221): %+v, %v, %d calls", as, err, custom.Load())
+	}
+}
+
+// TS mcp-events.ts subscribe walks the catalog with events.list({params:
+// {cursor: pageCursor}}): every page sends a params object, {} on the first
+// (cursor undefined). A plain events.list() sends no params.
+func TestR92toolsEventsSubscribeFirstPageParams(t *testing.T) {
+	tr := newEventsTransport()
+	client := connectEventsClient(t, tr, &MCPEventsConfig{Store: newMemEventStore()})
+	ev := client.ExperimentalEvents()
+	if _, err := ev.Subscribe(context.Background(), subOpts); err != nil {
+		t.Fatal(err)
+	}
+	tr.mu.Lock()
+	var raw []string
+	for _, r := range tr.requests {
+		if r.Method == "events/list" {
+			raw = append(raw, string(r.Params))
+		}
+	}
+	tr.mu.Unlock()
+	if len(raw) != 1 || raw[0] != "{}" {
+		t.Fatalf("subscribe events/list params = %q, want [{}]", raw)
+	}
+	if _, err := ev.List(context.Background(), ListEventsOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	tr.mu.Lock()
+	last := tr.requests[len(tr.requests)-1]
+	tr.mu.Unlock()
+	if last.Method != "events/list" || len(last.Params) != 0 {
+		t.Fatalf("List params = %q, want none", last.Params)
+	}
+}
+
+// TS mcp-client.ts request(): the retried request is {...request.params,
+// inputResponses, requestState} (the original keys first, the answers in
+// Object.entries order, each answer the ElicitResultSchema output in schema
+// order: _meta, action, content, then other keys), and an already aborted
+// signal rejects with its reason before the first round.
+func TestR92toolsInputRequiredRetryOrderAndPreAbort(t *testing.T) {
+	c, tr := r85toolsSetup(t,
+		`{"resultType":"input_required","inputRequests":{"b":`+r85toolsElicitation+`,"2":`+r85toolsElicitation+`,"a":`+r85toolsElicitation+`},"requestState":"s"}`,
+		r85toolsComplete,
+	)
+	c.OnElicitationRequest(func(context.Context, ElicitationRequest) (ElicitResult, error) {
+		return ElicitResult{Action: "accept", Content: map[string]interface{}{"ok": true}, Meta: map[string]interface{}{"m": 1}, Extra: map[string]interface{}{"zeta": 1}}, nil
+	})
+	if _, err := c.CallTool(context.Background(), "deploy", map[string]interface{}{"target": "demo"}); err != nil {
+		t.Fatal(err)
+	}
+	reqs := tr.recorded()
+	got := string(reqs[1].Params)
+	answer := `{"_meta":{"m":1},"action":"accept","content":{"ok":true},"zeta":1}`
+	// requestOnce then appends _meta ({...request.params, _meta}).
+	wantPrefix := `{"name":"deploy","arguments":{"target":"demo"},"inputResponses":{"2":` + answer + `,"b":` + answer + `,"a":` + answer + `},"requestState":"s","_meta":`
+	wantTail := `}`
+	if !strings.HasPrefix(got, wantPrefix) || !strings.HasSuffix(got, wantTail) {
+		t.Fatalf("round 2 params = %s\nwant %s...%s", got, wantPrefix, wantTail)
+	}
+
+	cause := errors.New("stop")
+	ctx, cancel := context.WithCancelCause(context.Background())
+	cancel(cause)
+	if _, err := c.CallTool(ctx, "deploy", nil); err != cause {
+		t.Fatalf("pre-aborted err = %v, want the abort reason", err)
+	}
+}
+
+type r92toolsFailReplyTransport struct {
+	*eventsTransport
+	sendErr error
+}
+
+func (t *r92toolsFailReplyTransport) Send(ctx context.Context, msg *MCPMessage) error {
+	if msg.Method == "" && msg.ID != nil {
+		return t.sendErr
+	}
+	return t.eventsTransport.Send(ctx, msg)
+}
+
+// TS onRequestMessage: a reply to a server request (ping, an unsupported
+// method, elicitation) whose transport.send rejects is reported through
+// onError; for a failing elicitation handler the send error is reported
+// instead of the handler error.
+func TestR92toolsServerRequestReplySendErrorReported(t *testing.T) {
+	sendErr := errors.New("send failed")
+	tr := &r92toolsFailReplyTransport{eventsTransport: newEventsTransport(), sendErr: sendErr}
+	reported := make(chan error, 8)
+	c := NewMCPClient(tr, MCPClientConfig{OnError: func(err error) { reported <- err }})
+	if err := c.Connect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+	c.OnElicitationRequest(func(context.Context, ElicitationRequest) (ElicitResult, error) {
+		return ElicitResult{}, errors.New("handler failed")
+	})
+	for i, method := range []string{"ping", "sampling/createMessage", "elicitation/create"} {
+		tr.messages <- &MCPMessage{JSONRpc: "2.0", ID: float64(100 + i), Method: method, Params: json.RawMessage(`{"message":"m","requestedSchema":{}}`)}
+		select {
+		case err := <-reported:
+			if err != sendErr {
+				t.Fatalf("%s: reported %v, want the send error", method, err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("%s: send error not reported", method)
+		}
+	}
+}

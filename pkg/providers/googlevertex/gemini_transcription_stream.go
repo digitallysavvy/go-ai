@@ -6,13 +6,21 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"math"
+	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
+	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providers/gemini"
 	wsutil "github.com/digitallysavvy/go-ai/pkg/providerutils/websocket"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 	"golang.org/x/net/websocket"
@@ -31,6 +39,11 @@ const liveGeminiTranscriptionWebSocketPath = "google.cloud.aiplatform.v1.LlmBidi
 // defaultFinishGraceMs).
 const defaultGeminiFinishGraceDuration = 3 * time.Second
 
+// audioEndToleranceMs: speech that server VAD ended within this distance of
+// the end of the sent audio counts as ending at the end of the audio (TS
+// audioEndToleranceMs).
+const audioEndToleranceMs = 250
+
 // geminiLiveWebSocketURL builds the wss:// Vertex Live API URL for streaming
 // transcription, mirroring TS's `wss://${vertexHost(location)}/ws/${liveWebSocketPath}`.
 // Like TS, the host comes from the location only: an explicit baseURL does
@@ -41,12 +54,16 @@ const defaultGeminiFinishGraceDuration = 3 * time.Second
 // "wss://{vertexHost}" origin; TS instead injects a mock WebSocket
 // constructor via config.webSocket, a DI point Go's wsutil.Dial has no
 // equivalent for.
-func geminiLiveWebSocketURL(p *Provider, location string) string {
+//
+// TS new URL(`wss://${vertexHost(location)}/ws/${liveWebSocketPath}`): the
+// WHATWG serialization (host lower-cased), and the TypeError "Invalid URL"
+// for a location that does not make a valid host.
+func geminiLiveWebSocketURL(p *Provider, location string) (string, error) {
 	origin := p.liveWebSocketOrigin
 	if origin == "" {
 		origin = "wss://" + vertexHost(location)
 	}
-	return fmt.Sprintf("%s/ws/%s", origin, liveGeminiTranscriptionWebSocketPath)
+	return urlnorm.Href(fmt.Sprintf("%s/ws/%s", origin, liveGeminiTranscriptionWebSocketPath))
 }
 
 // vertexModelResourcePath builds the fully-qualified Vertex model resource
@@ -63,10 +80,7 @@ func vertexModelResourcePath(project, location, modelID string) string {
 // Vertex Live transcription API only accepts 16kHz 16-bit PCM input audio.
 func validateLiveInputAudioFormat(format provider.AudioFormat) error {
 	if format.Type != "audio/pcm" || (format.Rate != nil && *format.Rate != 16000) {
-		return &providererrors.InvalidArgumentError{
-			Field:   "inputAudioFormat",
-			Message: "The Gemini Live transcription API only supports 16kHz 16-bit PCM input audio.",
-		}
+		return providererrors.NewArgumentError("inputAudioFormat", "The Gemini Live transcription API only supports 16kHz 16-bit PCM input audio.", nil)
 	}
 	return nil
 }
@@ -80,20 +94,30 @@ func (m *GeminiTranscriptionModel) DoStream(ctx context.Context, opts *provider.
 	}
 
 	if !isLiveGeminiTranscriptionModelID(m.modelID) {
-		return nil, &providererrors.InvalidArgumentError{
-			Field: "modelId",
-			Message: fmt.Sprintf(
-				"Model '%s' does not support streaming transcription. Use a live model such as '%s'.",
-				m.modelID, ModelGemini35TranscribeLive,
-			),
-		}
+		return nil, providererrors.NewArgumentError("modelId", fmt.Sprintf(
+			"Model '%s' does not support streaming transcription. Use a live model such as '%s'.",
+			m.modelID, ModelGemini35TranscribeLive,
+		), nil)
 	}
 
+	transcriptionOpts, err := parseVertexGeminiTranscriptionOptionsChecked(opts.ProviderOptions)
+	if err != nil {
+		return nil, err
+	}
 	if err := validateLiveInputAudioFormat(opts.InputAudioFormat); err != nil {
 		return nil, err
 	}
-
-	transcriptionOpts := parseVertexGeminiTranscriptionOptions(opts.ProviderOptions)
+	// The location becomes the WebSocket host and the bearer token rides the
+	// handshake, so validate it here too (TS validates it when the model is
+	// created; the exported constructor can bypass that).
+	location, err := m.provider.loadLocation()
+	if err != nil {
+		return nil, err
+	}
+	project, err := m.provider.loadProject()
+	if err != nil {
+		return nil, err
+	}
 	audioConfig := buildVertexAudioTranscriptionConfig(transcriptionOpts)
 	if audioConfig == nil {
 		audioConfig = map[string]interface{}{}
@@ -108,32 +132,18 @@ func (m *GeminiTranscriptionModel) DoStream(ctx context.Context, opts *provider.
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve Vertex auth token for streaming transcription: %w", err)
 	}
-	wsHeaders := map[string]string{"Authorization": "Bearer " + token}
-	for k, v := range m.provider.config.Headers {
-		wsHeaders[k] = v
-	}
 	// TS google-vertex-gemini-transcription-model.ts reuses
 	// this.config.headers() -- the same tagged getHeaders() closure used for
-	// REST calls -- so the WS handshake carries the `ai-sdk-google-vertex/
-	// VERSION` tag too.
-	wsHeaders = version.WithUserAgentSuffix(wsHeaders, version.ProviderUserAgent("google-vertex"))
-	for k, v := range opts.Headers {
-		wsHeaders[k] = v
-	}
-
-	location := m.provider.config.Location
-	if location == "" {
-		location = "global"
-	}
-	// The location becomes the WebSocket host and the bearer token rides the
-	// handshake, so it must be a single DNS label (TS validates it when the
-	// provider is created; an explicit baseURL skips that check here).
-	if !providerutils.IsValidHostnamePart(location) {
-		return nil, &providererrors.InvalidArgumentError{
-			Field:   "location",
-			Message: "Invalid Google Vertex location. Expected a single DNS label (letters, digits, and hyphens). Use `baseURL` for custom endpoints.",
-		}
-	}
+	// REST calls ({Authorization, ...options.headers} through
+	// withUserAgentSuffix) -- so the WS handshake carries the
+	// `ai-sdk-google-vertex/VERSION` tag too, then combineHeaders adds the
+	// call headers. A later header replaces an earlier one whatever its
+	// case (the ws handshake sets them case-insensitively, last one wins).
+	wsHeaders := version.WithUserAgentSuffix(
+		internalhttp.MergeHeaders(map[string]string{"Authorization": "Bearer " + token}, m.provider.config.Headers),
+		version.ProviderUserAgent("google-vertex"),
+	)
+	wsHeaders = internalhttp.MergeHeaders(wsHeaders, opts.Headers)
 
 	// NOTE: Google's GA announcement shows the setup with
 	// `generationConfig: { responseModalities: ['TEXT'] }`, but sending it
@@ -143,8 +153,15 @@ func (m *GeminiTranscriptionModel) DoStream(ctx context.Context, opts *provider.
 	// form (mirrors the TS comment in
 	// gemini-transcription/google-vertex-gemini-transcription-model.ts).
 	setup := map[string]interface{}{
-		"model":                   vertexModelResourcePath(m.provider.config.Project, location, m.modelID),
+		"model":                   vertexModelResourcePath(project, location, m.modelID),
 		"inputAudioTranscription": audioConfig,
+	}
+	// With manual activity detection the server VAD is off and the audio
+	// stream is one user turn (TS 378af05f85).
+	if transcriptionOpts.ManualActivityDetection {
+		setup["realtimeInputConfig"] = map[string]interface{}{
+			"automaticActivityDetection": map[string]interface{}{"disabled": true},
+		}
 	}
 
 	inputAudioRate := 16000
@@ -157,7 +174,10 @@ func (m *GeminiTranscriptionModel) DoStream(ctx context.Context, opts *provider.
 		finishGrace = defaultGeminiFinishGraceDuration
 	}
 
-	wsURL := geminiLiveWebSocketURL(m.provider, location)
+	wsURL, err := geminiLiveWebSocketURL(m.provider, location)
+	if err != nil {
+		return nil, err
+	}
 
 	abortCtx := opts.AbortSignal
 	if abortCtx == nil {
@@ -173,6 +193,8 @@ func (m *GeminiTranscriptionModel) DoStream(ctx context.Context, opts *provider.
 		warnings:         []types.Warning{},
 		audio:            opts.Audio,
 		includeRawChunks: opts.IncludeRawChunks,
+
+		manualActivityDetection: transcriptionOpts.ManualActivityDetection,
 	})
 
 	return &provider.TranscriptionStreamResult{
@@ -191,6 +213,9 @@ type geminiLiveTranscriptionStreamConfig struct {
 	warnings         []types.Warning
 	audio            provider.AudioStream
 	includeRawChunks bool
+	// manualActivityDetection sends the audio as one activityStart /
+	// activityEnd turn instead of relying on server VAD.
+	manualActivityDetection bool
 }
 
 // geminiLiveTranscriptionStream implements provider.TranscriptionStream over
@@ -204,10 +229,16 @@ type geminiLiveTranscriptionStreamConfig struct {
 // in run() stay provider-local.
 type geminiLiveTranscriptionStream struct {
 	*wsutil.Session[provider.TranscriptionStreamPart]
+	// abortCtx is the caller's context (TS abortSignal).
+	abortCtx context.Context
+	// sentAudioBytes counts the audio bytes sent to the server (written by
+	// the audio pump, read by the message loop).
+	sentAudioBytes atomic.Int64
 }
 
 func newGeminiLiveTranscriptionStream(parentCtx context.Context, cfg geminiLiveTranscriptionStreamConfig) *geminiLiveTranscriptionStream {
 	s := &geminiLiveTranscriptionStream{Session: wsutil.NewSession[provider.TranscriptionStreamPart](parentCtx)}
+	s.abortCtx = parentCtx
 	go s.run(cfg)
 	return s
 }
@@ -217,9 +248,22 @@ func newGeminiLiveTranscriptionStream(parentCtx context.Context, cfg geminiLiveT
 // audio chunks as realtimeInput.audio messages, committing
 // realtimeInput.audioStreamEnd at EOF and signalling audioEnded, via the
 // shared wsutil.PumpAudioAfterReady loop.
-func (s *geminiLiveTranscriptionStream) pumpAudio(conn *websocket.Conn, audio provider.AudioStream, setupComplete <-chan struct{}, rate int, audioEnded chan<- struct{}, errCh chan<- error) {
-	wsutil.PumpAudioAfterReady(s.Context(), setupComplete, audio,
+func (s *geminiLiveTranscriptionStream) pumpAudio(conn *websocket.Conn, audio provider.AudioStream, setupComplete <-chan struct{}, rate int, manual bool, audioEnded chan<- struct{}, errCh chan<- error) {
+	select {
+	case <-setupComplete:
+	case <-s.Context().Done():
+		return
+	}
+	// With manual activity detection, the audio stream is one user turn.
+	if manual {
+		if err := s.send(conn, []byte(`{"realtimeInput":{"activityStart":{}}}`)); err != nil {
+			errCh <- err
+			return
+		}
+	}
+	wsutil.PumpAudio(s.Context(), audio,
 		func(chunk []byte) error {
+			s.sentAudioBytes.Add(int64(len(chunk)))
 			msg, marshalErr := json.Marshal(map[string]interface{}{
 				"realtimeInput": map[string]interface{}{
 					"audio": map[string]interface{}{
@@ -234,7 +278,11 @@ func (s *geminiLiveTranscriptionStream) pumpAudio(conn *websocket.Conn, audio pr
 			return s.send(conn, msg)
 		},
 		func() error {
-			if sendErr := s.send(conn, []byte(`{"realtimeInput":{"audioStreamEnd":true}}`)); sendErr != nil {
+			end := []byte(`{"realtimeInput":{"audioStreamEnd":true}}`)
+			if manual {
+				end = []byte(`{"realtimeInput":{"activityEnd":{}}}`)
+			}
+			if sendErr := s.send(conn, end); sendErr != nil {
 				return sendErr
 			}
 			select {
@@ -256,24 +304,41 @@ type geminiLiveServerMessage struct {
 		InterimInputTranscription *geminiLiveTranscription `json:"interimInputTranscription,omitempty"`
 		TurnComplete              bool                     `json:"turnComplete,omitempty"`
 		GenerationComplete        bool                     `json:"generationComplete,omitempty"`
-		InteractionStatus         string                   `json:"interactionStatus,omitempty"`
+		// InteractionStatus is a pointer: TS `interactionStatus == null` is
+		// false for a present "".
+		InteractionStatus *string `json:"interactionStatus,omitempty"`
 	} `json:"serverContent,omitempty"`
 	InputTranscription *geminiLiveTranscription `json:"inputTranscription,omitempty"`
-	UsageMetadata      map[string]interface{}   `json:"usageMetadata,omitempty"`
-	Error              *struct {
-		Message string `json:"message,omitempty"`
+	// VoiceActivity is the latest server VAD signal (ACTIVITY_START /
+	// ACTIVITY_END with the audio offset it refers to).
+	VoiceActivity *struct {
+		Type        *string     `json:"type,omitempty"`
+		AudioOffset interface{} `json:"audioOffset,omitempty"`
+	} `json:"voiceActivity,omitempty"`
+	UsageMetadata map[string]interface{} `json:"usageMetadata,omitempty"`
+	Error         *struct {
+		// Message is a pointer: TS `message.error.message ?? default`
+		// keeps an empty message.
+		Message *string `json:"message,omitempty"`
 	} `json:"error,omitempty"`
 }
 
 type geminiLiveTranscription struct {
-	Text         string `json:"text,omitempty"`
-	Finished     bool   `json:"finished,omitempty"`
-	LanguageCode string `json:"languageCode,omitempty"`
-	SpeakerLabel string `json:"speakerLabel,omitempty"`
+	Text         string  `json:"text,omitempty"`
+	Finished     bool    `json:"finished,omitempty"`
+	LanguageCode *string `json:"languageCode,omitempty"`
+	SpeakerLabel string  `json:"speakerLabel,omitempty"`
 }
 
 func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamConfig) {
 	defer s.CloseParts()
+	defer failOnAbort(s.SetErr, s.abortCtx)
+	// TS cleanup() cancels the caller's audio on every terminal path, also a
+	// consumer cancel or an abort that unblocks a pending emit.
+	if cfg.audio != nil {
+		cfg.audio = &vertexLiveAudioCancelOnce{AudioStream: cfg.audio}
+		defer cfg.audio.Cancel(nil)
+	}
 	// Release the session's resources as soon as run() returns for any
 	// reason instead of only on an explicit Close() call, which a consumer
 	// that only drains Next() to io.EOF may never make.
@@ -295,20 +360,31 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 		cfg.audio.Cancel(err)
 	}
 
-	conn, err := s.dial(cfg.url, cfg.headers)
+	// CloseInfo reads the close frame's code and reason off the raw
+	// connection (TS ws close event).
+	closeInfo := &wsutil.CloseInfo{}
+	conn, err := s.dial(cfg.url, cfg.headers, closeInfo)
 	if err != nil {
-		fail(err)
+		// TS appends a native-WebSocket hint, which Go leaves out (S3).
+		fail(vertexLiveDialError(s.Context(), "Vertex Live transcription error.", err))
 		return
 	}
 	s.SetConn(conn)
 	defer conn.Close() //nolint:errcheck
 
-	payload, err := json.Marshal(map[string]interface{}{"setup": cfg.setup})
-	if err != nil {
-		fail(err)
-		return
-	}
+	// TS JSON.stringify({ setup }): model, then inputAudioTranscription
+	// (buildAudioTranscriptionConfig order).
+	payload := []byte(providerutils.StringifyOrdered(map[string]interface{}{"setup": cfg.setup}, map[string][]string{
+		"setup":                         {"model", "inputAudioTranscription", "realtimeInputConfig"},
+		"setup.inputAudioTranscription": {"languageCodes", "customVocabulary", "wordTimestamp", "diarization", "mode"},
+	}))
+	streamStart := provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeStreamStart, Warnings: cfg.warnings}
 	if err := s.send(conn, payload); err != nil {
+		// TS onOpen enqueues stream-start before it sends the setup, so a
+		// failed send errors the stream after that part.
+		if !s.Emit(streamStart) {
+			err = context.Cause(s.Context())
+		}
 		fail(err)
 		return
 	}
@@ -319,9 +395,9 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 
 	audioEndedCh := make(chan struct{})
 	audioErrCh := make(chan error, 1)
-	go s.pumpAudio(conn, cfg.audio, setupCompleteCh, cfg.inputAudioRate, audioEndedCh, audioErrCh)
+	go s.pumpAudio(conn, cfg.audio, setupCompleteCh, cfg.inputAudioRate, cfg.manualActivityDetection, audioEndedCh, audioErrCh)
 
-	if !s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeStreamStart, Warnings: cfg.warnings}) {
+	if !s.Emit(streamStart) {
 		return
 	}
 
@@ -337,6 +413,10 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 		language       string
 		audioEnded     bool
 		usageMetadata  map[string]interface{}
+		// lastVoiceActivityType is the latest server VAD signal; its audio
+		// offset is lastVoiceActivityMs (0 when it carried no usable offset).
+		lastVoiceActivityType string
+		lastVoiceActivityMs   float64
 	)
 
 	segmentID := func() string { return fmt.Sprintf("google-segment-%d", segmentCounter) }
@@ -369,6 +449,20 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 		finishTimerC = finishTimer.C
 	}
 
+	// Once the audio has ended, the server has transcribed all of it when
+	// server VAD ended the last speech at the end of the sent audio and no
+	// transcript is pending (TS isTranscriptionComplete). VAD ends speech at
+	// the end of the audio when the audio ends mid-speech and, with manual
+	// activity detection, always (activityEnd closes the single turn).
+	// Earlier ACTIVITY_END offsets can mean the server is still processing
+	// buffered audio with further segments.
+	isTranscriptionComplete := func() bool {
+		sentMs := float64(s.sentAudioBytes.Load()) / float64(cfg.inputAudioRate*2) * 1000
+		return lastVoiceActivityType == "ACTIVITY_END" &&
+			segmentBuffer == "" && latestInterim == "" &&
+			lastVoiceActivityMs >= sentMs-audioEndToleranceMs
+	}
+
 	finish := func() {
 		if finished {
 			return
@@ -391,11 +485,28 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 		cfg.audio.Cancel(nil)
 	}
 
+	// drainAudioEnded consumes an audio-ended signal that lost the select
+	// race against a clean close in the same tick (TS orders them).
+	drainAudioEnded := func() bool {
+		select {
+		case <-audioEndedCh:
+			audioEnded = true
+			audioEndedCh = nil
+			schedulePendingFinish()
+		default:
+		}
+		return false
+	}
+
 	for {
+		audioEndedSel := audioEndedCh
+		if testHideAudioEnded.Load() {
+			audioEndedSel = nil
+		}
 		select {
 		case <-s.Context().Done():
-			cause := s.Context().Err()
-			fail(cause)
+			// TS onAbort: finishWithError(abortSignal.reason).
+			fail(context.Cause(s.Context()))
 			return
 
 		case <-finishTimerC:
@@ -403,9 +514,13 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 			finish()
 			return
 
-		case <-audioEndedCh:
+		case <-audioEndedSel:
 			audioEnded = true
 			audioEndedCh = nil
+			if isTranscriptionComplete() {
+				finish()
+				return
+			}
 			schedulePendingFinish()
 
 		case audioErr := <-audioErrCh:
@@ -421,11 +536,17 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 					return
 				}
 				if !wsutil.IsCleanClose(res.Err) {
-					fail(errors.New("Google Vertex Live transcription error")) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
-				} else if audioEnded {
+					fail(errors.New("Vertex Live transcription error.")) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
+				} else if drainAudioEnded() || audioEnded {
 					finish()
 				} else {
-					fail(fmt.Errorf("Google Vertex Live transcription WebSocket closed unexpectedly before finishing")) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
+					// TS: (code ${code}${reason ? `, reason: ${reason}` : ''}); ws
+					// reports 1006 when the connection ended without a close frame.
+					detail := " (code " + strconv.Itoa(closeInfo.Code())
+					if reason := closeInfo.Reason(); reason != "" {
+						detail += ", reason: " + reason
+					}
+					fail(errors.New("Vertex Live transcription WebSocket closed unexpectedly before finishing" + detail + ").")) //nolint:staticcheck // TS text
 				}
 				return
 			}
@@ -433,17 +554,29 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 				continue
 			}
 
-			var message geminiLiveServerMessage
-			if jsonErr := json.Unmarshal([]byte(res.Text), &message); jsonErr != nil {
+			// TS safeParseJSON: any message that parses (prototype keys
+			// rejected) is reported raw, even when a field does not fit the
+			// expected shape; the known fields are read after that.
+			var rawValue interface{}
+			if jsonErr := securejson.Unmarshal([]byte(res.Text), &rawValue); jsonErr != nil {
 				continue
 			}
 
 			if cfg.includeRawChunks {
-				var rawValue interface{}
-				_ = json.Unmarshal([]byte(res.Text), &rawValue)
 				if !s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeRaw, RawValue: rawValue}) {
 					return
 				}
+			}
+			// TS reads message.setupComplete of the parsed value: a JSON null
+			// message throws a TypeError, which onProcessingError reports.
+			if rawValue == nil {
+				fail(errors.New("Cannot read properties of null (reading 'setupComplete')")) //nolint:staticcheck // TS V8 TypeError text
+				return
+			}
+
+			var message geminiLiveServerMessage
+			if jsonErr := jsonexact.Unmarshal([]byte(res.Text), &message); jsonErr != nil {
+				continue
 			}
 
 			if len(message.SetupComplete) > 0 && string(message.SetupComplete) != "null" {
@@ -454,10 +587,18 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 				usageMetadata = message.UsageMetadata
 			}
 
+			if message.VoiceActivity != nil && message.VoiceActivity.Type != nil {
+				lastVoiceActivityType = *message.VoiceActivity.Type
+				lastVoiceActivityMs = 0
+				if seconds, ok := liveOffsetSeconds(message.VoiceActivity.AudioOffset); ok {
+					lastVoiceActivityMs = seconds * 1000
+				}
+			}
+
 			if message.Error != nil {
-				msg := message.Error.Message
-				if msg == "" {
-					msg = "Google Vertex Live API error"
+				msg := "Vertex Live API error"
+				if message.Error.Message != nil {
+					msg = *message.Error.Message
 				}
 				fail(errors.New(msg))
 				return
@@ -478,8 +619,9 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 				transcription = serverContent.InputTranscription
 			}
 			if transcription != nil {
-				if transcription.LanguageCode != "" {
-					language = transcription.LanguageCode
+				// TS `languageCode != null`: an empty string overwrites too.
+				if transcription.LanguageCode != nil {
+					language = *transcription.LanguageCode
 				}
 				if transcription.Text != "" {
 					schedulePendingFinish()
@@ -496,15 +638,22 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 				}
 			}
 
-			if serverContent != nil && serverContent.TurnComplete {
+			// gemini-3.5-transcribe-live ends each segment with
+			// generationComplete and never sends turnComplete.
+			if serverContent != nil && (serverContent.GenerationComplete || serverContent.TurnComplete) {
 				if !completeSegment() {
 					return
 				}
 			}
 
-			if serverContent != nil && audioEnded {
-				status := serverContent.InteractionStatus
-				if status == "IDLE" || status == "REQUIRES_ACTION" || (serverContent.TurnComplete && status == "") {
+			if audioEnded {
+				var status *string
+				turnComplete := false
+				if serverContent != nil {
+					status = serverContent.InteractionStatus
+					turnComplete = serverContent.TurnComplete
+				}
+				if (status != nil && (*status == "IDLE" || *status == "REQUIRES_ACTION")) || (turnComplete && status == nil) || isTranscriptionComplete() {
 					finish()
 					return
 				}
@@ -513,8 +662,8 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 	}
 }
 
-func (s *geminiLiveTranscriptionStream) dial(wsURL string, headers map[string]string) (*websocket.Conn, error) {
-	return wsutil.Dial(s.Context(), wsURL, wsutil.DialOptions{Headers: headers})
+func (s *geminiLiveTranscriptionStream) dial(wsURL string, headers map[string]string, closeInfo *wsutil.CloseInfo) (*websocket.Conn, error) {
+	return wsutil.Dial(s.Context(), wsURL, wsutil.DialOptions{Headers: headers, WrapConn: liveWrapConn(closeInfo.Wrap)})
 }
 
 func (s *geminiLiveTranscriptionStream) send(conn *websocket.Conn, message []byte) error {
@@ -525,3 +674,66 @@ var (
 	_ provider.TranscriptionStreamer = (*GeminiTranscriptionModel)(nil)
 	_ provider.TranscriptionStream   = (*geminiLiveTranscriptionStream)(nil)
 )
+
+// failOnAbort is TS connectToWebSocket onAbort(abortSignal.reason): when the
+// caller's context is cancelled the stream fails with its cancel cause, also
+// when run() returns from an emit the cancellation unblocked. An error set
+// earlier wins (SetErr keeps the first).
+func failOnAbort(setErr func(error), ctx context.Context) {
+	if ctx != nil && ctx.Err() != nil {
+		setErr(context.Cause(ctx))
+	}
+}
+
+// vertexLiveSocketOpenError is TS onSocketError for a WebSocket that fails to open (a refused
+// handshake, an unreachable host): the provider's socket error text, with the
+// dial error kept reachable through Unwrap. An abort while the handshake is
+// pending is the abort reason instead (TS onAbort).
+type vertexLiveSocketOpenError struct {
+	msg   string
+	cause error
+}
+
+func (e *vertexLiveSocketOpenError) Error() string { return e.msg }
+func (e *vertexLiveSocketOpenError) Unwrap() error { return e.cause }
+
+// vertexLiveDialError is the error of a failed dial: the cancel cause when the stream's
+// context is done (TS onAbort(abortSignal.reason)), else the socket error.
+func vertexLiveDialError(ctx context.Context, msg string, err error) error {
+	if cause := context.Cause(ctx); cause != nil {
+		return cause
+	}
+	return &vertexLiveSocketOpenError{msg: msg, cause: err}
+}
+
+// vertexLiveAudioCancelOnce cancels the caller's audio input once: the first reason wins and a
+// later Cancel is a no-op, so a deferred Cancel(nil) on every terminal path
+// (TS cleanup / cancel()) cannot replace a failure's reason.
+type vertexLiveAudioCancelOnce struct {
+	provider.AudioStream
+	once sync.Once
+}
+
+func (a *vertexLiveAudioCancelOnce) Cancel(reason error) {
+	a.once.Do(func() { a.AudioStream.Cancel(reason) })
+}
+
+// liveOffsetSeconds is TS parseOffsetSeconds for a Live API voiceActivity
+// audioOffset: a duration string such as "2s" or "0.280s" (Number.parseFloat),
+// or a JSON number. Anything else, or a non-finite value, gives no offset.
+func liveOffsetSeconds(offset interface{}) (float64, bool) {
+	switch v := offset.(type) {
+	case string:
+		return parseGoogleDuration(v)
+	case float64:
+		if math.IsInf(v, 0) || math.IsNaN(v) {
+			return 0, false
+		}
+		return v, true
+	}
+	// TS Number.parseFloat(String(offset)): arrays read as their joined text.
+	if text, ok := gemini.JSOffsetString(offset); ok {
+		return parseGoogleDuration(text)
+	}
+	return 0, false
+}

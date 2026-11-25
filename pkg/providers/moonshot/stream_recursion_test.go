@@ -47,7 +47,7 @@ func runMoonshotStreamRecursionChild() {
 	sb.Grow(n*12 + 128)
 	for i := 0; i < n; i++ {
 		// No "choices" field: hits `if len(chunk.Choices) == 0 { continue }`.
-		sb.WriteString(`data: {}` + "\n\n")
+		sb.WriteString(`data: {"choices":[]}` + "\n\n")
 	}
 	sb.WriteString(`data: {"choices":[{"delta":{"content":"hello"}}]}` + "\n\n")
 

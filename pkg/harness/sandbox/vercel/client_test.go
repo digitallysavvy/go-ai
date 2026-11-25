@@ -3,6 +3,7 @@ package vercel
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -39,7 +40,7 @@ func TestRunCommandWait_OversizedLine_PreservesCauseAndPartialOutput(t *testing.
 		writeNDJSON(&buf, commandResponse{Command: commandWire{ID: "cmd1", SessionID: sessionID}})
 		writeNDJSON(&buf, ndjsonLine{Stream: "stdout", Data: "hello "})
 		writeNDJSON(&buf, ndjsonLine{Stream: "stdout", Data: oversized})
-		_, _ = w.Write(buf.Bytes())
+		_, _ = r99toolsWrite(w, buf.String())
 		if flusher, ok := w.(http.Flusher); ok {
 			flusher.Flush()
 		}
@@ -95,5 +96,48 @@ func TestRunCommandWait_StreamEndedEarly_WrapsRealCause(t *testing.T) {
 	plain := streamEndedEarly("sess_test", nil)
 	if !strings.Contains(plain.Error(), "Stream ended before command data was received") {
 		t.Fatalf("streamEndedEarly(nil) = %q, want the generic message preserved", plain.Error())
+	}
+}
+
+// Empty lines between ndjson records are skipped, like GetLogs does
+// (jsonlines 0.1.1 skips exactly empty lines; see
+// TestR87toolsJSONLinesRules for whitespace-only lines).
+func TestR42RunCommandWaitSkipsBlankLines(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		var buf bytes.Buffer
+		buf.WriteString("\n")
+		writeNDJSON(&buf, commandResponse{Command: commandWire{ID: "cmd1"}})
+		buf.WriteString("\n\n")
+		writeNDJSON(&buf, ndjsonLine{Stream: "stdout", Data: "hi"})
+		buf.WriteString("\n")
+		exit := 0
+		writeNDJSON(&buf, commandResponse{Command: commandWire{ID: "cmd1", ExitCode: &exit}})
+		_, _ = r99toolsWrite(w, buf.String())
+	}))
+	defer srv.Close()
+	result, err := NewAPIClient(srv.URL, Credentials{Token: "tok"}).RunCommandWait(t.Context(), "s", runCommandRequest{Command: "echo"})
+	if err != nil || result.Stdout != "hi" || result.Command.ExitCode == nil {
+		t.Fatalf("result = %+v, err = %v", result, err)
+	}
+}
+
+// UpdateParams.TimeoutMs is sent as the PATCH body's timeout.
+func TestR42SandboxUpdateSendsTimeout(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPatch {
+			_ = json.NewDecoder(r.Body).Decode(&body)
+		}
+		_, _ = r99toolsWrite(w, `{"sandbox":{"name":"sbx"}}`)
+	}))
+	defer srv.Close()
+	sbx := &Sandbox{client: NewAPIClient(srv.URL, Credentials{Token: "tok"}), name: "sbx"}
+	timeout := int64(120000)
+	if err := sbx.Update(t.Context(), UpdateParams{TimeoutMs: &timeout}); err != nil {
+		t.Fatal(err)
+	}
+	if body["timeout"] != float64(120000) {
+		t.Fatalf("PATCH body = %v, want timeout 120000", body)
 	}
 }

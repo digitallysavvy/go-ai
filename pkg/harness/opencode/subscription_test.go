@@ -286,6 +286,19 @@ func TestResolveOpenCodeGitLabSubscriptionModel(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "because it authenticates over WebSocket") {
 		t.Fatalf("err = %v, want a WebSocket-authentication rejection", err)
 	}
+	// Exact TS error texts.
+	const wantWorkflow = "Harness 'opencode' cannot broker native GitLab subscription credentials for workflow model 'duo-workflow' because it authenticates over WebSocket. Use a sandbox without credential brokering to use the credential-forwarding fallback."
+	if err.Error() != wantWorkflow {
+		t.Fatalf("workflow err = %q, want %q", err.Error(), wantWorkflow)
+	}
+	_, err = resolveOpenCodeGitLabSubscriptionModel("gitlab/nope", "gitlab")
+	if err == nil || err.Error() != "Harness 'opencode' cannot broker native GitLab subscription credentials for unknown model 'nope'." {
+		t.Fatalf("unknown model err = %v", err)
+	}
+	_, err = resolveOpenCodeGitLabSubscriptionModel("", "gitlab")
+	if err == nil || err.Error() != "Harness 'opencode' requires an explicit GitLab model when native GitLab subscription credentials are brokered." {
+		t.Fatalf("missing model err = %v", err)
+	}
 }
 
 // Ports TS `creates a sanitized non-expiring OAuth record`.
@@ -389,5 +402,28 @@ func TestHasOpenCodeCredential(t *testing.T) {
 	}
 	if hasOpenCodeCredential(map[string]string{"SOME_OTHER_VAR": "k"}, AuthAnthropic) {
 		t.Fatal("an unrelated env var must not report a credential")
+	}
+}
+
+// A vendor response larger than the read cap is truncated, so it fails as
+// invalid JSON instead of being buffered whole.
+func TestRequestOpenCodeGitLabDirectAccessBoundsResponseRead(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"pad":"` + strings.Repeat("a", 2<<20) + `","token":"t","headers":{}}`))
+	}))
+	defer server.Close()
+
+	_, err := requestOpenCodeGitLabDirectAccess(context.Background(), server.Client(), "tok", server.URL, "")
+	if err == nil || !strings.Contains(err.Error(), "returned invalid JSON") {
+		t.Fatalf("err = %v, want invalid JSON from truncated read", err)
+	}
+}
+
+func TestResolveOpenCodeGitLabModelObjectPrototypeMembers(t *testing.T) {
+	for _, id := range []string{"constructor", "toString", "__proto__", "hasOwnProperty"} {
+		got, err := resolveOpenCodeGitLabSubscriptionModel("gitlab/"+id, "gitlab")
+		if err != nil || got != "undefined/"+id {
+			t.Fatalf("%s: got %q, %v", id, got, err)
+		}
 	}
 }

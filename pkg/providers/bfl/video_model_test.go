@@ -19,7 +19,7 @@ func newVideoTestModel(t *testing.T) *VideoModel {
 // TestVideoModel_ProviderInfo mirrors TS "should expose correct provider and model information".
 func TestVideoModel_ProviderInfo(t *testing.T) {
 	m := newVideoTestModel(t)
-	if m.Provider() != "bfl.video" {
+	if m.Provider() != "black-forest-labs.video" {
 		t.Errorf("Provider() = %q", m.Provider())
 	}
 	if m.ModelID() != VideoModelFlux3Video {

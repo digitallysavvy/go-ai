@@ -36,19 +36,36 @@ func Notify[E any](ctx context.Context, event E, listeners ...Listener[E]) {
 	wg.Wait()
 }
 
+// callbackTelemetryKey carries the effective telemetry settings of an object
+// call to Notify, so the callback events it publishes on the diagnostic
+// channel are filtered by the recording flags.
+type callbackTelemetryKey struct{}
+
+// withCallbackTelemetry returns ctx carrying settings for
+// publishDiagnosticForCallbackEvent.
+func withCallbackTelemetry(ctx context.Context, settings *telemetry.Options) context.Context {
+	return context.WithValue(ctx, callbackTelemetryKey{}, settings)
+}
+
+// publishDiagnosticForCallbackEvent publishes an object callback event on the
+// `ai:telemetry` diagnostic channel. TS filters every channel message by the
+// recording flags (create-telemetry-dispatcher.ts augmentEvent ->
+// filterTelemetryEvent, 8da48db187), so subscribers get a filtered copy;
+// the listeners keep the full event.
 func publishDiagnosticForCallbackEvent[E any](ctx context.Context, event E) {
+	settings, _ := ctx.Value(callbackTelemetryKey{}).(*telemetry.Options)
 	switch e := any(event).(type) {
 	case ObjectOnStartEvent:
 		if e.IsEnabled != nil && !*e.IsEnabled {
 			return
 		}
-		telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnStart, e)
+		telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnStart, telemetry.FilterEvent(e, settings))
 	case ObjectOnStepStartEvent:
-		telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnObjectStepStart, e)
+		telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnObjectStepStart, telemetry.FilterEvent(e, settings))
 	case ObjectOnStepFinishEvent:
-		telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnObjectStepFinish, e)
+		telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnObjectStepFinish, telemetry.FilterEvent(e, settings))
 	case ObjectOnFinishEvent:
-		telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnFinish, e)
+		telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnFinish, telemetry.FilterEvent(e, settings))
 	}
 }
 

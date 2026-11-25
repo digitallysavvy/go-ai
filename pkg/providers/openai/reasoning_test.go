@@ -29,7 +29,9 @@ func TestOpenAIReasoningHigh(t *testing.T) {
 // -- the top-level reasoning level is forwarded verbatim, never collapsed.
 func TestOpenAIReasoningXHighPassesThrough(t *testing.T) {
 	prov := makeTestOpenAIProvider()
-	model := NewLanguageModel(prov, "o3")
+	// A model whose efforts are unknown accepts every level (o3 declares
+	// low, medium and high since TS c3ee424a70 and maps the others).
+	model := NewLanguageModel(prov, "my-model")
 
 	level := types.ReasoningXHigh
 	opts := &provider.GenerateOptions{Reasoning: &level}
@@ -42,7 +44,9 @@ func TestOpenAIReasoningXHighPassesThrough(t *testing.T) {
 
 func TestOpenAIReasoningAllLevels(t *testing.T) {
 	prov := makeTestOpenAIProvider()
-	model := NewLanguageModel(prov, "o3")
+	// A model whose efforts are unknown accepts every level (o3 declares
+	// low, medium and high since TS c3ee424a70 and maps the others).
+	model := NewLanguageModel(prov, "my-model")
 
 	tests := []struct {
 		level  types.ReasoningLevel
@@ -55,6 +59,7 @@ func TestOpenAIReasoningAllLevels(t *testing.T) {
 		{types.ReasoningMedium, "medium", true},
 		{types.ReasoningHigh, "high", true},
 		{types.ReasoningXHigh, "xhigh", true},
+		{types.ReasoningMax, "max", true},
 		{types.ReasoningDefault, "", false},
 	}
 

@@ -50,14 +50,17 @@ func runXAIResponsesStreamRecursionChild() {
 	sb.Grow(n*32 + 256)
 	for i := 0; i < n; i++ {
 		// Unrecognized event type: hits Next()'s `default: continue` branch.
-		sb.WriteString(`data: {"type":"response.unrecognized_event"}` + "\n\n")
+		sb.WriteString(`data: {"type":"response.content_part.added","item_id":"i1","output_index":0,"content_index":0,"part":{"type":"output_text"}}` + "\n\n")
 	}
-	sb.WriteString(`data: {"type":"response.output_text.delta","output_index":0,"delta":"hello"}` + "\n\n")
+	sb.WriteString(`data: {"type":"response.output_text.delta","item_id":"i1","output_index":0,"content_index":0,"delta":"hello"}` + "\n\n")
 
 	s := newXAIResponsesStream(io.NopCloser(strings.NewReader(sb.String())))
 	// This call used to recurse once per unrecognized event -- 300,000 deep
 	// -- before reaching the real text chunk.
 	chunk, err := s.Next()
+	if err == nil && chunk != nil && chunk.Type == provider.ChunkTypeTextStart {
+		chunk, err = s.Next()
+	}
 	if err != nil {
 		fmt.Println("BF5_CHILD_FAIL: unexpected error:", err)
 		return

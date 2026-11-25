@@ -9,7 +9,7 @@ func TestMoonshotSerializeAndDeserializeLanguageModel(t *testing.T) {
 		t.Fatalf("LanguageModel error = %v", err)
 	}
 	serialized := model.(*LanguageModel).Serialize()
-	if serialized.Provider != "moonshot" || serialized.ModelID != "moonshot-v1-8k" {
+	if serialized.Provider != "moonshotai.chat" || serialized.ModelID != "moonshot-v1-8k" {
 		t.Fatalf("serialize mismatch: %#v", serialized)
 	}
 	if _, ok := serialized.Config["APIKey"]; ok {
@@ -19,7 +19,7 @@ func TestMoonshotSerializeAndDeserializeLanguageModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("deserializeModel error = %v", err)
 	}
-	if restored.Provider() != "moonshot" || restored.ModelID() != "moonshot-v1-8k" {
+	if restored.Provider() != "moonshotai.chat" || restored.ModelID() != "moonshot-v1-8k" {
 		t.Fatalf("restored mismatch: provider=%s model=%s", restored.Provider(), restored.ModelID())
 	}
 }

@@ -2,10 +2,15 @@ package gemini
 
 import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
 
 // preparedTools is the result of prepareTools.
 type preparedTools struct {
+	// err is the TS exhaustive-check failure for an unknown tool choice
+	// type.
+	err        error
 	tools      []map[string]interface{}
 	toolConfig map[string]interface{}
 	warnings   []types.Warning
@@ -35,16 +40,22 @@ func defaultToolSchema(parameters interface{}) interface{} {
 	if parameters == nil {
 		return map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}
 	}
-	return parameters
+	return providerutils.ResponseFormatJSONSchemaOrdered(parameters)
 }
 
 // prepareTools ports TS prepareTools (google-prepare-tools.ts).
 func prepareTools(tools []types.Tool, toolChoice types.ToolChoice, modelID string, isVertex bool) preparedTools {
 	var out preparedTools
+	// TS 32dc1d2d17: NONE only disables function calling in the Google API,
+	// so provider tools (which run server side) are omitted; function
+	// declarations stay for conversation history with function calls.
+	if toolChoice.Type == types.ToolChoiceNone {
+		tools = functionToolsOnly(tools)
+	}
 	if len(tools) == 0 {
 		return out
 	}
-	caps := GetModelCapabilities(modelID)
+	caps := LanguageModelCapabilitiesFor(modelID)
 
 	hasFunctionTools, hasProviderTools := false, false
 	for _, t := range tools {
@@ -55,7 +66,7 @@ func prepareTools(tools []types.Tool, toolChoice types.ToolChoice, modelID strin
 		}
 	}
 
-	if hasFunctionTools && hasProviderTools && !caps.UsesGemini3Features {
+	if hasFunctionTools && hasProviderTools && !caps.Mixed {
 		out.warnings = append(out.warnings, unsupportedToolWarning("combination of function and provider-defined tools", ""))
 	}
 
@@ -66,7 +77,7 @@ func prepareTools(tools []types.Tool, toolChoice types.ToolChoice, modelID strin
 				continue
 			}
 			feature := "provider-defined tool " + t.ProviderID
-			gate, details := caps.SupportsGemini2Tools, ""
+			gate, details := caps.ProviderTools, ""
 			switch t.ProviderID {
 			case "google.google_search":
 				details = "Google Search requires Gemini 2.0 or newer."
@@ -77,7 +88,7 @@ func prepareTools(tools []types.Tool, toolChoice types.ToolChoice, modelID strin
 			case "google.code_execution":
 				details = "The code execution tool is not supported with other Gemini models than Gemini 2."
 			case "google.file_search":
-				gate = caps.SupportsFileSearch
+				gate = caps.FileSearch
 				details = "The file search tool is only supported with Gemini 2.5 models and Gemini 3 models."
 			case "google.vertex_rag_store":
 				details = "The RAG store tool is not supported with other Gemini models than Gemini 2."
@@ -96,7 +107,7 @@ func prepareTools(tools []types.Tool, toolChoice types.ToolChoice, modelID strin
 			}
 		}
 
-		if hasFunctionTools && caps.UsesGemini3Features && len(googleTools) > 0 {
+		if hasFunctionTools && caps.Mixed && len(googleTools) > 0 {
 			var decls []map[string]interface{}
 			for _, t := range tools {
 				if t.Type != "provider" {
@@ -150,12 +161,28 @@ func prepareTools(tools []types.Tool, toolChoice types.ToolChoice, modelID strin
 		out.toolConfig = map[string]interface{}{"functionCallingConfig": map[string]interface{}{
 			"mode": "ANY", "allowedFunctionNames": []string{toolChoice.ToolName},
 		}}
-	default: // auto
+	case types.ToolChoiceAuto:
 		mode := "AUTO"
 		if hasStrictTools {
 			mode = "VALIDATED"
 		}
 		out.toolConfig = map[string]interface{}{"functionCallingConfig": map[string]interface{}{"mode": mode}}
+	default:
+		// TS exhaustive check: UnsupportedFunctionalityError
+		// "tool choice type: <type>".
+		out.err = prompt.ValidateToolChoiceType(tools, toolChoice)
+	}
+	return out
+}
+
+// functionToolsOnly returns the non-provider tools of tools (a new slice;
+// the caller's slice is never modified).
+func functionToolsOnly(tools []types.Tool) []types.Tool {
+	var out []types.Tool
+	for _, t := range tools {
+		if t.Type != "provider" {
+			out = append(out, t)
+		}
 	}
 	return out
 }

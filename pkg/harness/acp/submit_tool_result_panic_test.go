@@ -8,6 +8,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge/bridgetest"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/bridgeauthkeys"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -16,11 +17,10 @@ import (
 // panicking in the caller's goroutine.
 func TestSubmitToolResultToNativeResponsePanicIsReturnedAsError(t *testing.T) {
 	started := make(chan *bridgetest.Turn, 1)
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok",
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: bridgeauthkeys.Testing().PublicKey,
 		OnStart: func(turn *bridgetest.Turn, _ map[string]any) { started <- turn }})
 	t.Cleanup(srv.Close)
 	h, err := CreateACP(testSettings(func(s *Settings) {
-		s.MintBridgeToken = func(string) string { return "tok" }
 		s.HarnessID = "test-acp"
 		s.AskUserQuestions = &AskUserQuestionsSettings{
 			RequestMethod: "test/ask",

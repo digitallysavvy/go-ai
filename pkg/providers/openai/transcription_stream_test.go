@@ -63,6 +63,8 @@ type realtimeTranscriptionTestServer struct {
 
 	mu       sync.Mutex
 	received []map[string]interface{}
+	// rawReceived keeps each frame's text (key order included).
+	rawReceived []string
 
 	toSend    chan interface{}
 	closeConn chan struct{}
@@ -101,6 +103,7 @@ func newRealtimeTranscriptionTestServer(t *testing.T) *realtimeTranscriptionTest
 			}
 			s.mu.Lock()
 			s.received = append(s.received, decoded)
+			s.rawReceived = append(s.rawReceived, raw)
 			s.mu.Unlock()
 		}
 	}
@@ -175,7 +178,8 @@ func TestTranscriptionModel_BaseWSHeadersCarryUserAgentTag(t *testing.T) {
 	p := New(Config{APIKey: "test-key"})
 	m := NewTranscriptionModel(p, "gpt-realtime-whisper")
 
-	ua := m.baseWSHeaders()["user-agent"]
+	baseHeaders, _ := m.baseWSHeaders(context.Background())
+	ua := baseHeaders["user-agent"]
 	if !strings.HasPrefix(ua, "ai-sdk-openai/") {
 		t.Fatalf("user-agent = %q, want ai-sdk-openai/... prefix", ua)
 	}

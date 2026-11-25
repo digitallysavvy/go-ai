@@ -10,9 +10,10 @@ updates:
       - "dependencies"
       - "go"
     ignore:
-      # wazero >= 1.10 rejects instantiating a compiled module in another
-      # runtime, which pkg/internal/third_party/qjs relies on for fast
-      # sandbox startup. Bump deliberately once qjs shares one runtime.
+      # wazero is bumped deliberately, not by dependabot: code mode's qjs
+      # sandbox and the fx libfx core (fx-core.wasm) both run on it, and a
+      # bump needs the code-mode, qjs and real-core fx suites (v1.9-v1.11
+      # panic compiling fx-core.wasm on arm64; v1.12.0 is pinned).
       - dependency-name: "github.com/tetratelabs/wazero"
         versions: [">= 1.10.0"]
 

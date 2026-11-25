@@ -47,17 +47,17 @@ func TestTranslatePart_FailedProviderExecutedToolResultBecomesError(t *testing.T
 	}
 }
 
-func TestTranslatePart_FailedHostToolResultStaysToolResult(t *testing.T) {
+func TestTranslatePart_FailedHostToolResultIsHostToolError(t *testing.T) {
 	part := &ToolResultPart{ToolCallID: "c1", ToolName: "myTool", Result: "boom", IsError: true}
-	// isProviderExecuted=false: a host tool's own failure is not turned into
-	// tool-error here (run_prompt.go's own host-execution path handles that).
+	// isProviderExecuted=false: a host tool's failure is a tool-error that is
+	// not provider-executed, so it stays redactable (TS 7fffff9f02).
 	chunks := TranslatePart(part, TranslateOptions{IsProviderExecuted: func(string) bool { return false }})
 	if len(chunks) != 1 {
 		t.Fatalf("chunks = %+v", chunks)
 	}
 	tr := chunks[0].ToolResult
-	if tr == nil || tr.Error != nil {
-		t.Fatalf("expected no Error, got %+v", tr)
+	if tr == nil || tr.Error == nil || tr.ProviderExecuted || !tr.ProviderExecutedSet {
+		t.Fatalf("expected a tool-error with providerExecuted false, got %+v", tr)
 	}
 	if tr.Result != "boom" {
 		t.Fatalf("Result = %v, want boom", tr.Result)

@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 func init() {
@@ -13,10 +14,17 @@ func init() {
 	provider.RegisterModelDeserializer("openai.completion", deserializeModel)
 	provider.RegisterModelDeserializer("openai.responses", deserializeModel)
 	provider.RegisterEmbeddingModelDeserializer("openai", deserializeEmbeddingModel)
+	provider.RegisterEmbeddingModelDeserializer("openai.embedding", deserializeEmbeddingModel)
 	provider.RegisterImageModelDeserializer("openai", deserializeImageModel)
+	provider.RegisterImageModelDeserializer("openai.image", deserializeImageModel)
 	provider.RegisterSpeechModelDeserializer("openai", deserializeSpeechModel)
+	provider.RegisterSpeechModelDeserializer("openai.speech", deserializeSpeechModel)
 	provider.RegisterTranscriptionModelDeserializer("openai", deserializeTranscriptionModel)
+	provider.RegisterTranscriptionModelDeserializer("openai.transcription", deserializeTranscriptionModel)
 	provider.RegisterSpeechTranslationModelDeserializer("openai.speech-translation", deserializeSpeechTranslationModel)
+	// Provider.ExtractionModel wraps a Responses model (TS ExtractionLanguageModel
+	// [WORKFLOW_SERIALIZE]).
+	provider.RegisterExtractionModelDeserializer("openai.extraction", providerutils.DeserializeExtractionLanguageModel)
 }
 
 func (m *LanguageModel) Serialize() provider.SerializedModel {

@@ -8,6 +8,7 @@ import (
 
 func init() {
 	provider.RegisterModelDeserializer("moonshot", deserializeModel)
+	provider.RegisterModelDeserializer("moonshotai.chat", deserializeModel)
 }
 
 // Serialize implements provider.SerializableModel for workflow boundaries.

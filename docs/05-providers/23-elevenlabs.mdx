@@ -5,9 +5,9 @@ description: "Setup guide for ElevenLabs text-to-speech in the Go AI SDK, coveri
 
 # ElevenLabs Provider
 
-ElevenLabs provides text-to-speech models. The current Go provider implements
-the shared `provider.SpeechModel` interface and is used through
-`ai.GenerateSpeech`.
+ElevenLabs provides text-to-speech models. The Go provider implements the
+shared `provider.SpeechModel` interface, used through `ai.GenerateSpeech`, and
+the optional streaming interface used by `ai.ExperimentalStreamSpeech`.
 
 ## Setup
 
@@ -83,6 +83,142 @@ Common model IDs include:
 | `eleven_multilingual_v2` | Multilingual speech |
 | `eleven_flash_v2_5` | Low-latency speech |
 | `eleven_turbo_v2_5` | Fast speech synthesis |
+| `eleven_v4`, `eleven_v4_turbo` | Expressive speech and streaming dialogue |
+| `eleven_v3`, `eleven_v3_conversational` | Expressive speech and streaming dialogue |
+
+Typed constants for these are in the `elevenlabs` package, for example
+`elevenlabs.SpeechModelFlashV25`.
+
+## Music, sound effects and dialogue
+
+The speech model also generates music, sound effects and multi-voice dialogue
+through `ai.GenerateSpeech`, chosen by model ID. The result's
+`ProviderMetadata["elevenlabs"]` reports the `outputFormat` used and, for
+music and sound effects, the `requestedDurationMs`.
+
+**Music** (`music_v2_5`, `music_v2`, `music_v1`) composes a track from the text
+prompt. Options: `musicLengthMs` (3000 to 600000, leave unset to let the model
+decide) and `forceInstrumental`. Alternatively pass a native `compositionPlan`
+(`sections` for `music_v1`, `chunks` for later models) in place of the prompt;
+it cannot be combined with `musicLengthMs` or `forceInstrumental`. Pass an empty
+`Text` with a plan.
+
+```go
+model, _ := provider.SpeechModel(elevenlabs.SpeechModelMusicV25)
+result, err := ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
+    Model: model,
+    Text:  "An upbeat synthwave intro",
+    ProviderOptions: map[string]interface{}{
+        "elevenlabs": map[string]interface{}{"musicLengthMs": 10000, "forceInstrumental": true},
+    },
+})
+```
+
+**Sound effects** (`eleven_text_to_sound_v2`, `eleven_text_to_sound_v3`) take the
+text as the prompt. Options: `durationSeconds` (0.5 to 30), `promptInfluence`
+(0 to 1) and `loop`.
+
+**Dialogue** (`eleven_v3`, `eleven_v4`) is generated from
+`providerOptions.elevenlabs.inputs`, a list of `{text, voiceId}` lines that
+replaces `Text` and `Voice`; pass an empty `Text`. `voiceSettings.stability` and
+`similarityBoost` are sent as the dialogue `settings`.
+
+```go
+"elevenlabs": map[string]interface{}{
+    "inputs": []interface{}{
+        map[string]interface{}{"text": "Knock knock", "voiceId": "voice-a"},
+        map[string]interface{}{"text": "Who is there?", "voiceId": "voice-b"},
+    },
+}
+```
+
+Options a model does not read are ignored with an `unsupported` warning. The
+text prompt is reported as ignored only when it is non-empty. `OutputFormat`
+accepts native ElevenLabs formats such as `wav_24000` or `auto`. These models
+do not stream: `ai.ExperimentalStreamSpeech` rejects music and sound effects.
+
+## Streaming Speech (experimental)
+
+The speech model also implements `provider.SpeechStreamer`, so
+`ai.ExperimentalStreamSpeech` can synthesize text that arrives incrementally
+over the ElevenLabs `stream-input` WebSocket and stream audio back:
+
+```go
+deltas := make(chan string)
+go produceText(deltas) // for example the text of a language model stream
+
+result, err := ai.ExperimentalStreamSpeech(ctx, ai.StreamSpeechOptions{
+    Model:      model,
+    TextStream: ai.NewChannelStringSpeechTextStream(deltas, nil),
+    Voice:      "21m00Tcm4TlvDq8ikWAM",
+    OutputFormat: &provider.AudioFormat{Type: "audio/pcm", Rate: &rate},
+})
+```
+
+- Text is sent at word boundaries. Partial words are held until the next
+  boundary, so deltas that split a word are safe.
+- The SDK sends keepalives while the text is idle, ahead of the server's
+  inactivity timeout. Setting `streaming.inactivityTimeout` turns them off.
+- Usage is reported as `InputCharacters` (Unicode code points).
+- The API key is sent in the first WebSocket message, not as a header. The
+  WebSocket URL always uses the configured `BaseURL`.
+- The text-to-speech WebSocket speaks one voice per stream. A text part with a
+  different voice fails the stream.
+- Per-message alignment is returned in each audio part's
+  `ProviderMetadata["elevenlabs"]` when `streaming.syncAlignment` is set.
+
+Streaming options go under `providerOptions.elevenlabs.streaming`
+(`elevenlabs.StreamingSpeechOptions` in typed form):
+
+| Option | Description |
+|---|---|
+| `autoMode` | Let the server choose when to generate |
+| `chunkLengthSchedule` | Chunk length schedule, each entry 50 to 500 |
+| `enableSsmlParsing` | Parse SSML in the text |
+| `inactivityTimeout` | Server inactivity timeout in seconds, 1 to 180 |
+| `outputFormat` | A native `output_format` such as `mp3_44100_192`, overriding `OutputFormat` |
+| `syncAlignment` | Return character alignment with the audio |
+
+`OutputFormat` maps `audio/mpeg`, `audio/pcm`, `audio/pcmu`, `audio/pcma` and
+`audio/opus` at the rates ElevenLabs supports; other formats fail with an
+invalid-argument error. `ai.GenerateSpeech` ignores the streaming options with
+a warning.
+
+### Streaming dialogue
+
+The `eleven_v3` and `eleven_v4` families stream through Text-to-Dialogue. Set
+`providerOptions.elevenlabs.dialogue` with the voices of the conversation, and
+give each text part the `Voice` that speaks it:
+
+```go
+parts := make(chan ai.SpeechTextPart)
+go func() {
+    defer close(parts)
+    parts <- ai.SpeechTextPart{Text: "Knock knock. ", Voice: "voice-a"}
+    parts <- ai.SpeechTextPart{Text: "Who's there?", Voice: "voice-b"}
+}()
+
+result, err := ai.ExperimentalStreamSpeech(ctx, ai.StreamSpeechOptions{
+    Model:      dialogueModel, // eleven_v4
+    TextStream: ai.NewChannelSpeechTextStream(parts, nil),
+    ProviderOptions: map[string]interface{}{
+        "elevenlabs": map[string]interface{}{
+            "dialogue": map[string]interface{}{
+                "voices": []interface{}{"voice-a", "voice-b"},
+            },
+        },
+    },
+})
+```
+
+A change of voice starts a new turn. Set
+`ProviderOptions: {"elevenlabs": {"newTurn": true}}` on a text part to start a
+new turn with the same voice. An end-of-turn marker arrives as an empty audio
+part with `ProviderMetadata["elevenlabs"]["isFinalAudioForTurn"]` set. The
+`eleven_v3` family takes the whole script in one message, so audio starts after
+the text ends, and `eleven_v3_conversational` supports exactly one voice. The
+`eleven_v3` and `eleven_v4` models require `dialogue` to stream; the
+text-to-speech WebSocket does not serve them.
 
 ## Transcription
 
@@ -100,6 +236,15 @@ result, err := ai.Transcribe(ctx, ai.TranscribeOptions{
     Audio: audioBytes,
 })
 ```
+
+Batch transcription reports `DurationInSeconds` from the response's
+`audio_duration_secs` (including trailing silence), falling back to the end of
+the last word when it is absent.
+
+Batch transcription enables speaker diarization by default, including when other
+`providerOptions.elevenlabs` values are set. Pass `"diarize": false` to disable it.
+The raw word entries returned by ElevenLabs (including `type` and `speaker_id`) are
+available as `result.ProviderMetadata["elevenlabs"]["words"]`.
 
 ### Streaming Transcription (Scribe v2 Realtime)
 
@@ -132,5 +277,6 @@ for the mechanism.
 ## See Also
 
 - [API Reference: GenerateSpeech](../07-reference/ai/generate-speech.mdx)
+- [API Reference: ExperimentalStreamSpeech](../07-reference/ai/stream-speech.mdx)
 - [Speech Generation Guide](../03-ai-sdk-core/37-speech.mdx)
 - [ElevenLabs Documentation](https://elevenlabs.io/docs)

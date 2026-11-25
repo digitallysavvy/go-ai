@@ -57,68 +57,52 @@ type MCPServerOptions struct {
 //	    },
 //	})
 func MCPServer(config MCPServerConfig) types.Tool {
-	// Build the parameters schema
-	properties := map[string]interface{}{
-		"serverUrl": map[string]interface{}{
-			"type":        "string",
-			"description": "URL of the MCP server to connect to",
-			"default":     config.ServerURL,
-		},
-		"toolName": map[string]interface{}{
-			"type":        "string",
-			"description": "Name of the tool to execute on the MCP server",
-		},
-		"arguments": map[string]interface{}{
-			"type":        "object",
-			"description": "Arguments to pass to the MCP server tool",
-		},
-	}
+	// TS xai mcpServer: inputSchema z.looseObject({}) (6f56c29ff6: the model's
+	// tool-call arguments stay in the input). The server URL, allowed
+	// tools, headers and authorization are tool args (ProviderOptions), not
+	// model input, so they are not in the input schema (provider tool calls
+	// are validated against it, and its defaults would be merged into them).
+	parameters := xaiSchema(xaiLooseInputSchemaJSON)
 
-	// Add optional parameters if configured
-	if len(config.AllowedTools) > 0 {
-		properties["allowedTools"] = map[string]interface{}{
-			"type":        "array",
-			"description": "List of tool names that are allowed to be used",
-			"items": map[string]interface{}{
-				"type": "string",
-			},
-			"default": config.AllowedTools,
-		}
+	args := map[string]interface{}{"serverUrl": config.ServerURL}
+	if config.ServerLabel != "" {
+		args["serverLabel"] = config.ServerLabel
 	}
-
-	if len(config.Headers) > 0 {
-		properties["headers"] = map[string]interface{}{
-			"type":        "object",
-			"description": "Custom HTTP headers to send with the request",
-			"default":     config.Headers,
-		}
+	if config.ServerDescription != "" {
+		args["serverDescription"] = config.ServerDescription
 	}
-
+	if config.AllowedTools != nil {
+		args["allowedTools"] = config.AllowedTools
+	}
+	if config.Headers != nil {
+		args["headers"] = config.Headers
+	}
 	if config.Authorization != "" {
-		properties["authorization"] = map[string]interface{}{
-			"type":        "string",
-			"description": "Authorization token for the MCP server",
-			"default":     config.Authorization,
-		}
+		// TS sends authorization in the args (also to the AI Gateway).
+		args["authorization"] = config.Authorization
 	}
-
-	parameters := map[string]interface{}{
-		"type":       "object",
-		"properties": properties,
-		"required":   []string{"serverUrl", "toolName"},
-	}
-
-	return types.Tool{
+	return xaiProviderTool(types.Tool{
 		Name:        "xai.mcp",
 		Description: "Connect to remote MCP (Model Context Protocol) server and execute tools. Enables integration with external services and APIs through MCP-compatible servers.",
 		Title:       "MCP Server",
 		Parameters:  parameters,
+		// TS outputSchema z.object({name: z.string(), arguments: z.string(),
+		// result: z.unknown()}) (ValidateUIMessages checks outputs with it).
+		OutputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"name":      map[string]interface{}{"type": "string"},
+				"arguments": map[string]interface{}{"type": "string"},
+				"result":    map[string]interface{}{},
+			},
+			"required": []interface{}{"name", "arguments", "result"},
+		},
 		// ProviderOptions carries the typed config for API serialization by prepareXAIResponsesTools.
 		ProviderOptions: MCPServerOptions(config),
 		// This tool is executed by xAI's servers, not locally
 		ProviderExecuted: true,
 		Execute:          providerExecutedNoop("xai.mcp"),
-	}
+	}, args)
 }
 
 // MCPServerSimple creates an MCP Server tool with minimal configuration

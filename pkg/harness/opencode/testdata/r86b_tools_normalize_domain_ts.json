@@ -1,0 +1,77 @@
+{
+ "source": "node v24.20.0: TS 30548ee7f9 harness-opencode/src/opencode-subscription.ts normalizeDomain (645-651)",
+ "cases": [
+  {
+   "input": "Example.COM",
+   "ts": "example.com"
+  },
+  {
+   "input": "https://Ghe.Corp:443",
+   "ts": "ghe.corp"
+  },
+  {
+   "input": "ghe.corp:8443/",
+   "ts": "ghe.corp:8443"
+  },
+  {
+   "input": "https://http://x.example/",
+   "ts": "http"
+  },
+  {
+   "input": "http://ghe.corp:80/x",
+   "ts": "ghe.corp"
+  },
+  {
+   "input": "https://ghe.corp:80",
+   "ts": "ghe.corp:80"
+  },
+  {
+   "input": "Bücher.example",
+   "ts": "xn--bcher-kva.example"
+  },
+  {
+   "input": "https://0x7f.1/",
+   "ts": "127.0.0.1"
+  },
+  {
+   "input": "https://ghe%2Ecorp",
+   "ts": "ghe.corp"
+  },
+  {
+   "input": "foo://Host:1/x",
+   "ts": "Host:1"
+  },
+  {
+   "input": "foo://",
+   "ts": ""
+  },
+  {
+   "input": "https://[::1]:443/",
+   "ts": "[::1]"
+  },
+  {
+   "input": "https://user:pw@ghe.corp/",
+   "ts": "ghe.corp"
+  },
+  {
+   "input": "https://ghe corp/",
+   "ts": "ghe corp"
+  },
+  {
+   "input": "https://ghe.corp:99999/",
+   "ts": "ghe.corp:99999"
+  },
+  {
+   "input": "ghe.corp.",
+   "ts": "ghe.corp."
+  },
+  {
+   "input": "https://。example.com",
+   "ts": ".example.com"
+  },
+  {
+   "input": "http://ghe.corp\\path",
+   "ts": "ghe.corp"
+  }
+ ]
+}

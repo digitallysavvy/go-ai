@@ -175,10 +175,12 @@ func TestNoCacheControlProducesStringContent(t *testing.T) {
 		t.Fatalf("expected 2 messages, got %d", len(result))
 	}
 
-	for _, msg := range result {
-		if _, ok := msg["content"].(string); !ok {
-			t.Errorf("without cacheControl, expected content to be string for role=%v, got %T", msg["role"], msg["content"])
-		}
+	// TS: system content is a string; user content is always a part array.
+	if _, ok := result[0]["content"].(string); !ok {
+		t.Errorf("without cacheControl, expected system content to be a string, got %T", result[0]["content"])
+	}
+	if _, ok := result[1]["content"].([]map[string]interface{}); !ok {
+		t.Errorf("expected user content to be a part array, got %T", result[1]["content"])
 	}
 }
 

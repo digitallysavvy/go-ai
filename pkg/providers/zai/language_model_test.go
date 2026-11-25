@@ -343,9 +343,11 @@ func TestDoStreamReasoningTextUsageToolStream(t *testing.T) {
 		provider.ChunkTypeReasoning,
 		provider.ChunkTypeRaw,
 		provider.ChunkTypeReasoningEnd,
+		provider.ChunkTypeTextStart,
 		provider.ChunkTypeText,
 		provider.ChunkTypeRaw,
 		provider.ChunkTypeRaw,
+		provider.ChunkTypeTextEnd,
 		provider.ChunkTypeFinish,
 	}
 	if len(types_) != len(wantSequence) {

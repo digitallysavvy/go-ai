@@ -2,14 +2,19 @@ package bytedance
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"sort"
+
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/imageutil"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // ImageModel implements the provider.ImageModel interface for ByteDance's
@@ -107,6 +112,10 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		})
 	}
 
+	// TS: the response timestamp is taken before the options are parsed and
+	// the request is sent.
+	currentDate := time.Now()
+
 	byteDanceOptions, err := extractImageProviderOptions(opts.ProviderOptions)
 	if err != nil {
 		return nil, err
@@ -124,14 +133,22 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		Body:    body,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("bytedance: image generation request failed: %w", err)
+		// TS postJsonToApi lets the transport failure propagate unchanged.
+		return nil, err
 	}
-	if httpResp.StatusCode >= 400 {
-		return nil, m.parseAPIError(httpResp.Body, httpResp.StatusCode)
+	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
+		return nil, newHTTPErrorText(httpResp.StatusCode, httpResp.HTTPStatusText(), httpResp.Headers, httpResp.Body)
+	}
+	// TS createJsonResponseHandler reads response.text() (TextDecoder).
+	respBody := []byte(textdecode.UTF8(httpResp.Body))
+	if err := providerutils.MediaResponseValidator("bytedance", providerutils.SchemaByteDanceImage)(httpResp.StatusCode, httpResp.Headers, respBody); err != nil {
+		return nil, err
 	}
 
+	// usage counts are z.number(): a fractional count truncates into the
+	// int fields instead of failing (the central decoders' rule).
 	var imgResp byteDanceImageResponse
-	if err := json.Unmarshal(httpResp.Body, &imgResp); err != nil {
+	if err := providerutils.UnmarshalChunk(respBody, &imgResp); err != nil {
 		return nil, fmt.Errorf("bytedance: failed to parse image response: %w", err)
 	}
 
@@ -145,7 +162,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		Base64Images: images,
 		Usage:        mapImageUsage(imgResp.Usage),
 		Response: &types.ResponseMetadata{
-			Timestamp: time.Now(),
+			Timestamp: currentDate,
 			ModelID:   m.modelID,
 			Headers:   flattenHeaders(httpResp.Headers),
 		},
@@ -157,12 +174,15 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 }
 
 // buildRequestBody builds the /images/generations request body from call
-// options and typed provider options (TS doGenerate body construction).
-func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions, byteDanceOptions *ImageModelOptions) (map[string]interface{}, error) {
-	body := map[string]interface{}{
-		"model":  m.modelID,
-		"prompt": opts.Prompt,
-	}
+// options and typed provider options (TS doGenerate body construction), in
+// the TS insertion order JSON.stringify keeps: model, prompt, image, size,
+// then the provider options (a key set again keeps its first position), the
+// passthrough options (sorted: a Go map has no caller order) and
+// response_format.
+func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions, byteDanceOptions *ImageModelOptions) (*jsonorder.Object, error) {
+	body := jsonorder.New()
+	body.Set("model", m.modelID)
+	body.Set("prompt", opts.Prompt)
 
 	if len(opts.Files) > 0 {
 		if len(opts.Files) == 1 {
@@ -170,7 +190,7 @@ func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions, byteD
 			if err != nil {
 				return nil, err
 			}
-			body["image"] = encoded
+			body.Set("image", encoded)
 		} else {
 			encodedImages := make([]string, 0, len(opts.Files))
 			for i := range opts.Files {
@@ -180,65 +200,52 @@ func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions, byteD
 				}
 				encodedImages = append(encodedImages, encoded)
 			}
-			body["image"] = encodedImages
+			body.Set("image", encodedImages)
 		}
 	}
 
 	if opts.Size != "" {
-		body["size"] = opts.Size
+		body.Set("size", opts.Size)
 	}
 
 	if byteDanceOptions.Watermark != nil {
-		body["watermark"] = *byteDanceOptions.Watermark
+		body.Set("watermark", *byteDanceOptions.Watermark)
 	}
 	if byteDanceOptions.OutputFormat != nil {
-		body["output_format"] = *byteDanceOptions.OutputFormat
+		body.Set("output_format", *byteDanceOptions.OutputFormat)
 	}
 	// A resolution level (e.g. "2K") overrides the top-level pixel size.
 	if byteDanceOptions.Size != nil {
-		body["size"] = *byteDanceOptions.Size
+		body.Set("size", *byteDanceOptions.Size)
 	}
 	if byteDanceOptions.SequentialImageGeneration != nil {
-		body["sequential_image_generation"] = *byteDanceOptions.SequentialImageGeneration
+		body.Set("sequential_image_generation", *byteDanceOptions.SequentialImageGeneration)
 	}
 	if byteDanceOptions.MaxImages != nil {
-		body["sequential_image_generation_options"] = map[string]interface{}{
+		body.Set("sequential_image_generation_options", map[string]interface{}{
 			"max_images": *byteDanceOptions.MaxImages,
-		}
+		})
 	}
 	if byteDanceOptions.OptimizePromptMode != nil {
-		body["optimize_prompt_options"] = map[string]interface{}{
+		body.Set("optimize_prompt_options", map[string]interface{}{
 			"mode": *byteDanceOptions.OptimizePromptMode,
-		}
+		})
 	}
 	// Pass through any additional options not explicitly handled above.
-	for k, v := range byteDanceOptions.Additional {
-		body[k] = v
+	extra := make([]string, 0, len(byteDanceOptions.Additional))
+	for k := range byteDanceOptions.Additional {
+		extra = append(extra, k)
+	}
+	sort.Strings(extra)
+	for _, k := range extra {
+		body.Set(k, byteDanceOptions.Additional[k])
 	}
 
 	// Always request base64 so the SDK receives the image bytes; this is not
 	// user-overridable.
-	body["response_format"] = "b64_json"
+	body.Set("response_format", "b64_json")
 
 	return body, nil
-}
-
-// parseAPIError parses a ByteDance image API error response (TS
-// byteDanceFailedResponseHandler).
-func (m *ImageModel) parseAPIError(body []byte, statusCode int) error {
-	var errResp errorResponse
-	if err := json.Unmarshal(body, &errResp); err == nil {
-		msg := ""
-		if errResp.Error != nil {
-			msg = errResp.Error.Message
-		} else if errResp.Message != "" {
-			msg = errResp.Message
-		}
-		if msg != "" {
-			return NewError(statusCode, msg, "")
-		}
-	}
-	return NewError(statusCode, fmt.Sprintf("API returned status %d", statusCode), string(body))
 }
 
 // encodeImageFile encodes a provider.ImageFile to the string form ByteDance
@@ -285,5 +292,4 @@ type byteDanceImageUsage struct {
 	TotalTokens  *int `json:"total_tokens"`
 }
 
-// errorResponse and errorDetail are shared with video_model.go's ByteDance
-// error envelope.
+// errorDetail is shared with video_model.go's ByteDance error envelope.

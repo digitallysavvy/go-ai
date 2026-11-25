@@ -503,3 +503,20 @@ func TestSubagentRegistryListReturnsCopy(t *testing.T) {
 		t.Fatalf("List() after mutating a prior result = %v, want [a]", again)
 	}
 }
+
+func TestDelegationTracker_ConcurrentTrack(t *testing.T) {
+	tracker := NewDelegationTracker()
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			tracker.Track(SubagentDelegation{SubagentName: "a"})
+			_ = tracker.Count()
+		}()
+	}
+	wg.Wait()
+	if tracker.Count() != 50 || len(tracker.GetDelegations()) != 50 {
+		t.Fatalf("count = %d", tracker.Count())
+	}
+}

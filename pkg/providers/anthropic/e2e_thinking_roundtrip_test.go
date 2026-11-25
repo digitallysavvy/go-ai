@@ -99,3 +99,72 @@ func TestThinkingTurnReplayOrderGenerate(t *testing.T) {
 	defer mu.Unlock()
 	assertJSON(t, "assistant content", secondRequestAssistantContent(t, bodies), thinkingTurnWantAssistant)
 }
+
+func TestThinkingTurnReplayOrderStream(t *testing.T) {
+	type ev struct{ event, data string }
+	turns := [][]ev{
+		{
+			{"message_start", `{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"claude-opus-5-5","usage":{"input_tokens":10,"output_tokens":0}}}`},
+			{"content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}`},
+			{"content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"First thoughts."}}`},
+			{"content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"SIG_A"}}`},
+			{"content_block_stop", `{"type":"content_block_stop","index":0}`},
+			{"content_block_start", `{"type":"content_block_start","index":1,"content_block":{"type":"redacted_thinking","data":"REDACTED_B"}}`},
+			{"content_block_stop", `{"type":"content_block_stop","index":1}`},
+			{"content_block_start", `{"type":"content_block_start","index":2,"content_block":{"type":"text","text":""}}`},
+			{"content_block_delta", `{"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"Let me check."}}`},
+			{"content_block_stop", `{"type":"content_block_stop","index":2}`},
+			{"content_block_start", `{"type":"content_block_start","index":3,"content_block":{"type":"tool_use","id":"toolu_01","name":"weather","input":{}}}`},
+			{"content_block_delta", `{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"{\"city\":\"SF\"}"}}`},
+			{"content_block_stop", `{"type":"content_block_stop","index":3}`},
+			{"message_delta", `{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":5}}`},
+			{"message_stop", `{"type":"message_stop"}`},
+		},
+		{
+			{"message_start", `{"type":"message_start","message":{"id":"msg_2","type":"message","role":"assistant","content":[],"model":"claude-opus-5-5","usage":{"input_tokens":20,"output_tokens":0}}}`},
+			{"content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`},
+			{"content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"72."}}`},
+			{"content_block_stop", `{"type":"content_block_stop","index":0}`},
+			{"message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":8}}`},
+			{"message_stop", `{"type":"message_stop"}`},
+		},
+	}
+	var mu sync.Mutex
+	var bodies []map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var body map[string]interface{}
+		_ = json.Unmarshal(raw, &body)
+		mu.Lock()
+		idx := len(bodies)
+		bodies = append(bodies, body)
+		mu.Unlock()
+		if idx >= len(turns) {
+			http.Error(w, "unexpected", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, e := range turns[idx] {
+			_, _ = io.WriteString(w, "event: "+e.event+"\ndata: "+e.data+"\n\n")
+		}
+	}))
+	defer srv.Close()
+
+	model, err := anthropic.New(anthropic.Config{APIKey: "k", BaseURL: srv.URL}).LanguageModel("claude-opus-5-5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := ai.StreamText(context.Background(), ai.StreamTextOptions{
+		Model: model, Prompt: "weather?", Tools: []types.Tool{thinkingTurnTool()},
+		StopWhen: []ai.StopCondition{ai.IsStepCount(2)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := result.ConsumeStream(); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	assertJSON(t, "assistant content", secondRequestAssistantContent(t, bodies), thinkingTurnWantAssistant)
+}

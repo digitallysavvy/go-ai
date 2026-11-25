@@ -205,6 +205,8 @@ Since v0.4.0, tool execution in `StreamText` is deferred until the stream is ful
 3. Tool execution (deferred)
 4. Tool-result chunks (`ChunkTypeToolResult`) forwarded to `OnChunk` after execution
 
+`StreamText` also forwards two non-content parts: `provider.ChunkTypeSteeringMessage` (with `ExperimentalSteering`, one per delivered steering message, before the step's `start-step`; `ID`, `SteeringMessage`, `StepNumber`) and `provider.ChunkTypePing` (keep-alive pings from Anthropic `IncludePings` or the AI Gateway). A ping is never held behind buffered tool input, does not reset the chunk timeout, is not output, and `SmoothStream` passes it through without flushing a partial word.
+
 This ensures consumers receive all content before any tool side-effects fire. If your application previously relied on tool results arriving mid-stream, see the [v0.3 to v0.4 migration guide](../08-migration-guides/from-v0.3-to-v0.4.mdx) for details.
 
 ## Cancellation

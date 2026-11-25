@@ -6,36 +6,25 @@ import (
 	"time"
 )
 
-// Port of harness/src/utils/sleep.test.ts.
-
-// TS: "resolves when the abort signal fires"
-func TestSleepResolvesWhenContextCanceled(t *testing.T) {
+// Ports TS utils/sleep.test.ts.
+func TestSleep_ReturnsWhenContextIsCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
-	go func() {
-		Sleep(ctx, time.Second)
-		close(done)
-	}()
+	go func() { Sleep(ctx, time.Minute); close(done) }()
 	cancel()
 	select {
 	case <-done:
-	case <-time.After(200 * time.Millisecond):
-		t.Fatal("Sleep did not return promptly after cancellation")
+	case <-time.After(5 * time.Second):
+		t.Fatal("Sleep did not return after cancellation")
 	}
 }
 
-// TS: "resolves immediately for an already-aborted signal"
-func TestSleepResolvesImmediatelyForCanceledContext(t *testing.T) {
+func TestSleep_ReturnsImmediatelyForCancelledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	done := make(chan struct{})
-	go func() {
-		Sleep(ctx, time.Second)
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(200 * time.Millisecond):
-		t.Fatal("Sleep did not return promptly for an already-canceled context")
+	start := time.Now()
+	Sleep(ctx, time.Minute)
+	if time.Since(start) > time.Second {
+		t.Fatal("Sleep waited on a cancelled context")
 	}
 }

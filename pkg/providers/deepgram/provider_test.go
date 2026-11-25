@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -149,7 +150,7 @@ func TestDoTranscribe_ProviderOptions(t *testing.T) {
 		seenQuery = r.URL.RawQuery
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"metadata": map[string]interface{}{"duration": 1.0},
-			"results":  map[string]interface{}{"channels": []map[string]interface{}{}},
+			"results":  nil, // a present results needs a channel (TS channels[0].alternatives[0])
 		})
 	}))
 	defer srv.Close()
@@ -175,9 +176,14 @@ func TestDoTranscribe_ProviderOptions(t *testing.T) {
 		t.Fatalf("DoTranscribe: %v", err)
 	}
 
-	for _, want := range []string{"keyterm=Vercel", "paragraphs=true", "intents=true", "sentiment=true", "replace=foo:bar", "diarize=false"} {
-		if !strings.Contains(seenQuery, want) {
-			t.Fatalf("query missing %q: %s", want, seenQuery)
+	// The query is URL-encoded like URLSearchParams (replace=foo%3Abar).
+	parsed, perr := url.ParseQuery(seenQuery)
+	if perr != nil {
+		t.Fatalf("ParseQuery: %v", perr)
+	}
+	for key, want := range map[string]string{"keyterm": "Vercel", "paragraphs": "true", "intents": "true", "sentiment": "true", "replace": "foo:bar", "diarize": "false"} {
+		if parsed.Get(key) != want {
+			t.Fatalf("query %s = %q, want %q: %s", key, parsed.Get(key), want, seenQuery)
 		}
 	}
 }

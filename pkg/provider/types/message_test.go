@@ -1,6 +1,7 @@
 package types
 
 import (
+	"encoding/json"
 	"testing"
 )
 
@@ -155,5 +156,19 @@ func TestMessage_Content(t *testing.T) {
 	}
 	if msg.Name != "user1" {
 		t.Errorf("expected name 'user1', got %s", msg.Name)
+	}
+}
+
+func TestToolErrorContentMarshalsTypeDiscriminator(t *testing.T) {
+	raw, err := json.Marshal(ToolErrorContent{ToolCallID: "c1", ToolName: "t", Input: map[string]interface{}{"a": 1}, Error: "boom"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]interface{}
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["type"] != "tool-error" || got["toolCallId"] != "c1" || got["error"] != "boom" {
+		t.Fatalf("json = %s", raw)
 	}
 }

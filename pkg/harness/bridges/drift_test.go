@@ -57,6 +57,10 @@ func TestManifestHashesMatchEmbeddedBytes(t *testing.T) {
 			}
 		}
 
+		if info.ContentHash == "" || info.ContentHash != ContentHash(info.Files) {
+			t.Errorf("adapter %q: contentHash %q does not match its files (want %q); re-run syncbridges", adapter, info.ContentHash, ContentHash(info.Files))
+		}
+
 		if info.BridgeEntry != "" {
 			if _, ok := files[info.BridgeEntry]; !ok {
 				t.Errorf("adapter %q: bridgeEntry %q is not among its embedded files", adapter, info.BridgeEntry)

@@ -288,3 +288,78 @@ func (r *slowReader) Read(p []byte) (int, error) {
 	r.pos += n
 	return n, nil
 }
+
+// TS convertBase64ToUint8Array (atob) throws on invalid base64, which errors
+// the stream; the raw payload is not forwarded.
+func TestTransformEventStreamToSSE_InvalidBase64ErrorsStream(t *testing.T) {
+	frame := encodeEventStreamMessage(t, map[string]string{
+		":message-type": "event",
+		":event-type":   "chunk",
+	}, []byte(`{"bytes":"!!!not-base64!!!"}`))
+	out := transformEventStreamToSSE(io.NopCloser(bytes.NewReader(frame)), http.Header{})
+	data, err := io.ReadAll(out)
+	if err == nil {
+		t.Fatalf("expected stream error, got data %q", data)
+	}
+	if bytes.Contains(data, []byte("not-base64")) {
+		t.Fatalf("raw payload leaked: %q", data)
+	}
+}
+
+// atob accepts unpadded and base64url input.
+func TestTransformEventStreamToSSE_ForgivingBase64(t *testing.T) {
+	// "hello?>" base64url unpadded = aGVsbG8_Pg
+	frame := encodeEventStreamMessage(t, map[string]string{
+		":message-type": "event",
+		":event-type":   "chunk",
+	}, []byte(`{"bytes":"aGVsbG8_Pg"}`))
+	out := transformEventStreamToSSE(io.NopCloser(bytes.NewReader(frame)), http.Header{})
+	data, err := io.ReadAll(out)
+	if err != nil || string(data) != "data: hello?>\n\n" {
+		t.Fatalf("got %q, %v", data, err)
+	}
+}
+
+// TS reads `parsed.value.bytes` on whatever safeParseJSON returns: null throws,
+// a truthy non-string bytes throws in convertBase64ToUint8Array, and every
+// other value (number, string, array, falsy bytes) falls back to the payload.
+func TestR55TransformEventStreamToSSE_NonObjectChunkPayloads(t *testing.T) {
+	for _, tc := range []struct {
+		payload string
+		wantErr string
+	}{
+		{`null`, "Cannot read properties of null (reading 'bytes')"},
+		{`{"bytes":5}`, "base64String.replace is not a function"},
+		{`{"bytes":true}`, "base64String.replace is not a function"},
+		{`{"bytes":{}}`, "base64String.replace is not a function"},
+		{`5`, ""},
+		{`"x"`, ""},
+		{`[]`, ""},
+		{`{"bytes":0}`, ""},
+		{`{"bytes":null}`, ""},
+	} {
+		t.Run(tc.payload, func(t *testing.T) {
+			frame := encodeEventStreamMessage(t, map[string]string{
+				":message-type": "event",
+				":event-type":   "chunk",
+			}, []byte(tc.payload))
+			out := transformEventStreamToSSE(io.NopCloser(bytes.NewReader(frame)), http.Header{})
+			data, err := io.ReadAll(out)
+			if tc.wantErr != "" {
+				if err == nil || err.Error() != tc.wantErr {
+					t.Fatalf("err = %v, want %q", err, tc.wantErr)
+				}
+				if len(data) != 0 {
+					t.Fatalf("data = %q, want none", data)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want := "data: " + tc.payload + "\n\n"; string(data) != want {
+				t.Fatalf("got %q, want %q", data, want)
+			}
+		})
+	}
+}

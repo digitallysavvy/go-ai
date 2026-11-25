@@ -3,12 +3,14 @@ package google
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
 // Ported from ai/packages/google/src/transcription/google-transcription-model.test.ts
@@ -282,5 +284,38 @@ func TestTranscription_AudioBase64PassthroughAndBaseModelMetadata(t *testing.T) 
 	}
 	if result.Response == nil || result.Response.ModelID != ModelGemini35Transcribe {
 		t.Fatalf("Response = %+v", result.Response)
+	}
+}
+
+// TS zod schema for googleTranscriptionModelOptions rejects bad shapes; empty
+// arrays are forwarded (`!= null`), and offsets parse like Number.parseFloat.
+func TestTranscription_OptionValidationEmptyArraysAndOffsets(t *testing.T) {
+	var ia *providererrors.InvalidArgumentError
+	_, err := parseTranscriptionModelOptionsChecked(map[string]interface{}{"google": map[string]interface{}{"mode": "FAST"}})
+	if !errors.As(err, &ia) {
+		t.Fatalf("mode FAST: err = %v, want InvalidArgumentError", err)
+	}
+	_, err = parseTranscriptionModelOptionsChecked(map[string]interface{}{"google": map[string]interface{}{"diarization": "yes"}})
+	if !errors.As(err, &ia) {
+		t.Fatalf("diarization string: err = %v, want InvalidArgumentError", err)
+	}
+	opts, err := parseTranscriptionModelOptionsChecked(map[string]interface{}{"google": map[string]interface{}{"languageCodes": []interface{}{}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := buildTranscriptionConfig(opts)
+	if v, ok := cfg["language_codes"].([]string); !ok || len(v) != 0 {
+		t.Fatalf("language_codes = %#v, want empty array", cfg["language_codes"])
+	}
+	if cfg := buildAudioTranscriptionConfig(opts); cfg == nil || cfg["languageCodes"] == nil {
+		t.Fatalf("live config = %#v, want languageCodes", cfg)
+	}
+	for in, want := range map[string]float64{"1s": 1, "9.400s": 9.4, "2.5abc": 2.5, ".5s": 0.5} {
+		if got, ok := parseOffsetSeconds(in); !ok || got != want {
+			t.Errorf("parseOffsetSeconds(%q) = %v, %v; want %v", in, got, ok, want)
+		}
+	}
+	if _, ok := parseOffsetSeconds("abc"); ok {
+		t.Error("parseOffsetSeconds(abc) must fail")
 	}
 }

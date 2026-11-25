@@ -34,6 +34,7 @@ export const PROVIDER_PACKAGES: ProviderEntry[] = [
   { pkg: 'google', docs: '/docs/providers/google' },
   { pkg: 'googlevertex', docs: '/docs/providers/google-vertex' },
   { pkg: 'groq', docs: '/docs/providers/groq' },
+  { pkg: 'heygen', docs: '/docs/providers/heygen' },
   { pkg: 'huggingface', docs: '/docs/providers/huggingface' },
   { pkg: 'hume', docs: '/docs/providers/hume' },
   { pkg: 'klingai', docs: '/docs/providers/klingai' },

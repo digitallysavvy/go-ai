@@ -2,13 +2,12 @@ package zai
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	stdhttp "net/http"
-	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -36,10 +35,10 @@ func NewLanguageModel(provider *Provider, modelID string) *LanguageModel {
 }
 
 // SpecificationVersion returns the specification version.
-func (m *LanguageModel) SpecificationVersion() string { return "v3" }
+func (m *LanguageModel) SpecificationVersion() string { return "v4" }
 
 // Provider returns the provider name.
-func (m *LanguageModel) Provider() string { return "zai" }
+func (m *LanguageModel) Provider() string { return "zai.chat" }
 
 // ModelID returns the model ID.
 func (m *LanguageModel) ModelID() string { return m.modelID }
@@ -68,27 +67,51 @@ func (m *LanguageModel) SupportedURLs() map[string][]string {
 
 // DoGenerate performs non-streaming text generation.
 func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+	if err := validateChatProviderOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
+	if err := prompt.ValidateOpenAIFileParts(opts.Prompt.Messages, prompt.FilePartsOpenAICompatible, "zai"); err != nil {
+		return nil, err
+	}
 	reqBody, warnings, err := m.buildRequestBody(opts, false)
 	if err != nil {
 		return nil, err
 	}
 	var response zaiResponse
 	resp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method: stdhttp.MethodPost,
-		Path:   "/chat/completions",
-		Body:   reqBody,
-	}, &response)
+		Method:           stdhttp.MethodPost,
+		Path:             "/chat/completions",
+		Body:             reqBody,
+		Headers:          opts.Headers,
+		ValidateResponse: providerutils.ChatResponseValidator(m.Provider(), providerutils.ResponseKindOpenAICompatible),
+	}, &streaming.OpenAICompatChatDecoder{Target: &response})
 	if err != nil {
 		return nil, m.handleError(err)
 	}
 	result := m.convertResponse(response)
+	if err := streaming.ApplyOpenAICompatibleChatResponse(result, resp.Body, providerutils.ExtractHeaders(resp.Headers), "zai"); err != nil {
+		return nil, err
+	}
+	providerutils.ApplyWireUsageRaw(result, resp.Body)
 	result.Warnings = append(warnings, result.Warnings...)
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
+	// TS result.request.body: the request as sent.
+	result.RawRequest = reqBody
+	// TS response.body is the raw parsed JSON, not the schema-filtered value.
+	if len(resp.Body) > 0 {
+		result.RawResponse = providerutils.RawJSONBody(resp.Body)
+	}
 	return result, nil
 }
 
 // DoStream performs streaming text generation.
 func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+	if err := validateChatProviderOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
+	if err := prompt.ValidateOpenAIFileParts(opts.Prompt.Messages, prompt.FilePartsOpenAICompatible, "zai"); err != nil {
+		return nil, err
+	}
 	reqBody, warnings, err := m.buildRequestBody(opts, true)
 	if err != nil {
 		return nil, err
@@ -97,7 +120,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 		Method:  stdhttp.MethodPost,
 		Path:    "/chat/completions",
 		Body:    reqBody,
-		Headers: map[string]string{"Accept": "text/event-stream"},
+		Headers: internalhttp.MergeHeaders(map[string]string{"Accept": "text/event-stream"}, opts.Headers),
 	})
 	if err != nil {
 		return nil, m.handleError(err)
@@ -105,7 +128,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	inner := newZaiStream(httpResp.Body)
 	inner.SetRequestBody(reqBody)
 	inner.IncludeRawChunks = opts.IncludeRawChunks
-	inner.responseHeaders = providerutils.ExtractHeaders(httpResp.Header)
+	inner.HTTPResponseHeaders = providerutils.ExtractHeaders(httpResp.Header)
 	return streaming.NewWarningsStream(inner, warnings), nil
 }
 
@@ -129,7 +152,7 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	// AllowVideo: true -- zai wraps @ai-sdk/openai-compatible's
 	// OpenAICompatibleChatLanguageModel in TS, which supports video_url
 	// content parts (7dd9ec320c).
-	toOpenAIMessagesOpts := prompt.ToOpenAIMessagesOptions{AllowVideo: true}
+	toOpenAIMessagesOpts := prompt.ToOpenAIMessagesOptions{AllowVideo: true, Provider: "zai", ThoughtSignatureKey: "zai", ReasoningKey: "reasoning_content", SpreadCompatMetadata: true, FileParts: prompt.FilePartsOpenAICompatible}
 	if opts.Prompt.IsMessages() {
 		body["messages"] = prompt.ToOpenAIMessages(opts.Prompt.Messages, toOpenAIMessagesOpts)
 	} else if opts.Prompt.IsSimple() {
@@ -152,22 +175,24 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	if opts.TopP != nil {
 		body["top_p"] = *opts.TopP
 	}
-	if len(opts.StopSequences) > 0 {
+	if opts.StopSequences != nil { // TS != null: an empty array counts
 		body["stop"] = opts.StopSequences
 	}
 
-	var warnings []types.Warning
+	// zaiWarnings are TS prepareCallOptions' warnings; TS appends them AFTER
+	// the shared chat model's own warnings (`[...result.warnings, ...warnings]`).
+	var zaiWarnings []types.Warning
 
 	// frequencyPenalty/presencePenalty/seed are never supported by Z.AI (TS
 	// prepareCallOptions always strips them and warns when set).
 	if opts.FrequencyPenalty != nil {
-		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "frequencyPenalty"})
+		zaiWarnings = append(zaiWarnings, types.Warning{Type: "unsupported", Feature: "frequencyPenalty"})
 	}
 	if opts.PresencePenalty != nil {
-		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "presencePenalty"})
+		zaiWarnings = append(zaiWarnings, types.Warning{Type: "unsupported", Feature: "presencePenalty"})
 	}
 	if opts.Seed != nil {
-		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "seed"})
+		zaiWarnings = append(zaiWarnings, types.Warning{Type: "unsupported", Feature: "seed"})
 	}
 
 	// toolChoice: Z.AI only supports automatic tool selection.
@@ -179,23 +204,35 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		tools = nil
 		toolChoice = types.ToolChoice{}
 	case toolChoice.Type != "" && toolChoice.Type != types.ToolChoiceAuto:
-		warnings = append(warnings, types.Warning{
+		zaiWarnings = append(zaiWarnings, types.Warning{
 			Type:    "unsupported",
 			Feature: "toolChoice " + string(toolChoice.Type),
 			Details: "Z.AI currently supports only automatic tool selection.",
 		})
 		toolChoice = types.ToolChoice{}
 	}
+	var toolWarnings []types.Warning
 	if len(tools) > 0 {
-		body["tools"] = tool.ToOpenAIFormat(tools)
-	}
-	if toolChoice.Type != "" {
-		body["tool_choice"] = tool.ConvertToolChoiceToOpenAI(toolChoice)
+		// TS prepareTools: a provider-defined tool is dropped with an
+		// `unsupported` warning instead of being sent as a function tool.
+		functionTools, dropped := tool.DropProviderDefinedTools(tools, nil)
+		toolWarnings = dropped
+		body["tools"] = tool.ToOpenAIFormat(functionTools)
+		// TS openai-compatible prepareTools: without tools there is no
+		// tool_choice (generateText always passes one, auto by default).
+		if toolChoice.Type != "" {
+			body["tool_choice"] = tool.ConvertToolChoiceToOpenAI(toolChoice)
+		}
 	}
 
 	compatibleOptions, resolveWarnings := providerutils.ResolveOpenAICompatibleProviderOptions("zai", opts.ProviderOptions)
-	warnings = append(warnings, resolveWarnings...)
+	// Shared chat model order: option warnings, topK, responseFormat, tool
+	// warnings; then the Z.AI wrapper's own.
+	warnings := append([]types.Warning(nil), resolveWarnings...)
 	warnings = append(warnings, providerutils.OpenAICompatibleCommonOptionWarnings(compatibleOptions)...)
+	if opts.TopK != nil {
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "topK"})
+	}
 
 	responseFormat, formatWarnings := providerutils.ChatResponseFormat(opts.ResponseFormat, providerutils.ChatResponseFormatOptions{
 		StructuredOutputs:         false,
@@ -206,6 +243,8 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		body["response_format"] = responseFormat
 	}
 	warnings = append(warnings, formatWarnings...)
+	warnings = append(warnings, toolWarnings...)
+	warnings = append(warnings, zaiWarnings...)
 
 	// Map top-level Reasoning to reasoning_effort when the caller hasn't set
 	// providerOptions.zai.reasoningEffort explicitly.
@@ -213,6 +252,9 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		body["reasoning_effort"] = string(*opts.Reasoning)
 	}
 	providerutils.ApplyOpenAICompatibleCommonRequestOptions(body, compatibleOptions)
+	// TS transformZaiRequestBody drops user and verbosity. v0.5.2 forwarded
+	// them (providerOptions.zai/openaiCompatible user and textVerbosity), so
+	// they are still sent for existing Go callers (Known difference).
 
 	zaiOpts, err := decodeZaiOptions(compatibleOptions)
 	if err != nil {
@@ -229,9 +271,9 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		if zaiOpts.thinking.clearThinking != nil {
 			thinkingBody["clear_thinking"] = *zaiOpts.thinking.clearThinking
 		}
-		if len(thinkingBody) > 0 {
-			body["thinking"] = thinkingBody
-		}
+		// TS `thinking !== undefined && { thinking: {...} }`: an empty
+		// thinking object is forwarded as {}.
+		body["thinking"] = thinkingBody
 	}
 	if zaiOpts.toolStream != nil {
 		body["tool_stream"] = *zaiOpts.toolStream
@@ -246,58 +288,54 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	return body, warnings, nil
 }
 
+// convertResponse maps the Z.AI finish reason and usage. Everything else
+// (text and thinking parts, reasoning, tool calls, response metadata) comes
+// from streaming.ApplyOpenAICompatibleChatResponse, the one source of truth
+// for the shared TS openai-compatible doGenerate.
 func (m *LanguageModel) convertResponse(response zaiResponse) *types.GenerateResult {
 	if len(response.Choices) == 0 {
-		return &types.GenerateResult{
-			Text:         "",
-			FinishReason: types.FinishReasonOther,
-		}
+		return &types.GenerateResult{FinishReason: types.FinishReasonOther}
 	}
 	choice := response.Choices[0]
-	result := &types.GenerateResult{
-		Text:            choice.Message.Content,
+	return &types.GenerateResult{
 		FinishReason:    mapZaiFinishReason(choice.FinishReason),
 		RawFinishReason: choice.FinishReason,
-		Usage:           convertZaiUsage(response.Usage),
-		RawResponse:     response,
+		Usage:           convertZaiUsagePtr(response.Usage),
 	}
-	if choice.Message.ReasoningContent != "" {
-		result.Content = append(result.Content, types.ReasoningContent{Text: choice.Message.ReasoningContent})
-	}
-	if len(choice.Message.ToolCalls) > 0 {
-		result.ToolCalls = make([]types.ToolCall, len(choice.Message.ToolCalls))
-		for i, tc := range choice.Message.ToolCalls {
-			var args map[string]interface{}
-			if tc.Function.Arguments != "" {
-				_ = json.Unmarshal([]byte(tc.Function.Arguments), &args) //nolint:errcheck
-			}
-			result.ToolCalls[i] = types.ToolCall{
-				ID:        tc.ID,
-				ToolName:  tc.Function.Name,
-				Arguments: args,
-			}
-		}
-	}
-	if response.ID != "" || response.Model != "" || response.Created != 0 {
-		meta := &types.ResponseMetadata{ID: response.ID, ModelID: response.Model}
-		if response.Created != 0 {
-			meta.Timestamp = time.Unix(response.Created, 0).UTC()
-		}
-		result.ResponseMetadata = meta
-	}
-	return result
 }
 
 func (m *LanguageModel) handleError(err error) error {
+	if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+		return cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
+	}
+	if noResp, ok := internalhttp.NoResponseError(err); ok {
+		return noResp // TS handleFetchError: an abort or timeout is returned unchanged
+	}
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
+	if providerutils.IsInvalidJSONResponse(err) {
+		return err // TS createJsonResponseHandler failure
+	}
 	if parsed := parseZaiProviderError(err); parsed != nil {
 		return parsed
 	}
-	statusCode := 0
+	message := err.Error()
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
-		statusCode = statusErr.StatusCode
+		// TS createJsonErrorResponseHandler: an empty body, or one that does
+		// not parse (secureJsonParse) or match the error schema, gives the
+		// response status text.
+		// (the server reason phrase).
+		if text, fromResponse := statusErr.HTTPStatusText(); fromResponse || text != "" {
+			message = text
+		}
 	}
-	return providererrors.NewProviderError("zai", statusCode, "", err.Error(), err)
+	// The status code, response headers, body and data come from the HTTP
+	// cause (TS APICallError), so retries honor retry-after headers.
+	pe := providererrors.NewProviderErrorFromResponse("zai", 0, "", message, err)
+	pe.Data = nil // TS: no data for a body that does not match the error schema
+	return pe
 }
 
 // mapZaiFinishReason remaps Z.AI-specific raw finish_reason strings that the
@@ -319,10 +357,20 @@ func mapZaiFinishReason(raw string) types.FinishReason {
 	}
 }
 
+// convertZaiUsagePtr is TS convert usage of a possibly missing wire usage: an
+// absent or null usage object yields the null usage (unknown token counts),
+// not zero tokens.
+func convertZaiUsagePtr(usage *zaiUsage) types.Usage {
+	if usage == nil {
+		return types.Usage{}
+	}
+	return convertZaiUsage(*usage)
+}
+
 func convertZaiUsage(usage zaiUsage) types.Usage {
 	promptTokens := int64(usage.PromptTokens)
 	completionTokens := int64(usage.CompletionTokens)
-	totalTokens := int64(usage.TotalTokens)
+	totalTokens := promptTokens + completionTokens // TS core: input total + output total
 	result := types.Usage{
 		InputTokens:  &promptTokens,
 		OutputTokens: &completionTokens,
@@ -332,7 +380,7 @@ func convertZaiUsage(usage zaiUsage) types.Usage {
 	if usage.PromptTokensDetails != nil && usage.PromptTokensDetails.CachedTokens != nil {
 		cachedTokens = int64(*usage.PromptTokensDetails.CachedTokens)
 	}
-	if cachedTokens > 0 {
+	{
 		noCacheTokens := promptTokens - cachedTokens
 		result.InputDetails = &types.InputTokenDetails{
 			NoCacheTokens:   &noCacheTokens,
@@ -343,8 +391,11 @@ func convertZaiUsage(usage zaiUsage) types.Usage {
 	if usage.CompletionTokensDetails != nil && usage.CompletionTokensDetails.ReasoningTokens != nil {
 		reasoningTokens = int64(*usage.CompletionTokensDetails.ReasoningTokens)
 	}
-	if reasoningTokens > 0 {
+	{
 		textTokens := completionTokens - reasoningTokens
+		if textTokens < 0 {
+			textTokens = 0
+		}
 		result.OutputDetails = &types.OutputTokenDetails{
 			TextTokens:      &textTokens,
 			ReasoningTokens: &reasoningTokens,
@@ -359,28 +410,10 @@ func convertZaiUsage(usage zaiUsage) types.Usage {
 }
 
 type zaiResponse struct {
-	ID      string `json:"id"`
-	Object  string `json:"object"`
-	Created int64  `json:"created"`
-	Model   string `json:"model"`
 	Choices []struct {
-		Index        int    `json:"index"`
 		FinishReason string `json:"finish_reason"`
-		Message      struct {
-			Role             string `json:"role"`
-			Content          string `json:"content"`
-			ReasoningContent string `json:"reasoning_content"`
-			ToolCalls        []struct {
-				ID       string `json:"id"`
-				Type     string `json:"type"`
-				Function struct {
-					Name      string `json:"name"`
-					Arguments string `json:"arguments"`
-				} `json:"function"`
-			} `json:"tool_calls"`
-		} `json:"message"`
 	} `json:"choices"`
-	Usage zaiUsage `json:"usage"`
+	Usage *zaiUsage `json:"usage"`
 }
 
 type zaiUsage struct {
@@ -397,8 +430,6 @@ type zaiUsage struct {
 
 type zaiStream struct {
 	*streaming.OpenAICompatStream
-	responseHeaders         map[string]string
-	responseMetadataEmitted bool
 }
 
 // newZaiStream wraps the shared OpenAICompatStream, adding Z.AI's
@@ -416,6 +447,8 @@ func newZaiStream(reader io.ReadCloser) *zaiStream {
 	s := &zaiStream{
 		OpenAICompatStream: streaming.NewOpenAICompatStream(reader, mapZaiFinishReason),
 	}
+	s.MetadataKey = "zai"
+	s.ChunkErrorKind = providerutils.ChunkErrorZai
 	s.OnReasoningDelta = func(eventBytes []byte) (string, bool) {
 		var chunk struct {
 			Choices []struct {
@@ -424,37 +457,11 @@ func newZaiStream(reader io.ReadCloser) *zaiStream {
 				} `json:"delta"`
 			} `json:"choices"`
 		}
-		if err := json.Unmarshal(eventBytes, &chunk); err != nil || len(chunk.Choices) == 0 {
+		if err := jsonexact.Unmarshal(eventBytes, &chunk); err != nil || len(chunk.Choices) == 0 {
 			return "", false
 		}
 		rc := chunk.Choices[0].Delta.ReasoningContent
 		return rc, rc != ""
-	}
-	s.OnBeforeDelta = func(data []byte) []*provider.StreamChunk {
-		var peek struct {
-			ID      string `json:"id"`
-			Model   string `json:"model"`
-			Created int64  `json:"created"`
-		}
-		if json.Unmarshal(data, &peek) != nil {
-			return nil
-		}
-		if s.responseMetadataEmitted || (peek.ID == "" && peek.Model == "" && peek.Created == 0 && len(s.responseHeaders) == 0) {
-			return nil
-		}
-		s.responseMetadataEmitted = true
-		meta := &provider.ResponseMetadata{
-			ID:      peek.ID,
-			ModelID: peek.Model,
-			Headers: s.responseHeaders,
-		}
-		if peek.Created != 0 {
-			meta.Timestamp = time.Unix(peek.Created, 0)
-		}
-		return []*provider.StreamChunk{{
-			Type:             provider.ChunkTypeResponseMetadata,
-			ResponseMetadata: meta,
-		}}
 	}
 	return s
 }

@@ -8,6 +8,7 @@ import (
 
 func init() {
 	provider.RegisterModelDeserializer("zai", deserializeModel)
+	provider.RegisterModelDeserializer("zai.chat", deserializeModel)
 }
 
 // Serialize implements provider.SerializableModel for workflow boundaries.

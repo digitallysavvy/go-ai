@@ -294,7 +294,8 @@ func TestToolResultsToContentPartsOrdersAutomaticApprovalBeforeResult(t *testing
 	if tr.ToolCallID != "call-1" {
 		t.Fatalf("unexpected tool result: %+v", tr)
 	}
-	if tr.Result != nil || tr.Output == nil || tr.Output.Type != types.ToolResultOutputText || tr.Output.Value != "sunny" {
+	// TS step content keeps the raw output; Output is the model output.
+	if tr.Result != "sunny" || tr.Output == nil || tr.Output.Type != types.ToolResultOutputText || tr.Output.Value != "sunny" {
 		t.Fatalf("unexpected model output: result=%#v output=%+v", tr.Result, tr.Output)
 	}
 	if len(tr.ProviderMetadata) == 0 {
@@ -497,8 +498,10 @@ func TestExecuteToolsAppliesToModelOutputWithTSShapedOptions(t *testing.T) {
 	if !ok {
 		t.Fatalf("parts[0] = %T, want ToolResultContent", parts[0])
 	}
-	if toolResult.Result != nil || toolResult.Output == nil || toolResult.Output.Value != "model sees: visible" {
-		t.Fatalf("tool result content = %+v, want converted model output only", toolResult)
+	// TS step content `output` is the raw tool output; the converted model
+	// output is Go's Output (r74: stream CR-1).
+	if !reflect.DeepEqual(toolResult.Result, raw) || toolResult.Output == nil || toolResult.Output.Value != "model sees: visible" {
+		t.Fatalf("tool result content = %+v, want the raw result and the converted model output", toolResult)
 	}
 }
 
@@ -743,5 +746,38 @@ func TestStreamText_AdjacentTextStartBoundariesDoNotMerge(t *testing.T) {
 	}
 	if textParts[1].ProviderMetadata != nil {
 		t.Errorf("textParts[1].ProviderMetadata = %s, want nil (must not inherit the compaction block's metadata)", textParts[1].ProviderMetadata)
+	}
+}
+
+func TestStreamTextToModelOutputErrorSurfaces(t *testing.T) {
+	convertErr := errors.New("conversion failed")
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "lookup", Arguments: map[string]interface{}{}}},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls},
+			}), nil
+		},
+	}
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "lookup",
+		Tools: []types.Tool{{
+			Name: "lookup",
+			Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+				return "raw", nil
+			},
+			ToModelOutput: func(context.Context, types.ToModelOutputOptions) (*types.ToolResultOutput, error) {
+				return nil, convertErr
+			},
+		}},
+		StopWhen: []StopCondition{StepCountIs(2)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, readErr := result.ReadAll()
+	if !errors.Is(readErr, convertErr) {
+		t.Fatalf("StreamText error = %v, want conversion error", readErr)
 	}
 }

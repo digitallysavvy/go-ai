@@ -218,6 +218,27 @@ func stripOneParam(tokens []tsToken, i int, out *[]tsToken, isConstructor bool) 
 	}
 	i = j
 
+	// Parameter decorators (`@Inject() x: T`) are runtime syntax Node keeps;
+	// only the types after them are erased.
+	for tokens[i].kind == "punct" && tokens[i].text == "@" {
+		end := decoratorEnd(tokens, i)
+		if end <= i+1 {
+			break
+		}
+		for k := i; k < end; k++ {
+			*out = append(*out, tokens[k])
+		}
+		i = end
+		if j := nextSignificant(tokens, i); j >= 0 {
+			for k := i; k < j; k++ {
+				*out = append(*out, tokens[k])
+			}
+			i = j
+		} else {
+			return i, nil
+		}
+	}
+
 	// Rest parameter marker.
 	if tokens[i].kind == "punct" && tokens[i].text == "..." {
 		*out = append(*out, tokens[i])
@@ -302,6 +323,15 @@ func handleFunctionSignature(tokens []tsToken, i int, out *[]tsToken) (int, erro
 		}
 		i = j + 1
 	}
+	// Variance modifiers (`<in T>`) are only valid on classes, interfaces
+	// and type aliases; Node rejects them on a function.
+	if lt := nextSignificant(tokens, i); lt >= 0 && tokens[lt].kind == "punct" && tokens[lt].text == "<" {
+		if v := nextSignificant(tokens, lt+1); v >= 0 && tokens[v].kind == "ident" && (tokens[v].text == "in" || tokens[v].text == "out") {
+			if n := nextSignificant(tokens, v+1); n >= 0 && tokens[n].kind == "ident" {
+				return v, errUnsupportedTSSyntax("variance modifier on a function")
+			}
+		}
+	}
 	i = stripOptionalTypeParams(tokens, i, out)
 
 	open := nextSignificant(tokens, i)
@@ -322,7 +352,41 @@ func handleFunctionSignature(tokens []tsToken, i int, out *[]tsToken) (int, erro
 	if next >= 0 && tokens[next].kind == "punct" && tokens[next].text == "{" {
 		return i, nil
 	}
-	end := scanToStatementEnd(tokens, i)
+	// A bodyless signature (an overload) ends with its return type, or with
+	// a `;` after it.
+	end := i
+	if semi := nextSignificant(tokens, end); semi >= 0 && tokens[semi].kind == "punct" && tokens[semi].text == ";" {
+		end = semi + 1
+	}
 	*out = (*out)[:memberStart]
 	return end, nil
+}
+
+// decoratorEnd returns the index just past the decorator that starts at the
+// `@` token at i: `@a.b.c`, `@a.b(args)` or `@(expr)`. It returns i+1 when no
+// decorator expression follows.
+func decoratorEnd(tokens []tsToken, i int) int {
+	j := i + 1
+	if j >= len(tokens) {
+		return j
+	}
+	if tokens[j].kind == "punct" && tokens[j].text == "(" {
+		if c := matchParen(tokens, j); c >= 0 {
+			return c + 1
+		}
+		return i + 1
+	}
+	if tokens[j].kind != "ident" {
+		return i + 1
+	}
+	j++
+	for j+1 < len(tokens) && tokens[j].kind == "punct" && tokens[j].text == "." && tokens[j+1].kind == "ident" {
+		j += 2
+	}
+	if j < len(tokens) && tokens[j].kind == "punct" && tokens[j].text == "(" {
+		if c := matchParen(tokens, j); c >= 0 {
+			j = c + 1
+		}
+	}
+	return j
 }

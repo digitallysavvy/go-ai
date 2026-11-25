@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/schema"
 )
 
 // BUG-T15: strict mode must be included in the tool function definition so that
@@ -173,5 +174,43 @@ func TestToJSONSchema_ImplicitObjectSchemaGetsType(t *testing.T) {
 	params := fn["parameters"].(map[string]interface{})
 	if params["type"] != "object" {
 		t.Fatalf("parameters.type = %v, want object", params["type"])
+	}
+}
+
+func TestToJSONSchemaResolvesSchemaSchemaParameters(t *testing.T) {
+	s := schema.NewSimpleJSONSchema(map[string]interface{}{
+		"type":       "object",
+		"properties": map[string]interface{}{"age": map[string]interface{}{"type": "integer"}},
+	})
+	got := ToJSONSchema(types.Tool{Name: "t", Parameters: s})
+	params, _ := got["function"].(map[string]interface{})["parameters"].(map[string]interface{})
+	if _, ok := params["properties"]; !ok {
+		t.Fatalf("parameters = %#v, want the JSON Schema of the schema.Schema", params)
+	}
+}
+
+// TS sanitizeSchema checks `!= null`, so JSON null keywords are dropped.
+func TestSanitizeAnthropicSchemaSkipsNullKeywords(t *testing.T) {
+	got := SanitizeAnthropicSchema(map[string]interface{}{
+		"type":        "object",
+		"title":       nil,
+		"description": nil,
+		"enum":        nil,
+		"required":    nil,
+		"properties":  map[string]interface{}{},
+	}).(map[string]interface{})
+	for _, k := range []string{"title", "description", "enum", "required"} {
+		if _, ok := got[k]; ok {
+			t.Errorf("%s should be omitted, got %v", k, got[k])
+		}
+	}
+}
+
+func TestSanitizeAnthropicSchemaEmptyDescriptionStillGetsConstraintText(t *testing.T) {
+	got := SanitizeAnthropicSchema(map[string]interface{}{
+		"type": "string", "description": "", "minLength": 3,
+	}).(map[string]interface{})
+	if got["description"] != "\nmin length: 3." {
+		t.Fatalf("description = %q", got["description"])
 	}
 }

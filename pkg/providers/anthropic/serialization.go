@@ -4,10 +4,17 @@ import (
 	"encoding/json"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 func init() {
+	// "anthropic" is the pre-TS-parity Provider() value; keep it so models
+	// serialized by earlier versions still deserialize.
 	provider.RegisterModelDeserializer("anthropic", deserializeModel)
+	provider.RegisterModelDeserializer("anthropic.messages", deserializeModel)
+	// Provider.ExtractionModel wraps a messages model (TS ExtractionLanguageModel
+	// [WORKFLOW_SERIALIZE]).
+	provider.RegisterExtractionModelDeserializer("anthropic.extraction", providerutils.DeserializeExtractionLanguageModel)
 }
 
 func (m *LanguageModel) Serialize() provider.SerializedModel {

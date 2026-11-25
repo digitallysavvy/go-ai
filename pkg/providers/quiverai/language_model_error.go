@@ -1,9 +1,11 @@
 package quiverai
 
 import (
-	"encoding/json"
+	"math"
+	"net/http"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openresponses"
 )
@@ -16,17 +18,56 @@ import (
 // (quiverai-error.ts): isRetryable is classified by the HTTP response
 // status (429 or >=500), not the embedded `status` field.
 func quiverAIFailedResponseHandler(statusErr *internalhttp.HTTPStatusError) error {
-	var apiErr quiverAPIError
-	if json.Unmarshal(statusErr.Body, &apiErr) == nil && apiErr.Message != "" {
-		perr := providererrors.NewProviderError("quiverai", statusErr.StatusCode, apiErr.Code, apiErr.Message, nil)
+	apiErr, ok := parseQuiverAIErrorBody(statusErr.Body)
+	if ok {
+		perr := providererrors.NewProviderErrorFromResponse("quiverai", 0, apiErr.Code, apiErr.Message, statusErr)
 		perr.Data = apiErr
-		perr.ResponseBody = string(statusErr.Body)
+		perr.Retryable = quiverAIRetryable(statusErr.StatusCode)
 		return perr
 	}
-	perr := providererrors.NewProviderError("quiverai", statusErr.StatusCode, "", string(statusErr.Body), nil)
-	perr.ResponseBody = string(statusErr.Body)
+	perr := providererrors.NewProviderErrorFromResponse("quiverai", 0, "", statusErr.Text(), statusErr)
+	// TS: a body that fails quiveraiErrorSchema gives no data.
+	perr.Data = nil
+	perr.Retryable = quiverAIRetryable(statusErr.StatusCode)
 	return perr
 }
+
+// quiverAIRetryable is the TS quiveraiFailedResponseHandler isRetryable:
+// only 429 and 5xx, unlike the APICallError default that also retries 408
+// and 409.
+func quiverAIRetryable(status int) *bool {
+	retryable := status == http.StatusTooManyRequests || status >= 500
+	return &retryable
+}
+
+// parseQuiverAIErrorBody validates body against the TS quiveraiErrorSchema:
+// status is a safe integer (zod v4 z.number().int() is the "safeint" format:
+// a whole number within ±Number.MAX_SAFE_INTEGER) and code, message and
+// request_id are non-empty strings. Anything else (empty body, non-JSON, a partial object) is not an
+// API error body, and TS createJsonErrorResponseHandler then uses the HTTP
+// status text as the message.
+func parseQuiverAIErrorBody(body []byte) (quiverAPIError, bool) {
+	var raw struct {
+		Status    *float64 `json:"status"`
+		Code      *string  `json:"code"`
+		Message   *string  `json:"message"`
+		RequestID *string  `json:"request_id"`
+	}
+	if securejson.Unmarshal(body, &raw) != nil {
+		return quiverAPIError{}, false
+	}
+	if raw.Status == nil || *raw.Status != math.Trunc(*raw.Status) || math.Abs(*raw.Status) > quiverMaxSafeInteger ||
+		raw.Code == nil || *raw.Code == "" ||
+		raw.Message == nil || *raw.Message == "" ||
+		raw.RequestID == nil || *raw.RequestID == "" {
+		return quiverAPIError{}, false
+	}
+	return quiverAPIError{Status: int64(*raw.Status), Code: *raw.Code, Message: *raw.Message, RequestID: *raw.RequestID}, true
+}
+
+// quiverMaxSafeInteger is Number.MAX_SAFE_INTEGER, the bound of zod's
+// z.number().int().
+const quiverMaxSafeInteger = 1<<53 - 1
 
 // quiverAIResponseErrorMetadata extracts QuiverAI's endpoint-specific
 // `error.status_code` from an embedded response error (200 response with an

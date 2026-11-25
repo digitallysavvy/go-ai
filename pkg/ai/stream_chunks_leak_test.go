@@ -45,8 +45,6 @@ func waitGoroutines(t *testing.T, base int) {
 	t.Fatalf("goroutine leak: %d > %d\n%s", runtime.NumGoroutine(), base, buf[:n])
 }
 
-// A consumer that stops reading Chunks and closes the result must not leak
-// the producing goroutine (it blocked on the channel send forever).
 func TestChunks_AbandonedConsumerExitsOnClose(t *testing.T) {
 	res := manyChunkResult(t)
 	_, _ = res.ReadAll()
@@ -57,18 +55,15 @@ func TestChunks_AbandonedConsumerExitsOnClose(t *testing.T) {
 	waitGoroutines(t, base)
 }
 
-// A consumer that reads every chunk still sees the whole stream.
-func TestChunks_FullConsumerSeesAllChunks(t *testing.T) {
+func TestChunksContext_AbandonedConsumerExitsOnCancel(t *testing.T) {
 	res := manyChunkResult(t)
-	text := 0
-	for c := range res.Chunks() {
-		if c.Type == provider.ChunkTypeText {
-			text++
-		}
-	}
-	if text != 100 {
-		t.Fatalf("text chunks = %d, want 100", text)
-	}
+	_, _ = res.ReadAll()
+	base := runtime.NumGoroutine()
+	ctx, cancel := context.WithCancel(context.Background())
+	ch := res.ChunksContext(ctx)
+	<-ch
+	cancel()
+	waitGoroutines(t, base)
 }
 
 func TestElementStream_AbandonedConsumerExitsOnClose(t *testing.T) {
@@ -102,4 +97,45 @@ func TestElementStream_AbandonedConsumerExitsOnClose(t *testing.T) {
 	_ = res.Close()
 	_, _ = res.ReadAll()
 	waitGoroutines(t, base)
+	_ = ch
+}
+
+// Cancelling one ChunksContext consumer must not detach the shared Stream()
+// cursor: a later accessor still reads the rest of the stream (TS: each
+// accessor is an independent tee).
+func TestChunksContext_CancelLeavesStreamUsable(t *testing.T) {
+	res := manyChunkResult(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	ch := res.ChunksContext(ctx)
+	<-ch
+	cancel()
+	time.Sleep(100 * time.Millisecond)
+	st := res.Stream()
+	sawFinish := false
+	for {
+		c, err := st.Next()
+		if err != nil {
+			break
+		}
+		if c.Type == provider.ChunkTypeFinish {
+			sawFinish = true
+		}
+	}
+	if !sawFinish {
+		t.Fatal("Stream() after ChunksContext cancel did not reach the finish chunk")
+	}
+}
+
+// A consumer that reads every chunk still sees the whole stream (v0.5.3).
+func TestChunks_FullConsumerSeesAllChunks(t *testing.T) {
+	res := manyChunkResult(t)
+	text := 0
+	for c := range res.Chunks() {
+		if c.Type == provider.ChunkTypeText {
+			text++
+		}
+	}
+	if text != 100 {
+		t.Fatalf("text chunks = %d, want 100", text)
+	}
 }

@@ -184,7 +184,7 @@ func TestLegacySetNetworkPolicyMapsAllowAll(t *testing.T) {
 		t.Fatal(err)
 	}
 	last := f.updateRequests[len(f.updateRequests)-1]
-	requirePolicyEqual(t, *last.Req.NetworkPolicy, AllowAllNetworkPolicy())
+	requirePolicyEqual(t, NetworkPolicy(*last.Req.NetworkPolicy), AllowAllNetworkPolicy())
 }
 
 func TestLegacySetNetworkPolicyMapsDenyAll(t *testing.T) {
@@ -195,7 +195,7 @@ func TestLegacySetNetworkPolicyMapsDenyAll(t *testing.T) {
 		t.Fatal(err)
 	}
 	last := f.updateRequests[len(f.updateRequests)-1]
-	requirePolicyEqual(t, *last.Req.NetworkPolicy, DenyAllNetworkPolicy())
+	requirePolicyEqual(t, NetworkPolicy(*last.Req.NetworkPolicy), DenyAllNetworkPolicy())
 }
 
 func TestLegacySetNetworkPolicyMapsCustomAllowedHosts(t *testing.T) {
@@ -206,7 +206,7 @@ func TestLegacySetNetworkPolicyMapsCustomAllowedHosts(t *testing.T) {
 		t.Fatal(err)
 	}
 	last := f.updateRequests[len(f.updateRequests)-1]
-	requirePolicyEqual(t, *last.Req.NetworkPolicy, NetworkPolicy{AllowList: []string{"api.example.com", "*.npmjs.org"}})
+	requirePolicyEqual(t, NetworkPolicy(*last.Req.NetworkPolicy), NetworkPolicy{AllowList: []string{"api.example.com", "*.npmjs.org"}})
 }
 
 func TestLegacySetNetworkPolicyMapsCustomCIDRs(t *testing.T) {
@@ -217,7 +217,7 @@ func TestLegacySetNetworkPolicyMapsCustomCIDRs(t *testing.T) {
 		t.Fatal(err)
 	}
 	last := f.updateRequests[len(f.updateRequests)-1]
-	requirePolicyEqual(t, *last.Req.NetworkPolicy, NetworkPolicy{Subnets: &PolicySubnets{Allow: []string{"10.0.0.0/8"}, Deny: []string{"10.5.0.0/16"}}})
+	requirePolicyEqual(t, NetworkPolicy(*last.Req.NetworkPolicy), NetworkPolicy{Subnets: &PolicySubnets{Allow: []string{"10.0.0.0/8"}, Deny: []string{"10.5.0.0/16"}}})
 }
 
 // --- setPorts ---

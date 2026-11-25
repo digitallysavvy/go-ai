@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -518,5 +519,79 @@ func TestExtractReasoningMiddleware_NilOptions(t *testing.T) {
 	expected := "text"
 	if result.Text != expected {
 		t.Errorf("expected %q, got %q", expected, result.Text)
+	}
+}
+
+func TestExtractReasoningMiddleware_CustomDelimiters(t *testing.T) {
+	gemma := &ReasoningDelimiters{Opening: "<|channel>thought\n", Closing: "<channel|>"}
+	meta := &ReasoningDelimiters{Opening: "[.*+?^${}()|\\]", Closing: "(end.*+?^${}|\\)"}
+	cases := []struct {
+		name, input, text, reasoning string
+		d                            *ReasoningDelimiters
+		startWithReasoning           bool
+		separator                    string
+	}{
+		{"gemma", "<|channel>thought\nChecking the sum.\nIt is four.<channel|>4", "4", "Checking the sum.\nIt is four.", gemma, false, ""},
+		{"empty gemma", "<|channel>thought\n<channel|>4", "4", "", gemma, false, ""},
+		{"omitted opening", "Checking the sum.<channel|>4", "4", "Checking the sum.", gemma, true, ""},
+		{"metachars", "[.*+?^${}()|\\]Checking the sum.(end.*+?^${}|\\)4", "4", "Checking the sum.", meta, false, ""},
+		{"multiple blocks and separator", "Before<|channel>thought\nFirst<channel|>Between<|channel>thought\nSecond<channel|>After", "Before / Between / After", "First / Second", gemma, false, " / "},
+		{"no delimiters", "4", "4", "", gemma, false, ""},
+	}
+	for _, tc := range cases {
+		opts := &ExtractReasoningOptions{Delimiters: tc.d, StartWithReasoning: tc.startWithReasoning, Separator: tc.separator}
+		t.Run("generate/"+tc.name, func(t *testing.T) {
+			mw := ExtractReasoningMiddleware(opts)
+			wrapped := WrapLanguageModel(&mockLanguageModel{generateResult: &types.GenerateResult{Text: tc.input}}, []*LanguageModelMiddleware{mw}, nil, nil)
+			res, err := wrapped.DoGenerate(context.Background(), &provider.GenerateOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Text != tc.text {
+				t.Errorf("text: want %q got %q", tc.text, res.Text)
+			}
+		})
+		t.Run("stream/"+tc.name, func(t *testing.T) {
+			var chunks []*provider.StreamChunk
+			for _, r := range tc.input {
+				chunks = append(chunks, &provider.StreamChunk{Type: provider.ChunkTypeText, ID: "text-0", Text: string(r)})
+			}
+			mw := ExtractReasoningMiddleware(opts)
+			wrapped := WrapLanguageModel(&mockLanguageModel{stream: &mockTextStream{chunks: chunks}}, []*LanguageModelMiddleware{mw}, nil, nil)
+			stream, err := wrapped.DoStream(context.Background(), &provider.GenerateOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var text, reasoning string
+			for {
+				c, err := stream.Next()
+				if err != nil {
+					break
+				}
+				switch c.Type {
+				case provider.ChunkTypeText:
+					text += c.Text
+				case provider.ChunkTypeReasoning:
+					reasoning += c.Reasoning
+				}
+			}
+			if text != tc.text || reasoning != tc.reasoning {
+				t.Errorf("want text %q reasoning %q, got %q / %q", tc.text, tc.reasoning, text, reasoning)
+			}
+		})
+	}
+}
+
+func TestExtractReasoningMiddleware_RejectsEmptyDelimiters(t *testing.T) {
+	for _, d := range []*ReasoningDelimiters{{Opening: "", Closing: "<channel|>"}, {Opening: "<|channel>thought\n", Closing: ""}} {
+		func() {
+			defer func() {
+				e, ok := recover().(*providererrors.InvalidArgumentError)
+				if !ok || e.Message != "Reasoning delimiters must not be empty." {
+					t.Errorf("expected InvalidArgumentError panic, got %v", e)
+				}
+			}()
+			ExtractReasoningMiddleware(&ExtractReasoningOptions{Delimiters: d})
+		}()
 	}
 }

@@ -295,7 +295,14 @@ A template packages the bootstrap work so a snapshot-capable provider can reuse 
 
 ## Local provider
 
-Package `github.com/digitallysavvy/go-ai/pkg/harness/sandbox/local` runs each session in a directory on the host. It has no isolation. Use it for development and tests. `local.ProviderID` is `"local"`.
+Package `github.com/digitallysavvy/go-ai/pkg/harness/sandbox/local` runs each session in a directory on the host. `local.ProviderID` is `"local"`.
+
+> **Warning:** the local provider is for development and tests only. It is not a security boundary.
+>
+> - Commands run as the current user with full host network and filesystem access. File paths are not confined to the session directory; absolute and `..` paths are accepted.
+> - Commands inherit the full host environment, including API keys and other secrets. To restrict it, set `Options.HostEnv` to the names of the host variables to pass through, for example `[]string{"PATH"}`. `Options.Env` adds variables either way, and `HOME` is always the session home.
+> - `Stop` and `Destroy` kill the process group of every command that is still running. Background children that outlive their shell are not tracked and can survive.
+> - The session directory is created with owner-only permissions (0700).
 
 ```go
 func NewProvider(opts Options) *Provider
@@ -308,6 +315,7 @@ func NewProvider(opts Options) *Provider
 | `RootDir` | `string` | RootDir holds one directory per session. Defaults to &lt;os.TempDir()&gt;/ai-sdk-harness-local. |
 | `HomeDir` | `string` | HomeDir, when set, is used as HOME for every session (for example the real user home to reuse caches and native subscriptions). When empty, each session gets an isolated HOME under its session directory. |
 | `Shell` | `string` | Shell runs commands. Defaults to /bin/sh. |
+| `HostEnv` | `[]string` | HostEnv limits which host environment variables commands inherit. Nil (the default) inherits the entire host environment, including secrets such as API keys. A non-nil slice (even empty) inherits only the named variables; HOME is always set to the session home. |
 | `Env` | `map[string]string` | Env is added to every command's environment (after the host environment and HOME, before per-command env). |
 | `Ports` | `[]int` | Ports lists the ports reported by Ports(); all localhost ports are reachable regardless. |
 | `Host` | `string` | Host used in port endpoints. Defaults to 127.0.0.1. |

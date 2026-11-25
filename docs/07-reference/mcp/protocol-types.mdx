@@ -56,6 +56,7 @@ Types in `pkg/mcp` that model the protocol. Most code uses the [client](./client
 | `Roots` | `*RootsCapability` |  |
 | `Sampling` | `*SamplingCapability` |  |
 | `Elicitation` | `map[string]interface{}` |  |
+| `Extra` | `map[string]interface{}` | Extra holds keys the schema does not name (TS looseObject passthrough). |
 
 {/* /gen:fields */}
 
@@ -63,12 +64,15 @@ Types in `pkg/mcp` that model the protocol. Most code uses the [client](./client
 
 | Field | Type | Description |
 | --- | --- | --- |
+| `Events` | `*EventsCapability` | Events advertises support for the experimental events/\* methods. |
 | `Experimental` | `map[string]interface{}` |  |
 | `Logging` | `*LoggingCapability` |  |
 | `Completions` | `*CompletionsCapability` | Completions advertises support for the completion/complete method (hash 68a739a). See (\*MCPClient).Complete. |
 | `Prompts` | `*PromptsCapability` |  |
 | `Resources` | `*ResourcesCapability` |  |
 | `Tools` | `*ToolsCapability` |  |
+| `Elicitation` | `map[string]interface{}` | Elicitation advertises support for elicitation requests (TS ServerCapabilities.elicitation, e.g. applyDefaults). |
+| `Extra` | `map[string]interface{}` | Extra holds keys the schema does not name (TS looseObject passthrough). |
 
 {/* /gen:fields */}
 
@@ -87,6 +91,7 @@ The capability types are `mcp.RootsCapability`, `mcp.SamplingCapability`, `mcp.T
 | `OutputSchema` | `map[string]interface{}` |  |
 | `Annotations` | `map[string]interface{}` |  |
 | `Meta` | `map[string]interface{}` |  |
+| `Extra` | `map[string]interface{}` | Extra holds keys the schema does not name (TS looseObject passthrough), e.g. icons or execution. |
 
 {/* /gen:fields */}
 

@@ -309,3 +309,14 @@ func TestMergeConsecutiveToolMessagesDoesNotMutateInput(t *testing.T) {
 		t.Fatalf("merge is not idempotent across repeated calls on the same input:\nfirst:  %#v\nsecond: %#v", firstResult, secondResult)
 	}
 }
+
+func TestMergeConsecutiveToolMessages_EmptyFirstMessageKeepsProviderOptions(t *testing.T) {
+	opts := map[string]interface{}{"test": map[string]interface{}{"cacheControl": "approval"}}
+	got := MergeConsecutiveToolMessages([]types.Message{
+		{Role: types.RoleTool, ProviderOptions: opts},
+		{Role: types.RoleTool, Content: []types.ContentPart{types.ToolResultContent{ToolCallID: "c", ToolName: "t"}}},
+	})
+	if len(got) != 1 || len(got[0].Content) != 1 || !reflect.DeepEqual(got[0].ProviderOptions, opts) {
+		t.Fatalf("got %#v", got)
+	}
+}

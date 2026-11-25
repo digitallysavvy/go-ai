@@ -3,6 +3,9 @@ package errors
 import (
 	"encoding/json"
 	"fmt"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 )
 
 type GatewayAuthenticationError struct {
@@ -31,11 +34,11 @@ func CreateContextualAuthenticationError(apiKeyProvided, oidcTokenProvided bool,
 	var message string
 	switch {
 	case apiKeyProvided:
-		message = "AI Gateway authentication failed: Invalid API key.\n\nCreate a new API key: https://vercel.com/d?to=%2F%5Bteam%5D%2F%7E%2Fai%2Fapi-keys\n\nProvide via 'apiKey' option or 'AI_GATEWAY_API_KEY' environment variable."
+		message = "AI Gateway authentication failed: Invalid API key or token.\n\nCreate a new API key: https://vercel.com/d?to=%2F%5Bteam%5D%2F%7E%2Fai%2Fapi-keys\n\nProvide an API key or Vercel access token via 'apiKey' option or 'AI_GATEWAY_API_KEY' environment variable."
 	case oidcTokenProvided:
-		message = "AI Gateway authentication failed: Invalid OIDC token.\n\nRun 'npx vercel link' to link your project, then 'vc env pull' to fetch the token.\n\nAlternatively, use an API key: https://vercel.com/d?to=%2F%5Bteam%5D%2F%7E%2Fai%2Fapi-keys"
+		message = "AI Gateway authentication failed: Invalid OIDC token.\n\nRun 'npx vercel link' to link your project, then 'vc env pull' to fetch the token.\n\nAlternatively, use an API key: https://vercel.com/d?to=%2F%5Bteam%5D%2F%7E%2Fai%2Fapi-keys\nor pass a Vercel access token via the 'apiKey' option."
 	default:
-		message = "AI Gateway authentication failed: No authentication provided.\n\nOption 1 - API key:\nCreate an API key: https://vercel.com/d?to=%2F%5Bteam%5D%2F%7E%2Fai%2Fapi-keys\nProvide via 'apiKey' option or 'AI_GATEWAY_API_KEY' environment variable.\n\nOption 2 - OIDC token:\nRun 'npx vercel link' to link your project, then 'vc env pull' to fetch the token."
+		message = "AI Gateway authentication failed: No authentication provided.\n\nOption 1 - API key:\nCreate an API key: https://vercel.com/d?to=%2F%5Bteam%5D%2F%7E%2Fai%2Fapi-keys\nProvide via 'apiKey' option or 'AI_GATEWAY_API_KEY' environment variable.\n\nOption 2 - Vercel access token:\nPass a Vercel personal access token or Vercel app access token via the 'apiKey' option.\n\nOption 3 - OIDC token:\nRun 'npx vercel link' to link your project, then 'vc env pull' to fetch the token."
 	}
 	return NewGatewayAuthenticationError(message, statusCode, cause, generationID)
 }
@@ -132,6 +135,74 @@ func NewGatewayForbiddenErrorWithRuleID(message string, statusCode int, cause er
 	return err
 }
 
+// GatewayAccessPolicyDeniedError indicates an AI Gateway access policy that
+// applies to the request does not allow the requested model or provider (HTTP
+// 403, error type access_policy_denied; TS b8c01eb49d). It is a sibling of
+// GatewayForbiddenError, not a variant: callers tell the two apart with
+// errors.As. PolicyIDs, RemovedModels and RemovedProviders hold what the
+// Gateway reported in the error param; each is nil when it was absent or the
+// param did not match the expected shape.
+type GatewayAccessPolicyDeniedError struct {
+	baseGatewayError
+	PolicyIDs        []string
+	RemovedModels    []string
+	RemovedProviders []string
+}
+
+func NewGatewayAccessPolicyDeniedError(message string, statusCode int, cause error, generationID string, policyIDs, removedModels, removedProviders []string) *GatewayAccessPolicyDeniedError {
+	if message == "" {
+		message = "Access policy denied"
+	}
+	if statusCode == 0 {
+		statusCode = 403
+	}
+	return &GatewayAccessPolicyDeniedError{
+		baseGatewayError: baseGatewayError{message: message, statusCode: statusCode, errorType: "access_policy_denied", cause: cause, generationID: generationID},
+		PolicyIDs:        policyIDs,
+		RemovedModels:    removedModels,
+		RemovedProviders: removedProviders,
+	}
+}
+
+// accessPolicyDeniedParam reads the error param like TS
+// safeValidateTypes(accessPolicyDeniedParamSchema): an object whose
+// policyIds, removedModels and removedProviders are each absent or an array
+// of strings; unknown keys are ignored, and any other shape (including null
+// or a non-string entry) gives no values at all.
+func accessPolicyDeniedParam(rawParam interface{}) (policyIDs, removedModels, removedProviders []string) {
+	param, ok := rawParam.(map[string]interface{})
+	if !ok {
+		return nil, nil, nil
+	}
+	read := func(key string) ([]string, bool) {
+		value, present := param[key]
+		if !present {
+			return nil, true
+		}
+		list, ok := value.([]interface{})
+		if !ok {
+			return nil, false
+		}
+		out := make([]string, 0, len(list))
+		for _, item := range list {
+			text, ok := item.(string)
+			if !ok {
+				return nil, false
+			}
+			out = append(out, text)
+		}
+		return out, true
+	}
+	var okIDs, okModels, okProviders bool
+	policyIDs, okIDs = read("policyIds")
+	removedModels, okModels = read("removedModels")
+	removedProviders, okProviders = read("removedProviders")
+	if !okIDs || !okModels || !okProviders {
+		return nil, nil, nil
+	}
+	return policyIDs, removedModels, removedProviders
+}
+
 // GatewayNotFoundError indicates the requested Gateway resource does not
 // exist or is not visible to the caller (e.g. an unknown async batch/video
 // job id). Distinct from GatewayModelNotFoundError, which is model-specific.
@@ -210,7 +281,7 @@ type forbiddenParam struct {
 
 func CreateGatewayErrorFromResponse(responseBody []byte, statusCode int, defaultMessage string, cause error, authMethod string) error {
 	var payload gatewayErrorPayload
-	if err := json.Unmarshal(responseBody, &payload); err != nil || payload.Error == nil || payload.Error.Message == nil {
+	if err := securejson.Unmarshal(responseBody, &payload); err != nil || payload.Error == nil || payload.Error.Message == nil {
 		return newInvalidGatewayErrorResponse(responseBody, statusCode, defaultMessage, err, cause)
 	}
 	if !isValidGatewayErrorCode(payload.Error.Code) {
@@ -239,7 +310,9 @@ func CreateGatewayErrorFromResponse(responseBody []byte, statusCode int, default
 		err = newGatewayRateLimitErrorFromResponse(message, statusCode, cause, generationID)
 	case "model_not_found":
 		var param modelNotFoundParam
-		_ = json.Unmarshal(payload.Error.Param, &param) // best effort
+		// TS safeValidateTypes(modelNotFoundParamSchema): keys match
+		// exactly, so a "ModelId" key is not modelId.
+		_ = jsonexact.Unmarshal(payload.Error.Param, &param) // best effort
 		err = newGatewayModelNotFoundErrorFromResponse(message, statusCode, param.ModelID, cause, generationID)
 	case "not_found":
 		err = NewGatewayNotFoundError(message, statusCode, cause, generationID)
@@ -249,8 +322,12 @@ func CreateGatewayErrorFromResponse(responseBody []byte, statusCode int, default
 		err = NewGatewayFailedDependencyError(message, statusCode, cause, generationID)
 	case "forbidden":
 		var param forbiddenParam
-		_ = json.Unmarshal(payload.Error.Param, &param) // best effort; non-string/missing ruleId leaves RuleID empty
+		// TS safeValidateTypes(forbiddenParamSchema): keys match exactly.
+		_ = jsonexact.Unmarshal(payload.Error.Param, &param) // best effort; non-string/missing ruleId leaves RuleID empty
 		err = NewGatewayForbiddenErrorWithRuleID(message, statusCode, cause, generationID, param.RuleID)
+	case "access_policy_denied":
+		policyIDs, removedModels, removedProviders := accessPolicyDeniedParam(rawParam)
+		err = NewGatewayAccessPolicyDeniedError(message, statusCode, cause, generationID, policyIDs, removedModels, removedProviders)
 	default:
 		err = newGatewayInternalServerErrorFromResponse(message, statusCode, cause, generationID)
 	}
@@ -263,7 +340,7 @@ func newInvalidGatewayErrorResponse(responseBody []byte, statusCode int, default
 	}
 	rawGenerationID := ""
 	var fallback interface{}
-	if json.Unmarshal(responseBody, &fallback) == nil {
+	if securejson.Unmarshal(responseBody, &fallback) == nil {
 		if object, ok := fallback.(map[string]interface{}); ok {
 			if value, ok := object["generationId"].(string); ok {
 				rawGenerationID = value
@@ -347,6 +424,8 @@ func withGatewayResponseDetails(err error, rawType string, rawCode, rawParam int
 		setGatewayDetails(&e.baseGatewayError, rawType, rawCode, rawParam)
 	case *GatewayForbiddenError:
 		setGatewayDetails(&e.baseGatewayError, rawType, rawCode, rawParam)
+	case *GatewayAccessPolicyDeniedError:
+		setGatewayDetails(&e.baseGatewayError, rawType, rawCode, rawParam)
 	case *GatewayResponseError:
 		setGatewayDetails(&e.baseGatewayError, rawType, rawCode, rawParam)
 	case *GatewayTimeoutError:
@@ -368,7 +447,7 @@ func rawJSONValue(raw json.RawMessage) interface{} {
 		return nil
 	}
 	var value interface{}
-	if err := json.Unmarshal(raw, &value); err != nil {
+	if err := jsonexact.Unmarshal(raw, &value); err != nil {
 		return nil
 	}
 	return value

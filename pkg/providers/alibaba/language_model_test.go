@@ -10,10 +10,10 @@ import (
 
 func TestAlibabaLanguageModelMetadataAndCapabilities(t *testing.T) {
 	model := NewLanguageModel(New(Config{APIKey: "test-key"}), "qwen-plus")
-	if model.SpecificationVersion() != "v3" {
+	if model.SpecificationVersion() != "v4" {
 		t.Fatalf("SpecificationVersion() = %q", model.SpecificationVersion())
 	}
-	if model.Provider() != "alibaba" {
+	if model.Provider() != "alibaba.chat" {
 		t.Fatalf("Provider() = %q", model.Provider())
 	}
 	if model.ModelID() != "qwen-plus" {

@@ -1,0 +1,100 @@
+---
+title: Bash Tool
+description: "API reference for pkg/toolbash, a Go port of @ai-sdk/tool-bash: a provider-independent bash tool that runs commands in a sandbox session you supply."
+---
+
+# Bash Tool
+
+`pkg/toolbash` is a Go port of the TypeScript AI SDK's `@ai-sdk/tool-bash`
+package. It gives a model a `bash` function tool that runs commands in a
+sandbox session you supply, so the same tool works with any provider.
+
+**Experimental:** the TypeScript export is `experimental_createBashTool`, and
+this package may change in a minor version.
+
+## Security model
+
+- The tool never runs anything itself. `Options.Sandbox` is required; there is
+  no local or default fallback, so commands run only where you configured them.
+- You own the sandbox and its isolation. The `local` harness sandbox has no
+  isolation and is for development and tests only. Use an isolated sandbox such
+  as `pkg/harness/sandbox/vercel` for untrusted model output.
+- Each output stream is bounded while it streams: anything beyond
+  `MaxOutputLength` characters is discarded, not buffered.
+- A timeout stops the command with `SandboxProcess.Kill`. On sandboxes that run
+  commands in their own process group (the `local` sandbox does), the whole
+  group is killed, including background children.
+
+## Package
+
+```go
+import "github.com/digitallysavvy/go-ai/pkg/toolbash"
+```
+
+## CreateBashTool
+
+```go
+func CreateBashTool(ctx context.Context, opts Options) (types.Tool, error)
+```
+
+Validates the options before touching the sandbox, creates
+`WorkingDirectory` in the sandbox if set, and returns a tool named `bash`
+whose input is `{ "command": string }`. Invalid options return
+`*errors.InvalidArgumentError` (`pkg/provider/errors`).
+
+```go
+type Options struct {
+    Sandbox          providerutils.SandboxSession // required
+    WorkingDirectory string                       // absolute; created if needed
+    MaxOutputLength  *int                         // characters per stream, default 30,000
+    TimeoutMs        *int                         // per command, 1 to 2,147,483,647
+}
+
+type Output struct {
+    Stdout   string `json:"stdout"`
+    Stderr   string `json:"stderr"`
+    ExitCode int    `json:"exitCode"`
+}
+```
+
+| Option | Behavior |
+| --- | --- |
+| `Sandbox` | Session used for commands. You own its lifecycle. Tools that share a session share its files. |
+| `WorkingDirectory` | Every command starts here. Empty uses the sandbox's default directory. A relative path is rejected before the sandbox is touched. |
+| `MaxOutputLength` | Stdout and stderr are each cut to this many characters, followed by `\n[Output truncated: N characters omitted.]`. Must be positive. |
+| `TimeoutMs` | Restarts for every command. A command that exceeds it is killed and reported with exit code `124` plus the output captured so far. |
+
+Shell state (`cd`, exported variables) does not persist between calls; files
+do. If the call's context is cancelled, the command is killed and the tool
+returns the context's error.
+
+```go
+timeoutMs := 5_000
+bash, err := toolbash.CreateBashTool(ctx, toolbash.Options{
+    Sandbox:   session.Restricted(),
+    TimeoutMs: &timeoutMs,
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Tools:  []types.Tool{bash},
+    Prompt: "Read notes.txt and write a summary to summary.txt.",
+})
+```
+
+See the runnable example in
+[`examples/toolbash`](https://github.com/digitallysavvy/go-ai/tree/main/examples/toolbash).
+
+## Differences from TypeScript
+
+- Commands run through `SandboxSession.Spawn` rather than `Run`, so output can
+  be bounded while it streams and the tool can kill the process itself.
+- On timeout the TypeScript tool returns whatever the sandbox reports (exit
+  code `124` with empty output on the just-bash sandbox); this tool returns exit
+  code `124` with the output captured before the kill.
+- Options are pointers so that `0` is rejected like in TypeScript rather than
+  meaning "default".
+- Length limits count characters as Unicode code points, not UTF-16 code units.

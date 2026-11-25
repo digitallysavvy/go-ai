@@ -1,6 +1,10 @@
 package harness
 
-import "errors"
+import (
+	"errors"
+
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/jsstr"
+)
 
 // Error names, matching the TS `name` property of each error class.
 const (
@@ -136,20 +140,77 @@ func IsSandboxAuthenticationError(err error) bool {
 // the harness runtime. Messages from reviewed harness error types are
 // preserved; all other errors are masked. Mirrors TS `getHarnessErrorMessage`.
 func GetHarnessErrorMessage(err error) string {
-	var capability *CapabilityUnsupportedError
-	if errors.As(err, &capability) {
-		return capability.Message
-	}
-	var auth *SandboxAuthenticationError
-	if errors.As(err, &auth) {
-		return auth.Message
-	}
-	var h harnessErr
-	if errors.As(err, &h) {
+	// TS inspects the thrown value itself (isInstance is a marker check on that
+	// value, never on its cause). The nearest harness error in the chain is the
+	// closest Go analogue of "the value", so an unreviewed or base harness
+	// error that wraps a reviewed error as its cause is judged by its own
+	// type and message.
+	for e := err; e != nil; e = errors.Unwrap(e) {
+		h, ok := e.(harnessErr)
+		if !ok {
+			continue
+		}
+		switch typed := h.(type) {
+		case *CapabilityUnsupportedError:
+			return typed.Message
+		case *SandboxAuthenticationError:
+			return typed.Message
+		}
 		base := h.harnessError()
 		if base.ErrorName() == HarnessErrorName {
 			return base.Message
 		}
+		return defaultHarnessClientSafeErrorMessage
 	}
 	return defaultHarnessClientSafeErrorMessage
+}
+
+// ErrorValueMessage renders an arbitrary rejected value the way TS
+// `getErrorMessage` does: nil is "unknown error", a string is itself, an error
+// is its message, and anything else (a decoded wire error object) is its
+// JSON.stringify text, not Go's `%v` map formatting.
+func ErrorValueMessage(v any) string {
+	switch e := v.(type) {
+	case nil:
+		return "unknown error"
+	case string:
+		return e
+	case error:
+		return e.Error()
+	}
+	b, err := jsstr.Marshal(v)
+	if err != nil {
+		return "unknown error"
+	}
+	return string(b)
+}
+
+type rawValueError struct {
+	message string
+	// value is the wire value the error was built from (TS keeps the raw
+	// value, not an Error); hasValue is false for errors built from text.
+	value    any
+	hasValue bool
+}
+
+func (e *rawValueError) Error() string { return e.message }
+
+// errorRawValue returns the wire value an ErrorFromValue error was built
+// from.
+func errorRawValue(err error) (any, bool) {
+	var rv *rawValueError
+	if errors.As(err, &rv) && rv.hasValue {
+		return rv.value, true
+	}
+	return nil, false
+}
+
+// ErrorFromValue converts a wire error value to a Go error: an error passes
+// through unchanged (so errors.As keeps working) and anything else becomes an
+// error whose text is ErrorValueMessage(v).
+func ErrorFromValue(v any) error {
+	if err, ok := v.(error); ok {
+		return err
+	}
+	return &rawValueError{message: ErrorValueMessage(v), value: v, hasValue: true}
 }

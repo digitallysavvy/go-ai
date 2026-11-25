@@ -1,9 +1,12 @@
 package tools
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/schema"
 )
 
 func TestNewParallelSearch(t *testing.T) {
@@ -203,34 +206,122 @@ func TestParallelSearchSchemaMatchesTSOptionalFields(t *testing.T) {
 		t.Fatalf("fetch_policy schema = %#v", fetchPolicy)
 	}
 	output := tool.OutputSchema.(map[string]interface{})
-	variants := output["oneOf"].([]interface{})
+	variants := output["anyOf"].([]interface{})
 	if len(variants) != 2 {
 		t.Fatalf("output schema should match TS success/error union: %#v", output)
 	}
 	resultProperties := variants[0].(map[string]interface{})["properties"].(map[string]interface{})["results"].(map[string]interface{})["items"].(map[string]interface{})["properties"].(map[string]interface{})
-	if resultProperties["relevanceScore"].(map[string]interface{})["type"] != "number" {
+	if _, ok := resultProperties["excerpts"]; !ok {
 		t.Fatalf("output result schema = %#v", resultProperties)
 	}
 }
 
-// TestParallelSearchSourcePolicyDescriptionsMatchTS covers 330f6e2: the
-// source_policy.include_domains/exclude_domains/after_date descriptions were
-// clarified so the model emits plain domain names and calendar dates.
+// TestParallelSearchSourcePolicyDescriptionsMatchTS pins the source_policy
+// descriptions (updated for the GA API in TS #23817).
 func TestParallelSearchSourcePolicyDescriptionsMatchTS(t *testing.T) {
 	tool := NewParallelSearch(ParallelSearchConfig{}).ToTool()
 	properties := tool.Parameters.(map[string]interface{})["properties"].(map[string]interface{})
 	sourcePolicy := properties["source_policy"].(map[string]interface{})["properties"].(map[string]interface{})
 
-	const domainDescription = "Limit results to these domains. Use plain domain names only — e.g. example.com or sub.example.gov, or a bare extension like .edu. Do not include a scheme, path, or port (e.g. not https://example.com/page)."
+	const domainDescription = "Domains or domain/path prefixes to restrict results to, without scheme or port. Example: ['wikipedia.org', 'docs.python.org/3']."
 	if got := sourcePolicy["include_domains"].(map[string]interface{})["description"]; got != domainDescription {
 		t.Fatalf("include_domains description = %q, want %q", got, domainDescription)
 	}
-	const excludeDescription = "Exclude results from these domains. Use plain domain names only — e.g. example.com or sub.example.gov, or a bare extension like .edu. Do not include a scheme, path, or port (e.g. not https://example.com/page)."
+	const excludeDescription = "Domains or domain/path prefixes to exclude, without scheme or port. Example: ['reddit.com']."
 	if got := sourcePolicy["exclude_domains"].(map[string]interface{})["description"]; got != excludeDescription {
 		t.Fatalf("exclude_domains description = %q, want %q", got, excludeDescription)
 	}
-	const afterDateDescription = "Only include results published after this date. Use an ISO 8601 calendar date formatted YYYY-MM-DD (e.g. 2025-01-01); do not include a time."
+	const afterDateDescription = "Only include results published on or after this date. Use an ISO 8601 calendar date formatted YYYY-MM-DD (e.g. 2025-01-01); do not include a time."
 	if got := sourcePolicy["after_date"].(map[string]interface{})["description"]; got != afterDateDescription {
 		t.Fatalf("after_date description = %q, want %q", got, afterDateDescription)
+	}
+}
+
+// Ported from TS #23817 (parallel-search.test.ts): parallelSearch follows
+// Parallel's GA Search API.
+
+func TestParallelSearchGAProviderArgs(t *testing.T) {
+	tool := NewParallelSearch(ParallelSearchConfig{
+		Mode:          ParallelSearchModeFast,
+		Location:      "us",
+		MaxCharsTotal: intPtr(8000),
+		FetchPolicy: &ParallelSearchFetchPolicy{
+			TimeoutSeconds:       intPtr(10),
+			DisableCacheFallback: boolPtr(true),
+		},
+	}).ToTool()
+	if tool.ProviderID != "gateway.parallel_search" || !tool.ProviderExecuted {
+		t.Fatalf("tool identity = %q executed=%v", tool.ProviderID, tool.ProviderExecuted)
+	}
+	args := tool.ProviderArgs
+	if args["mode"] != "fast" || args["location"] != "us" || args["maxCharsTotal"] != 8000 {
+		t.Fatalf("args = %#v", args)
+	}
+	fp := args["fetchPolicy"].(map[string]interface{})
+	if fp["timeoutSeconds"] != 10 || fp["disableCacheFallback"] != true {
+		t.Fatalf("fetchPolicy = %#v", fp)
+	}
+}
+
+func validateParallel(t *testing.T, s interface{}, valueJSON string) error {
+	t.Helper()
+	var v interface{}
+	if err := json.Unmarshal([]byte(valueJSON), &v); err != nil {
+		t.Fatal(err)
+	}
+	return schema.NewSimpleJSONSchema(s.(map[string]interface{})).Validator().Validate(v)
+}
+
+func TestParallelSearchInputSchemaModes(t *testing.T) {
+	params := NewParallelSearch(ParallelSearchConfig{}).ToTool().Parameters
+	for _, mode := range []string{"turbo", "fast", "basic", "advanced", "one-shot", "agentic"} {
+		if err := validateParallel(t, params, `{"objective":"x","mode":"`+mode+`"}`); err != nil {
+			t.Errorf("mode %s rejected: %v", mode, err)
+		}
+	}
+	if err := validateParallel(t, params, `{"objective":"x","mode":"deep"}`); err == nil {
+		t.Error("unknown mode should be rejected")
+	}
+	in := `{"objective":"x","search_queries":["q"],"location":"us","max_chars_total":6000,` +
+		`"fetch_policy":{"max_age_seconds":600,"timeout_seconds":10,"disable_cache_fallback":true},` +
+		`"source_policy":{"include_domains":["docs.python.org/3"]}}`
+	if err := validateParallel(t, params, in); err != nil {
+		t.Errorf("GA input rejected: %v", err)
+	}
+	props := params.(map[string]interface{})["properties"].(map[string]interface{})
+	inc := props["source_policy"].(map[string]interface{})["properties"].(map[string]interface{})["include_domains"].(map[string]interface{})
+	if !strings.Contains(inc["description"].(string), "domain/path") {
+		t.Errorf("include_domains description = %v", inc["description"])
+	}
+}
+
+func TestParallelSearchOutputSchema(t *testing.T) {
+	out := NewParallelSearch(ParallelSearchConfig{}).ToTool().OutputSchema
+	valid := map[string]string{
+		"beta":          `{"search_id":"s1","results":[{"url":"https://e.com","title":"T","excerpts":["a"]}],"usage":[{"name":"sku_search","count":1}]}`,
+		"ga null":       `{"search_id":"s2","results":[{"url":"https://e.com","title":null,"publish_date":null,"excerpts":["a","b"]},{"url":"https://e.com/b","title":"B","publish_date":"2026-01-15","excerpts":[]}],"warnings":null,"usage":[{"name":"sku_search","count":1}],"session_id":"x"}`,
+		"ga warnings":   `{"search_id":"s3","results":[],"warnings":[{"type":"input_validation_warning","message":"m","detail":{"field":"location"}}],"session_id":"x"}`,
+		"execution_err": `{"error":"execution_error","message":"Search failed"}`,
+		"timeout":       `{"error":"timeout","message":"t","statusCode":504}`,
+		"rate limit":    `{"error":"gateway_rate_limit","message":"Too many requests"}`,
+	}
+	for name, v := range valid {
+		if err := validateParallel(t, out, v); err != nil {
+			t.Errorf("%s rejected: %v", name, err)
+		}
+	}
+	for name, v := range map[string]string{
+		"no search_id": `{"results":[{"url":"https://e.com","excerpts":["a"]}]}`,
+		"old shape":    `{"searchId":"s","results":[{"url":"https://e.com","title":"T","excerpt":"E"}]}`,
+	} {
+		if err := validateParallel(t, out, v); err == nil {
+			t.Errorf("%s should be rejected", name)
+		}
+	}
+	b, _ := json.Marshal(out)
+	for _, bad := range []string{"relevanceScore", "searchId", "publishDate", `"excerpt"`} {
+		if strings.Contains(string(b), bad) {
+			t.Errorf("output schema still declares %s", bad)
+		}
 	}
 }

@@ -9,7 +9,7 @@ func TestDeepgramSerializeAndDeserializeSpeechModel(t *testing.T) {
 		t.Fatalf("SpeechModel error = %v", err)
 	}
 	serialized := model.(*SpeechModel).Serialize()
-	if serialized.Provider != "deepgram" || serialized.ModelID != "aura-2-thalia-en" {
+	if serialized.Provider != "deepgram.speech" || serialized.ModelID != "aura-2-thalia-en" {
 		t.Fatalf("serialize mismatch: %#v", serialized)
 	}
 	if _, ok := serialized.Config["APIKey"]; ok {
@@ -19,7 +19,7 @@ func TestDeepgramSerializeAndDeserializeSpeechModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("deserializeSpeechModel error = %v", err)
 	}
-	if restored.Provider() != "deepgram" || restored.ModelID() != "aura-2-thalia-en" {
+	if restored.Provider() != "deepgram.speech" || restored.ModelID() != "aura-2-thalia-en" {
 		t.Fatalf("restored mismatch: provider=%s model=%s", restored.Provider(), restored.ModelID())
 	}
 }
@@ -31,14 +31,14 @@ func TestDeepgramSerializeAndDeserializeTranscriptionModel(t *testing.T) {
 		t.Fatalf("TranscriptionModel error = %v", err)
 	}
 	serialized := model.(*TranscriptionModel).Serialize()
-	if serialized.Provider != "deepgram" || serialized.ModelID != "nova-3" {
+	if serialized.Provider != "deepgram.transcription" || serialized.ModelID != "nova-3" {
 		t.Fatalf("serialize mismatch: %#v", serialized)
 	}
 	restored, err := deserializeTranscriptionModel(serialized)
 	if err != nil {
 		t.Fatalf("deserializeTranscriptionModel error = %v", err)
 	}
-	if restored.Provider() != "deepgram" || restored.ModelID() != "nova-3" {
+	if restored.Provider() != "deepgram.transcription" || restored.ModelID() != "nova-3" {
 		t.Fatalf("restored mismatch: provider=%s model=%s", restored.Provider(), restored.ModelID())
 	}
 }

@@ -170,7 +170,7 @@ func TestOTelIntegrationRecordsHTTPStatusOnErrorSpan(t *testing.T) {
 	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
 	tracer := tp.Tracer("telemetry-test")
 
-	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tracer})
+	integration := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tracer})
 	settings := &Settings{IsEnabled: Bool(true)}
 
 	apiErr := providererrors.NewProviderError("openai", 503, "server_error", "boom", nil)
@@ -179,7 +179,7 @@ func TestOTelIntegrationRecordsHTTPStatusOnErrorSpan(t *testing.T) {
 	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: "ai.generateText", Settings: settings})
 	integration.OnError(ctx, TelemetryErrorEvent{Settings: settings, Error: retryErr})
 
-	span := findSpan(rec, "ai.generateText")
+	span := rec.Ended()[0]
 	v, ok := attrValue(span, "http.response.status_code")
 	if !ok || v.(int64) != 503 {
 		t.Fatalf("expected http.response.status_code=503 unwrapped from RetryError, got %v ok=%v", v, ok)
@@ -192,14 +192,14 @@ func TestOTelIntegrationDirectProviderErrorRecordsHTTPStatus(t *testing.T) {
 	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
 	tracer := tp.Tracer("telemetry-test")
 
-	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tracer})
+	integration := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tracer})
 	settings := &Settings{IsEnabled: Bool(true)}
 	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: "ai.generateText", Settings: settings})
 	integration.OnError(ctx, TelemetryErrorEvent{
 		Settings: settings,
 		Error:    providererrors.NewProviderError("anthropic", 429, "rate_limit", "slow down", nil),
 	})
-	span := findSpan(rec, "ai.generateText")
+	span := rec.Ended()[0]
 	v, ok := attrValue(span, "http.response.status_code")
 	if !ok || v.(int64) != 429 {
 		t.Fatalf("expected http.response.status_code=429, got %v ok=%v", v, ok)
@@ -290,7 +290,7 @@ func TestLegacyOpenTelemetryStepSpanRequestSettingsAttributes(t *testing.T) {
 	tracer := tp.Tracer("legacy-step-request-settings-test")
 
 	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tracer})
-	settings := &Settings{IsEnabled: Bool(true), RecordInputs: true, RecordOutputs: true}
+	settings := &Settings{IsEnabled: Bool(true), RecordInputs: Bool(true), RecordOutputs: Bool(true)}
 
 	maxTokens := 100
 	temp := 0.5
@@ -363,7 +363,7 @@ func TestLegacyOpenTelemetryObjectStepSpanOmitsStopSequences(t *testing.T) {
 	tracer := tp.Tracer("legacy-object-step-request-settings-test")
 
 	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tracer})
-	settings := &Settings{IsEnabled: Bool(true), RecordInputs: true, RecordOutputs: true}
+	settings := &Settings{IsEnabled: Bool(true), RecordInputs: Bool(true), RecordOutputs: Bool(true)}
 
 	temp := 0.5
 	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{
@@ -395,5 +395,88 @@ func TestLegacyOpenTelemetryObjectStepSpanOmitsStopSequences(t *testing.T) {
 	}
 	if _, ok := attrValue(stepSpan, "gen_ai.request.stop_sequences"); ok {
 		t.Error("expected gen_ai.request.stop_sequences to be absent for generateObject")
+	}
+}
+
+// TS legacy nested spans spread state.baseTelemetryAttributes, which
+// getBaseTelemetryAttributes builds with the runtime context, so the
+// doGenerate/doStream, doEmbed, doRerank and doDecide spans carry the same
+// ai.settings.context.* attributes as their root.
+func TestLegacyNestedSpansInheritRuntimeContextAttributes(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tp.Tracer("telemetry-test")})
+	settings := &Settings{IsEnabled: Bool(true)}
+	runtimeContext := map[string]interface{}{"userId": "u1"}
+	t.Cleanup(func() {
+		for _, id := range []string{"inherit-gen", "inherit-embed", "inherit-rerank", "inherit-decide"} {
+			legacyDeleteState(id)
+			otelModelCallSpans.Delete(otelSpanKey("decision", id))
+			otelModelCallSpans.Delete(otelSpanKey("reranking", id))
+		}
+		otelModelCallSpans.Delete(otelSpanKey("embedding", "e1"))
+	})
+
+	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{
+		CallID: "inherit-gen", OperationType: "ai.generateText", Settings: settings, RuntimeContext: runtimeContext,
+	})
+	integration.OnStepStart(ctx, TelemetryStepStartEvent{CallID: "inherit-gen", OperationType: "ai.generateText", Settings: settings})
+
+	ctx = integration.OnStart(context.Background(), TelemetryStartEvent{
+		CallID: "inherit-embed", OperationType: "ai.embed", Settings: settings, RuntimeContext: runtimeContext,
+	})
+	integration.OnEmbedStart(ctx, EmbeddingModelCallStartEvent{CallID: "inherit-embed", EmbedCallID: "e1", OperationID: "ai.embed.doEmbed", Settings: settings})
+
+	ctx = integration.OnStart(context.Background(), TelemetryStartEvent{
+		CallID: "inherit-rerank", OperationType: "ai.rerank", Settings: settings, RuntimeContext: runtimeContext,
+	})
+	integration.OnRerankStart(ctx, RerankingModelCallStartEvent{CallID: "inherit-rerank", OperationID: "ai.rerank.doRerank", Settings: settings})
+
+	ctx = integration.OnDecideStart(context.Background(), DecideStartEvent{
+		CallID: "inherit-decide", OperationID: "ai.decide", Settings: settings, RuntimeContext: runtimeContext,
+	})
+	integration.OnDecisionModelCallStart(ctx, DecisionModelCallStartEvent{CallID: "inherit-decide", OperationID: "ai.decide.doDecide", Settings: settings})
+
+	for _, name := range []string{"ai.generateText.doGenerate", "ai.embed.doEmbed", "ai.rerank.doRerank", "ai.decide.doDecide"} {
+		span := findSpan(rec, name)
+		if span == nil {
+			t.Fatalf("no %s span", name)
+		}
+		if v, ok := attrValue(span, "ai.settings.context.userId"); !ok || v != "u1" {
+			t.Errorf("%s: ai.settings.context.userId = %v, %v; want u1", name, v, ok)
+		}
+	}
+}
+
+// An error reported after the call already ended (generateText's output
+// parse failure fires onEnd, then onError, as in TS) must not leave call
+// state behind: OnError and OnAbort are terminal for the call.
+func TestTerminalEventsAfterEndDoNotLeakCallState(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	settings := &Settings{IsEnabled: Bool(true)}
+	legacy := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tp.Tracer("legacy")})
+	genAI := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tp.Tracer("genai")})
+	for _, terminal := range []string{"error", "abort"} {
+		callID := "after-end-" + terminal
+		start := TelemetryStartEvent{CallID: callID, OperationType: "ai.generateText", Settings: settings}
+		end := TelemetryFinishEvent{CallID: callID, OperationType: "ai.generateText", Settings: settings, FinishReason: "stop"}
+		for _, integration := range []TelemetryIntegration{legacy, genAI} {
+			ctx := integration.OnStart(context.Background(), start)
+			integration.(endHandler).OnEnd(ctx, end)
+			if terminal == "error" {
+				integration.OnError(ctx, TelemetryErrorEvent{CallID: callID, Settings: settings, Error: errors.New("output parse failed")})
+			} else {
+				integration.(abortHandler).OnAbort(ctx, TelemetryAbortEvent{CallID: callID, Settings: settings})
+			}
+		}
+		if _, ok := legacyCallStates.Load(legacy.stateKey(callID)); ok {
+			t.Errorf("%s: legacy call state leaked", terminal)
+		}
+		if _, ok := genAICallStates.Load(genAI.stateKey(callID)); ok {
+			t.Errorf("%s: GenAI call state leaked", terminal)
+		}
 	}
 }

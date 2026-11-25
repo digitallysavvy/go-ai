@@ -485,3 +485,38 @@ func TestNormalizeVideoInputs_InputReferenceDetectsVideoMediaType(t *testing.T) 
 		t.Fatalf("InputReferences = %+v, want video/mp4 detected", normalized.InputReferences)
 	}
 }
+
+// TS prepareRetries rejects an invalid maxRetries before calling the model.
+func TestExperimentalStartVideo_RejectsNegativeMaxRetries(t *testing.T) {
+	neg := -1
+	called := false
+	model := &mockAsyncVideoModel{
+		startFn: func(ctx context.Context, opts *provider.VideoModelV3StartOptions) (*provider.VideoModelV3OperationStartResult, error) {
+			called = true
+			return nil, errors.New("must not be called")
+		},
+	}
+	_, err := ExperimentalStartVideo(context.Background(), StartVideoOptions{
+		Model: model, Prompt: VideoPrompt{Text: "x"}, MaxRetries: &neg,
+	})
+	var invalid *providererrors.InvalidArgumentError
+	if !errors.As(err, &invalid) || called {
+		t.Fatalf("err = %v (called=%v), want InvalidArgumentError without a model call", err, called)
+	}
+}
+
+func TestExperimentalGetVideoStatus_RejectsNegativeMaxRetries(t *testing.T) {
+	neg := -1
+	called := false
+	model := &mockAsyncVideoModel{
+		statusFn: func(ctx context.Context, opts *provider.VideoModelV3StatusOptions) (*provider.VideoModelV3OperationStatusResult, error) {
+			called = true
+			return nil, errors.New("must not be called")
+		},
+	}
+	_, err := ExperimentalGetVideoStatus(context.Background(), model, GetVideoStatusOptions{Operation: json.RawMessage(`{}`), MaxRetries: &neg})
+	var invalid *providererrors.InvalidArgumentError
+	if !errors.As(err, &invalid) || called {
+		t.Fatalf("err = %v (called=%v), want InvalidArgumentError without a model call", err, called)
+	}
+}

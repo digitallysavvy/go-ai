@@ -1,6 +1,6 @@
 package deepseek
 
-import "strings"
+import "regexp"
 
 // DeepSeek chat model IDs.
 //
@@ -43,10 +43,14 @@ const (
 //
 // DeepSeek publishes V4 models under both versioned ids (deepseek-v4-pro,
 // deepseek-v4-flash-*) and unversioned aliases (deepseek-flash, currently
-// serving V4.1 Flash). Only the legacy deepseek-chat / deepseek-reasoner ids
-// predate V4.
+// serving V4.1 Flash). Known legacy aliases (deepseek-chat, deepseek-reasoner)
+// and pre-V4 version IDs (deepseek-v1..v3) retain their previous behavior;
+// unrecognized IDs inherit the current protocol.
 func isDeepSeekV4Model(modelID string) bool {
-	return strings.Contains(modelID, "deepseek-v4") ||
-		strings.HasPrefix(modelID, "deepseek-flash") ||
-		strings.HasPrefix(modelID, "deepseek-pro")
+	return !deepSeekLegacyModelRe.MatchString(modelID)
 }
+
+// deepSeekLegacyModelRe matches the legacy aliases and pre-V4 version IDs
+// that keep their previous behavior (TS #22493). RE2 has no lookahead, so the
+// trailing delimiter is consumed.
+var deepSeekLegacyModelRe = regexp.MustCompile(`(^|[/.])deepseek-(?:chat|reasoner|v[1-3](?:\.\d+)?)(?:[-/:.]|$)`)

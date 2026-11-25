@@ -769,3 +769,82 @@ func equalStrings(a, b []string) bool {
 	}
 	return true
 }
+
+// Ported from packages/provider-utils/src/streaming-tool-call-tracker.test.ts
+// (TS #22149): reused indexes with blank openings, changed IDs on named empty
+// fragments, and unlabeled continuations across multiple calls.
+
+type toolCallSummary struct{ id, name, input string }
+
+func summarizeToolCalls(chunks []ToolCallChunk) []toolCallSummary {
+	var out []toolCallSummary
+	for _, c := range chunksOfType(chunks, provider.ChunkTypeToolCall) {
+		out = append(out, toolCallSummary{c.ToolCall.ID, c.ToolCall.ToolName, c.ToolCall.RawArguments})
+	}
+	return out
+}
+
+func TestStreamingToolCallTrackerKeepsSameNameCallsWithEmptyOpeningArgumentsDistinct(t *testing.T) {
+	for name, continuationIDs := range map[string][2]string{
+		"repeat their ids": {"call_1", "call_2"},
+		"omit their ids":   {"", ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			tracker := NewStreamingToolCallTracker()
+			var chunks []ToolCallChunk
+			chunks = append(chunks, tracker.Track(intPtr(0), "call_1", "get_weather", "")...)
+			chunks = append(chunks, tracker.Track(intPtr(0), continuationIDs[0], "", `{"city":"Berlin"}`)...)
+			chunks = append(chunks, tracker.Track(intPtr(0), "call_2", "get_weather", "")...)
+			chunks = append(chunks, tracker.Track(intPtr(0), continuationIDs[1], "", `{"city":"Paris"}`)...)
+			chunks = append(chunks, tracker.Flush()...)
+
+			got := summarizeToolCalls(chunks)
+			want := []toolCallSummary{
+				{"call_1", "get_weather", `{"city":"Berlin"}`},
+				{"call_2", "get_weather", `{"city":"Paris"}`},
+			}
+			if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+				t.Fatalf("tool calls = %#v, want %#v", got, want)
+			}
+		})
+	}
+}
+
+func TestStreamingToolCallTrackerRetainsIncompleteCallWhenIDChangesOnNamedFragment(t *testing.T) {
+	for _, argsDelta := range []string{"", " \n"} {
+		tracker := NewStreamingToolCallTracker()
+		var chunks []ToolCallChunk
+		chunks = append(chunks, tracker.Track(intPtr(0), "call_1", "get_weather", `{"city":`)...)
+		chunks = append(chunks, tracker.Track(intPtr(0), "alias", "get_weather", argsDelta)...)
+		chunks = append(chunks, tracker.Track(intPtr(0), "alias", "", `"Berlin"}`)...)
+		chunks = append(chunks, tracker.Flush()...)
+
+		got := summarizeToolCalls(chunks)
+		want := toolCallSummary{"call_1", "get_weather", `{"city":` + argsDelta + `"Berlin"}`}
+		if len(got) != 1 || got[0] != want {
+			t.Fatalf("args %q: tool calls = %#v, want [%#v]", argsDelta, got, want)
+		}
+		if starts := chunksOfType(chunks, provider.ChunkTypeToolInputStart); len(starts) != 1 || starts[0].ToolCall.ID != "call_1" {
+			t.Fatalf("args %q: tool-input-start chunks = %#v", argsDelta, starts)
+		}
+	}
+}
+
+func TestStreamingToolCallTrackerUsesUnlabeledContinuationForSoleIncompleteCall(t *testing.T) {
+	tracker := NewStreamingToolCallTracker()
+	var chunks []ToolCallChunk
+	chunks = append(chunks, tracker.Track(intPtr(0), "call_1", "get_weather", "")...)
+	chunks = append(chunks, tracker.Track(nil, "", "", `{"city":"Berlin"}`)...)
+	chunks = append(chunks, tracker.Track(intPtr(1), "call_2", "get_weather", "")...)
+	chunks = append(chunks, tracker.Track(nil, "", "", `{"city":"Paris"}`)...)
+	chunks = append(chunks, tracker.Flush()...)
+
+	got := summarizeToolCalls(chunks)
+	want := []toolCallSummary{
+		{"call_1", "get_weather", `{"city":"Berlin"}`},
+		{"call_2", "get_weather", `{"city":"Paris"}`},
+	}
+	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("tool calls = %#v, want %#v", got, want)
+	}
+}

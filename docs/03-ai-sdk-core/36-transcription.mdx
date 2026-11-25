@@ -271,7 +271,7 @@ if err != nil {
 
 Common transcription errors:
 
-- **NoTranscriptGeneratedError**: The model returned no transcript text
+- **NoTranscriptGeneratedError**: The model returned no transcription result (an empty transcript for silent audio is returned normally)
 - **ProviderError**: Provider-specific HTTP or API failure
 - **InvalidArgumentError**: Invalid input such as negative `MaxRetries` or invalid base64 audio
 - **context.DeadlineExceeded**: Operation timed out
@@ -500,7 +500,7 @@ groqModel, _ := groqProvider.TranscriptionModel("whisper-large-v3-turbo")
 
 // AssemblyAI
 assemblyProvider := assemblyai.New(assemblyai.Config{APIKey: os.Getenv("ASSEMBLYAI_API_KEY")})
-assemblyModel, _ := assemblyProvider.TranscriptionModel("best")
+assemblyModel, _ := assemblyProvider.TranscriptionModel(assemblyai.ModelAssemblyAISTT37)
 
 // Use any model with the same API
 result, _ := ai.Transcribe(ctx, ai.TranscribeOptions{

@@ -5,6 +5,7 @@ import (
 	"math"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // This file mirrors TS perplexity-language-model-options.ts: the Agent API's
@@ -20,7 +21,7 @@ import (
 // parsePerplexityAgentOptions's extras return value).
 type perplexityLanguageModelOptions struct {
 	// Instructions are top-level Agent API instructions.
-	Instructions string
+	Instructions *string
 
 	// Tools are native Agent API tools (web_search, fetch_url, people_search,
 	// finance_search, sandbox, mcp, connector). AI SDK function tools are
@@ -38,13 +39,13 @@ type perplexityLanguageModelOptions struct {
 	MaxToolCalls *int64
 
 	// PreviousResponseID continues a conversation from an earlier Agent API response.
-	PreviousResponseID string
+	PreviousResponseID *string
 
 	// Store controls whether the response can be retrieved later.
 	Store *bool
 
 	// LanguagePreference is the preferred response language (ISO 639-1).
-	LanguagePreference string
+	LanguagePreference *string
 
 	// Reasoning is the Agent API reasoning configuration
 	// ({"effort": "minimal"|"low"|"medium"|"high"|"xhigh"}), kept as a loose
@@ -89,11 +90,23 @@ func parsePerplexityAgentOptions(raw map[string]interface{}) (*perplexityLanguag
 	if raw == nil {
 		return nil, nil, nil
 	}
+	// Read the options through their JSON form so Go ints and typed slices
+	// ([]map[string]interface{} tools, []string models) validate like the
+	// JSON values the TS schema sees.
+	raw = providerutils.NormalizeOptionsJSON(raw)
+
+	// zod .optional() accepts undefined but not null: an explicit null for a
+	// modeled option fails validation in TS.
+	for key := range perplexityAgentKnownOptionKeys {
+		if v, present := raw[key]; present && v == nil {
+			return nil, nil, invalidPerplexityProviderOptions(key, "invalid input: expected the option to be omitted or set, received null")
+		}
+	}
 
 	opts := &perplexityLanguageModelOptions{}
 	var err error
 
-	if opts.Instructions, err = perplexityAgentStringField(raw, "instructions"); err != nil {
+	if opts.Instructions, err = perplexityAgentStringPtrField(raw, "instructions"); err != nil {
 		return nil, nil, err
 	}
 	if opts.Tools, err = perplexityAgentObjectArrayField(raw, "tools"); err != nil {
@@ -113,13 +126,13 @@ func parsePerplexityAgentOptions(raw map[string]interface{}) (*perplexityLanguag
 	if opts.MaxToolCalls, err = perplexityAgentNonnegativeIntField(raw, "max_tool_calls"); err != nil {
 		return nil, nil, err
 	}
-	if opts.PreviousResponseID, err = perplexityAgentStringField(raw, "previous_response_id"); err != nil {
+	if opts.PreviousResponseID, err = perplexityAgentStringPtrField(raw, "previous_response_id"); err != nil {
 		return nil, nil, err
 	}
 	if opts.Store, err = perplexityAgentBoolField(raw, "store"); err != nil {
 		return nil, nil, err
 	}
-	if opts.LanguagePreference, err = perplexityAgentStringField(raw, "language_preference"); err != nil {
+	if opts.LanguagePreference, err = perplexityAgentStringPtrField(raw, "language_preference"); err != nil {
 		return nil, nil, err
 	}
 	if opts.Reasoning, err = perplexityAgentReasoningField(raw); err != nil {
@@ -127,6 +140,11 @@ func parsePerplexityAgentOptions(raw map[string]interface{}) (*perplexityLanguag
 	}
 	if opts.Skills, err = perplexityAgentObjectArrayField(raw, "skills"); err != nil {
 		return nil, nil, err
+	}
+	for _, skill := range opts.Skills {
+		if err := validatePerplexitySkill(skill); err != nil {
+			return nil, nil, err
+		}
 	}
 
 	var extras map[string]interface{}
@@ -152,6 +170,20 @@ func perplexityAgentStringField(raw map[string]interface{}, field string) (strin
 		return "", invalidPerplexityProviderOptions(field, fmt.Sprintf("must be a string, got %T", v))
 	}
 	return s, nil
+}
+
+// perplexityAgentStringPtrField is perplexityAgentStringField keeping the
+// distinction between an absent option and an empty string (TS spreads
+// agentOptions, so "" is sent).
+func perplexityAgentStringPtrField(raw map[string]interface{}, field string) (*string, error) {
+	if v, ok := raw[field]; !ok || v == nil {
+		return nil, nil
+	}
+	s, err := perplexityAgentStringField(raw, field)
+	if err != nil {
+		return nil, err
+	}
+	return &s, nil
 }
 
 func perplexityAgentBoolField(raw map[string]interface{}, field string) (*bool, error) {
@@ -244,7 +276,7 @@ func perplexityAgentReasoningField(raw map[string]interface{}) (map[string]inter
 	if !ok {
 		return nil, invalidPerplexityProviderOptions("reasoning", fmt.Sprintf("must be an object, got %T", v))
 	}
-	if effort, ok := m["effort"]; ok && effort != nil {
+	if effort, ok := m["effort"]; ok {
 		s, ok := effort.(string)
 		if !ok || !perplexityAgentReasoningEfforts[s] {
 			return nil, invalidPerplexityProviderOptions("reasoning.effort", fmt.Sprintf("invalid value %v", effort))
@@ -266,23 +298,20 @@ var perplexityKnownNativeToolTypes = map[string]bool{
 	"finance_search": true, "sandbox": true, "mcp": true, "connector": true,
 }
 
-// validatePerplexityNativeTool mirrors TS's nativeToolSchema union: it checks
-// the required fields and enum values for the recognized native tool types
-// (web_search/fetch_url/people_search/finance_search/sandbox/mcp/connector).
-// Types outside this set are TS-only in the sense that the SDK's own schema
-// doesn't recognize them either (nativeToolSchema is a closed z.union, not a
-// looseObject) -- but since providerOptions.perplexity itself is a
-// z.looseObject and future Agent API tool types are expected, an unrecognized
-// "type" is passed through unchecked here rather than rejected, matching the
-// forward-compatible passthrough documented for the rest of this options
-// object (see parsePerplexityAgentOptions's extras).
+// validatePerplexityNativeTool mirrors TS's nativeToolSchema: a closed
+// z.union of looseObjects keyed by a literal "type", so an unrecognized type
+// fails validation (TS rejects it; so do we). Known types get their field
+// types checked; extra keys pass through (looseObject).
 func validatePerplexityNativeTool(tool map[string]interface{}) error {
 	toolType, _ := tool["type"].(string)
 	if toolType == "" {
 		return invalidPerplexityProviderOptions("tools", "each tool must have a string \"type\"")
 	}
 	if !perplexityKnownNativeToolTypes[toolType] {
-		return nil
+		return invalidPerplexityProviderOptions("tools", fmt.Sprintf("invalid native tool type %q", toolType))
+	}
+	if err := validatePerplexityNativeToolFieldTypes(toolType, tool); err != nil {
+		return err
 	}
 
 	switch toolType {
@@ -302,14 +331,14 @@ func validatePerplexityNativeTool(tool map[string]interface{}) error {
 		}
 	case "web_search":
 		if filters, ok := tool["filters"].(map[string]interface{}); ok {
-			if recency, ok := filters["search_recency_filter"]; ok && recency != nil {
+			if recency, ok := filters["search_recency_filter"]; ok {
 				s, ok := recency.(string)
 				if !ok || !perplexityWebSearchRecencyFilters[s] {
 					return invalidPerplexityProviderOptions("tools", fmt.Sprintf("web_search.filters.search_recency_filter: invalid value %v", recency))
 				}
 			}
 		}
-		if size, ok := tool["search_context_size"]; ok && size != nil {
+		if size, ok := tool["search_context_size"]; ok {
 			s, ok := size.(string)
 			if !ok || !perplexitySearchContextSizes[s] {
 				return invalidPerplexityProviderOptions("tools", fmt.Sprintf("web_search.search_context_size: invalid value %v", size))
@@ -319,14 +348,41 @@ func validatePerplexityNativeTool(tool map[string]interface{}) error {
 	return nil
 }
 
+var perplexityBuiltinSkillNames = map[string]bool{
+	"office": true, "office/docx": true, "office/pdf": true,
+	"office/pptx": true, "office/xlsx": true,
+}
+
+// validatePerplexitySkill mirrors TS's skills union: a "builtin" skill needs
+// one of the office skill names; an "inline" skill needs string name,
+// description and instructions.
+func validatePerplexitySkill(skill map[string]interface{}) error {
+	switch skill["type"] {
+	case "builtin":
+		name, ok := skill["name"].(string)
+		if !ok || !perplexityBuiltinSkillNames[name] {
+			return invalidPerplexityProviderOptions("skills", fmt.Sprintf("builtin skill name: invalid value %v", skill["name"]))
+		}
+	case "inline":
+		for _, key := range []string{"name", "description", "instructions"} {
+			if _, ok := skill[key].(string); !ok {
+				return invalidPerplexityProviderOptions("skills", fmt.Sprintf("inline skill %s must be a string", key))
+			}
+		}
+	default:
+		return invalidPerplexityProviderOptions("skills", fmt.Sprintf("invalid skill type %v", skill["type"]))
+	}
+	return nil
+}
+
 func requirePerplexityStringField(tool map[string]interface{}, field, path string) error {
 	v, ok := tool[fieldKeyFromPath(path)]
 	if !ok {
 		return invalidPerplexityProviderOptions(field, fmt.Sprintf("%s is required", path))
 	}
-	s, ok := v.(string)
-	if !ok || s == "" {
-		return invalidPerplexityProviderOptions(field, fmt.Sprintf("%s must be a non-empty string", path))
+	// TS z.string() accepts the empty string.
+	if _, ok := v.(string); !ok {
+		return invalidPerplexityProviderOptions(field, fmt.Sprintf("%s must be a string", path))
 	}
 	return nil
 }
@@ -351,8 +407,8 @@ func (o *perplexityLanguageModelOptions) toBodyMap() map[string]interface{} {
 		return nil
 	}
 	body := map[string]interface{}{}
-	if o.Instructions != "" {
-		body["instructions"] = o.Instructions
+	if o.Instructions != nil {
+		body["instructions"] = *o.Instructions
 	}
 	if o.Models != nil {
 		body["models"] = o.Models
@@ -363,17 +419,121 @@ func (o *perplexityLanguageModelOptions) toBodyMap() map[string]interface{} {
 	if o.MaxToolCalls != nil {
 		body["max_tool_calls"] = *o.MaxToolCalls
 	}
-	if o.PreviousResponseID != "" {
-		body["previous_response_id"] = o.PreviousResponseID
+	if o.PreviousResponseID != nil {
+		body["previous_response_id"] = *o.PreviousResponseID
 	}
 	if o.Store != nil {
 		body["store"] = *o.Store
 	}
-	if o.LanguagePreference != "" {
-		body["language_preference"] = o.LanguagePreference
+	if o.LanguagePreference != nil {
+		body["language_preference"] = *o.LanguagePreference
 	}
 	if o.Skills != nil {
 		body["skills"] = o.Skills
 	}
 	return body
+}
+
+// validatePerplexityNativeToolFieldTypes checks the optional field types the
+// TS zod schemas declare for each native tool type.
+func validatePerplexityNativeToolFieldTypes(toolType string, tool map[string]interface{}) error {
+	bad := func(path, want string) error {
+		return invalidPerplexityProviderOptions("tools", fmt.Sprintf("%s.%s must be %s", toolType, path, want))
+	}
+	check := func(m map[string]interface{}, key, path, want string, ok func(interface{}) bool) error {
+		if v, present := m[key]; present && (v == nil || !ok(v)) {
+			return bad(path, want)
+		}
+		return nil
+	}
+	isStr := func(v interface{}) bool { _, ok := v.(string); return ok }
+	isNum := func(v interface{}) bool { _, ok := v.(float64); return ok }
+	isBool := func(v interface{}) bool { _, ok := v.(bool); return ok }
+	isPosInt := func(v interface{}) bool { f, ok := v.(float64); return ok && f > 0 && f == float64(int64(f)) }
+	isStrArr := func(v interface{}) bool {
+		arr, ok := v.([]interface{})
+		if !ok {
+			return false
+		}
+		for _, e := range arr {
+			if !isStr(e) {
+				return false
+			}
+		}
+		return true
+	}
+	isStrMap := func(v interface{}) bool {
+		m, ok := v.(map[string]interface{})
+		if !ok {
+			return false
+		}
+		for _, e := range m {
+			if !isStr(e) {
+				return false
+			}
+		}
+		return true
+	}
+	type rule struct {
+		key, want string
+		ok        func(interface{}) bool
+	}
+	apply := func(m map[string]interface{}, prefix string, rules []rule) error {
+		for _, r := range rules {
+			if err := check(m, r.key, prefix+r.key, r.want, r.ok); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	switch toolType {
+	case "web_search":
+		if err := apply(tool, "", []rule{
+			{"max_results", "a positive integer", isPosInt},
+			{"max_tokens", "a number", isNum},
+			{"max_tokens_per_page", "a number", isNum},
+		}); err != nil {
+			return err
+		}
+		if v, ok := tool["filters"]; ok {
+			f, isMap := v.(map[string]interface{})
+			if !isMap {
+				return bad("filters", "an object")
+			}
+			if err := apply(f, "filters.", []rule{
+				{"search_domain_filter", "an array of strings", isStrArr},
+				{"search_after_date_filter", "a string", isStr},
+				{"search_before_date_filter", "a string", isStr},
+				{"last_updated_after_filter", "a string", isStr},
+				{"last_updated_before_filter", "a string", isStr},
+			}); err != nil {
+				return err
+			}
+		}
+		if v, ok := tool["user_location"]; ok {
+			l, isMap := v.(map[string]interface{})
+			if !isMap {
+				return bad("user_location", "an object")
+			}
+			return apply(l, "user_location.", []rule{
+				{"latitude", "a number", isNum}, {"longitude", "a number", isNum},
+				{"country", "a string", isStr}, {"city", "a string", isStr}, {"region", "a string", isStr},
+			})
+		}
+	case "fetch_url":
+		return apply(tool, "", []rule{{"max_urls", "a number", isNum}})
+	case "mcp":
+		return apply(tool, "", []rule{
+			{"allowed_tools", "an array of strings", isStrArr},
+			{"authorization", "a string", isStr},
+			{"defer_loading", "a boolean", isBool},
+			{"headers", "a string map", isStrMap},
+		})
+	case "connector":
+		return apply(tool, "", []rule{
+			{"server_description", "a string", isStr},
+			{"allowed_tools", "an array of strings", isStrArr},
+		})
+	}
+	return nil
 }

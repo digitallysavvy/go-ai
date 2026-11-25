@@ -2,13 +2,11 @@ package gmicloud
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"io"
 	stdhttp "net/http"
-	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -35,10 +33,10 @@ func NewLanguageModel(provider *Provider, modelID string) *LanguageModel {
 }
 
 // SpecificationVersion returns the specification version.
-func (m *LanguageModel) SpecificationVersion() string { return "v3" }
+func (m *LanguageModel) SpecificationVersion() string { return "v4" }
 
 // Provider returns the provider name.
-func (m *LanguageModel) Provider() string { return "gmicloud" }
+func (m *LanguageModel) Provider() string { return "gmicloud.chat" }
 
 // ModelID returns the model ID.
 func (m *LanguageModel) ModelID() string { return m.modelID }
@@ -57,30 +55,115 @@ func (m *LanguageModel) SupportsImageInput() bool { return false }
 
 // DoGenerate performs non-streaming text generation.
 func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
-	reqBody, warnings := m.buildRequestBody(opts, false)
+	reqBody, warnings, err := m.PrepareRequest(ctx, opts)
+	if err != nil {
+		return nil, err
+	}
 	var response gmicloudResponse
 	resp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method: stdhttp.MethodPost,
-		Path:   "/chat/completions",
-		Body:   reqBody,
-	}, &response)
+		Method:           stdhttp.MethodPost,
+		Path:             "/chat/completions",
+		Body:             reqBody,
+		Headers:          opts.Headers,
+		ValidateResponse: providerutils.ChatResponseValidator(m.Provider(), providerutils.ResponseKindOpenAICompatible),
+	}, &streaming.OpenAICompatChatDecoder{Target: &response})
 	if err != nil {
 		return nil, m.handleError(err)
 	}
-	result := m.convertResponse(response)
+	result, err := m.convertGenerateResponse(response, resp.Body, providerutils.ExtractHeaders(resp.Headers))
+	if err != nil {
+		return nil, err
+	}
 	result.Warnings = append(warnings, result.Warnings...)
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
+	// TS result.request.body: the request as sent.
+	result.RawRequest = reqBody
+	// TS response.body is the raw parsed JSON, not the schema-filtered value.
+	if len(resp.Body) > 0 {
+		result.RawResponse = providerutils.RawJSONBody(resp.Body)
+	}
+	return result, nil
+}
+
+// PrepareRequest returns the Chat Completions body and warnings DoGenerate
+// would send, without a network call and without stream fields (TS
+// OpenAICompatibleChatLanguageModel.prepareRequest, c9c6402cbd). Call
+// headers are not applied.
+func (m *LanguageModel) PrepareRequest(ctx context.Context, opts *provider.GenerateOptions) (map[string]interface{}, []types.Warning, error) {
+	if opts == nil {
+		opts = &provider.GenerateOptions{}
+	}
+	if err := providerutils.ValidateOpenAICompatibleChatOptions(opts.ProviderOptions, "gmicloud"); err != nil {
+		return nil, nil, err
+	}
+	if err := prompt.ValidateOpenAIFileParts(opts.Prompt.Messages, prompt.FilePartsOpenAICompatible, "gmicloud"); err != nil {
+		return nil, nil, err
+	}
+	// TS openai-compatible prepareTools throws for an unknown tool choice type.
+	if err := prompt.ValidateToolChoiceType(opts.Tools, opts.ToolChoice); err != nil {
+		return nil, nil, err
+	}
+	reqBody, warnings := m.buildRequestBody(opts, false)
+	return reqBody, warnings, nil
+}
+
+// ConvertResponse converts a Chat Completions response body (JSON) into a
+// generate result, without a network call (TS
+// OpenAICompatibleChatLanguageModel.convertResponse, c9c6402cbd): content,
+// finish reason, usage, provider metadata and the response id, model id and
+// timestamp. The result has no warnings, request, response headers or
+// response body. The provider metadata key is "gmicloud" (its raw and
+// camelCase provider options names are the same, so providerOptions does not
+// change it). A body that fails the response schema returns a
+// *providererrors.ValidationError, one without choices an
+// InvalidResponseDataError.
+func (m *LanguageModel) ConvertResponse(ctx context.Context, body []byte, providerOptions map[string]interface{}) (*types.GenerateResult, error) {
+	if err := streaming.ValidateChatResponseBody(body, providerutils.ResponseKindOpenAICompatible); err != nil {
+		return nil, err
+	}
+	var response gmicloudResponse
+	if err := streaming.DecodeChatResponseBody(body, &response); err != nil {
+		_, typed := providerutils.ChunkParseFailure(string(body), err)
+		return nil, typed
+	}
+	result, err := m.convertGenerateResponse(response, body, nil)
+	if err != nil {
+		return nil, err
+	}
+	result.RawResponse = nil
+	result.Warnings = []types.Warning{}
+	return result, nil
+}
+
+// convertGenerateResponse is the response conversion DoGenerate and
+// ConvertResponse share (TS convertGenerateResponse).
+func (m *LanguageModel) convertGenerateResponse(response gmicloudResponse, body []byte, headers map[string]string) (*types.GenerateResult, error) {
+	result := m.convertResponse(response)
+	if err := streaming.ApplyOpenAICompatibleChatResponse(result, body, headers, "gmicloud"); err != nil {
+		return nil, err
+	}
+	providerutils.ApplyWireUsageRaw(result, body)
 	return result, nil
 }
 
 // DoStream performs streaming text generation.
 func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+	if err := providerutils.ValidateOpenAICompatibleChatOptions(opts.ProviderOptions, "gmicloud"); err != nil {
+		return nil, err
+	}
+	if err := prompt.ValidateOpenAIFileParts(opts.Prompt.Messages, prompt.FilePartsOpenAICompatible, "gmicloud"); err != nil {
+		return nil, err
+	}
+	// TS openai-compatible prepareTools throws for an unknown tool choice type.
+	if err := prompt.ValidateToolChoiceType(opts.Tools, opts.ToolChoice); err != nil {
+		return nil, err
+	}
 	reqBody, warnings := m.buildRequestBody(opts, true)
 	httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{
 		Method:  stdhttp.MethodPost,
 		Path:    "/chat/completions",
 		Body:    reqBody,
-		Headers: map[string]string{"Accept": "text/event-stream"},
+		Headers: internalhttp.MergeHeaders(map[string]string{"Accept": "text/event-stream"}, opts.Headers),
 	})
 	if err != nil {
 		return nil, m.handleError(err)
@@ -88,7 +171,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	inner := newGmicloudStream(httpResp.Body)
 	inner.SetRequestBody(reqBody)
 	inner.IncludeRawChunks = opts.IncludeRawChunks
-	inner.responseHeaders = providerutils.ExtractHeaders(httpResp.Header)
+	inner.HTTPResponseHeaders = providerutils.ExtractHeaders(httpResp.Header)
 	return streaming.NewWarningsStream(inner, warnings), nil
 }
 
@@ -102,11 +185,13 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	}
 	if stream {
 		body["stream"] = true
+		// TS createGmicloud sets includeUsage: true.
+		body["stream_options"] = map[string]interface{}{"include_usage": true}
 	}
 	// AllowVideo: true -- gmicloud wraps @ai-sdk/openai-compatible's
 	// OpenAICompatibleChatLanguageModel in TS, which supports video_url
 	// content parts (7dd9ec320c).
-	toOpenAIMessagesOpts := prompt.ToOpenAIMessagesOptions{AllowVideo: true}
+	toOpenAIMessagesOpts := prompt.ToOpenAIMessagesOptions{AllowVideo: true, Provider: "gmicloud", ThoughtSignatureKey: "gmicloud", ReasoningKey: "reasoning_content", SpreadCompatMetadata: true, FileParts: prompt.FilePartsOpenAICompatible}
 	if opts.Prompt.IsMessages() {
 		body["messages"] = prompt.ToOpenAIMessages(opts.Prompt.Messages, toOpenAIMessagesOpts)
 	} else if opts.Prompt.IsSimple() {
@@ -138,11 +223,14 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	if opts.Seed != nil {
 		body["seed"] = *opts.Seed
 	}
-	if len(opts.StopSequences) > 0 {
+	if opts.StopSequences != nil { // TS != null: an empty array counts
 		body["stop"] = opts.StopSequences
 	}
+	var toolWarnings []types.Warning
 	if len(opts.Tools) > 0 {
-		body["tools"] = tool.ToOpenAIFormat(opts.Tools)
+		functionTools, dropped := tool.DropProviderDefinedTools(opts.Tools, nil)
+		toolWarnings = dropped
+		body["tools"] = tool.ToOpenAIFormat(functionTools)
 		if opts.ToolChoice.Type != "" {
 			body["tool_choice"] = tool.ConvertToolChoiceToOpenAI(opts.ToolChoice)
 		}
@@ -153,6 +241,7 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	// OpenAI-compatible common options (user, reasoningEffort, textVerbosity,
 	// strictJsonSchema) apply, resolved from providerOptions.gmicloud.
 	compatibleOptions, warnings := providerutils.ResolveOpenAICompatibleProviderOptions("gmicloud", opts.ProviderOptions)
+	warnings = append(warnings, providerutils.ApplyOpenAICompatibleCallSettings(body, nil, nil, nil, opts.TopK, "gmicloud", opts.ProviderOptions)...)
 	warnings = append(warnings, providerutils.OpenAICompatibleCommonOptionWarnings(compatibleOptions)...)
 
 	responseFormat, formatWarnings := providerutils.ChatResponseFormat(opts.ResponseFormat, providerutils.ChatResponseFormatOptions{
@@ -174,63 +263,60 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	}
 	providerutils.ApplyOpenAICompatibleCommonRequestOptions(body, compatibleOptions)
 
-	return body, warnings
+	return body, append(warnings, toolWarnings...)
 }
 
+// convertResponse maps the finish reason and usage. Everything else (text
+// and thinking parts, reasoning, tool calls, response metadata) comes from
+// streaming.ApplyOpenAICompatibleChatResponse (TS openai-compatible
+// doGenerate).
 func (m *LanguageModel) convertResponse(response gmicloudResponse) *types.GenerateResult {
 	if len(response.Choices) == 0 {
-		return &types.GenerateResult{
-			Text:         "",
-			FinishReason: types.FinishReasonOther,
-		}
+		return &types.GenerateResult{FinishReason: types.FinishReasonOther}
 	}
 	choice := response.Choices[0]
-	result := &types.GenerateResult{
-		Text:            choice.Message.Content,
+	return &types.GenerateResult{
 		FinishReason:    providerutils.MapOpenAIFinishReason(choice.FinishReason),
 		RawFinishReason: choice.FinishReason,
-		Usage:           convertGmicloudUsage(response.Usage),
-		RawResponse:     response,
+		Usage:           convertGmicloudUsagePtr(response.Usage),
 	}
-	if choice.Message.ReasoningContent != "" {
-		result.Content = append(result.Content, types.ReasoningContent{Text: choice.Message.ReasoningContent})
-	}
-	if len(choice.Message.ToolCalls) > 0 {
-		result.ToolCalls = make([]types.ToolCall, len(choice.Message.ToolCalls))
-		for i, tc := range choice.Message.ToolCalls {
-			var args map[string]interface{}
-			if tc.Function.Arguments != "" {
-				_ = json.Unmarshal([]byte(tc.Function.Arguments), &args) //nolint:errcheck
-			}
-			result.ToolCalls[i] = types.ToolCall{
-				ID:        tc.ID,
-				ToolName:  tc.Function.Name,
-				Arguments: args,
-			}
-		}
-	}
-	if response.ID != "" || response.Model != "" {
-		result.ResponseMetadata = &types.ResponseMetadata{ID: response.ID, ModelID: response.Model}
-	}
-	return result
 }
 
 func (m *LanguageModel) handleError(err error) error {
+	if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+		return cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
+	}
+	if noResp, ok := internalhttp.NoResponseError(err); ok {
+		return noResp // TS handleFetchError: an abort or timeout is returned unchanged
+	}
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
+	if providerutils.IsInvalidJSONResponse(err) {
+		return err // TS createJsonResponseHandler failure
+	}
 	if parsed := parseGmicloudProviderError(err); parsed != nil {
 		return parsed
 	}
-	statusCode := 0
-	var statusErr *internalhttp.HTTPStatusError
-	if errors.As(err, &statusErr) {
-		statusCode = statusErr.StatusCode
+	// Not an HTTP response: TS postJsonToApi lets a transport failure
+	// propagate unchanged.
+	return err
+}
+
+// convertGmicloudUsagePtr is TS convertOpenAICompatibleChatUsage of a possibly
+// missing wire usage: an absent or null usage object is the null usage
+// (unknown token counts), not zero tokens.
+func convertGmicloudUsagePtr(usage *gmicloudUsage) types.Usage {
+	if usage == nil {
+		return types.Usage{}
 	}
-	return providererrors.NewProviderError("gmicloud", statusCode, "", err.Error(), err)
+	return convertGmicloudUsage(*usage)
 }
 
 func convertGmicloudUsage(usage gmicloudUsage) types.Usage {
 	promptTokens := int64(usage.PromptTokens)
 	completionTokens := int64(usage.CompletionTokens)
-	totalTokens := int64(usage.TotalTokens)
+	totalTokens := promptTokens + completionTokens // TS core: input total + output total
 	result := types.Usage{
 		InputTokens:  &promptTokens,
 		OutputTokens: &completionTokens,
@@ -240,7 +326,7 @@ func convertGmicloudUsage(usage gmicloudUsage) types.Usage {
 	if usage.PromptTokensDetails != nil && usage.PromptTokensDetails.CachedTokens != nil {
 		cachedTokens = int64(*usage.PromptTokensDetails.CachedTokens)
 	}
-	if cachedTokens > 0 {
+	{
 		noCacheTokens := promptTokens - cachedTokens
 		result.InputDetails = &types.InputTokenDetails{
 			NoCacheTokens:   &noCacheTokens,
@@ -251,8 +337,11 @@ func convertGmicloudUsage(usage gmicloudUsage) types.Usage {
 	if usage.CompletionTokensDetails != nil && usage.CompletionTokensDetails.ReasoningTokens != nil {
 		reasoningTokens = int64(*usage.CompletionTokensDetails.ReasoningTokens)
 	}
-	if reasoningTokens > 0 {
+	{
 		textTokens := completionTokens - reasoningTokens
+		if textTokens < 0 {
+			textTokens = 0
+		}
 		result.OutputDetails = &types.OutputTokenDetails{
 			TextTokens:      &textTokens,
 			ReasoningTokens: &reasoningTokens,
@@ -267,28 +356,10 @@ func convertGmicloudUsage(usage gmicloudUsage) types.Usage {
 }
 
 type gmicloudResponse struct {
-	ID      string `json:"id"`
-	Object  string `json:"object"`
-	Created int64  `json:"created"`
-	Model   string `json:"model"`
 	Choices []struct {
-		Index        int    `json:"index"`
 		FinishReason string `json:"finish_reason"`
-		Message      struct {
-			Role             string `json:"role"`
-			Content          string `json:"content"`
-			ReasoningContent string `json:"reasoning_content"`
-			ToolCalls        []struct {
-				ID       string `json:"id"`
-				Type     string `json:"type"`
-				Function struct {
-					Name      string `json:"name"`
-					Arguments string `json:"arguments"`
-				} `json:"function"`
-			} `json:"tool_calls"`
-		} `json:"message"`
 	} `json:"choices"`
-	Usage gmicloudUsage `json:"usage"`
+	Usage *gmicloudUsage `json:"usage"`
 }
 
 type gmicloudUsage struct {
@@ -305,14 +376,14 @@ type gmicloudUsage struct {
 
 type gmicloudStream struct {
 	*streaming.OpenAICompatStream
-	responseHeaders         map[string]string
-	responseMetadataEmitted bool
 }
 
 func newGmicloudStream(reader io.ReadCloser) *gmicloudStream {
 	s := &gmicloudStream{
 		OpenAICompatStream: streaming.NewOpenAICompatStream(reader, providerutils.MapOpenAIFinishReason),
 	}
+	s.MetadataKey = "gmicloud"
+	s.ChunkErrorKind = providerutils.ChunkErrorGmicloud
 	s.OnReasoningDelta = func(eventBytes []byte) (string, bool) {
 		var chunk struct {
 			Choices []struct {
@@ -321,37 +392,11 @@ func newGmicloudStream(reader io.ReadCloser) *gmicloudStream {
 				} `json:"delta"`
 			} `json:"choices"`
 		}
-		if err := json.Unmarshal(eventBytes, &chunk); err != nil || len(chunk.Choices) == 0 {
+		if err := jsonexact.Unmarshal(eventBytes, &chunk); err != nil || len(chunk.Choices) == 0 {
 			return "", false
 		}
 		rc := chunk.Choices[0].Delta.ReasoningContent
 		return rc, rc != ""
-	}
-	s.OnBeforeDelta = func(data []byte) []*provider.StreamChunk {
-		var peek struct {
-			ID      string `json:"id"`
-			Model   string `json:"model"`
-			Created int64  `json:"created"`
-		}
-		if json.Unmarshal(data, &peek) != nil {
-			return nil
-		}
-		if s.responseMetadataEmitted || (peek.ID == "" && peek.Model == "" && peek.Created == 0 && len(s.responseHeaders) == 0) {
-			return nil
-		}
-		s.responseMetadataEmitted = true
-		meta := &provider.ResponseMetadata{
-			ID:      peek.ID,
-			ModelID: peek.Model,
-			Headers: s.responseHeaders,
-		}
-		if peek.Created != 0 {
-			meta.Timestamp = time.Unix(peek.Created, 0)
-		}
-		return []*provider.StreamChunk{{
-			Type:             provider.ChunkTypeResponseMetadata,
-			ResponseMetadata: meta,
-		}}
 	}
 	return s
 }

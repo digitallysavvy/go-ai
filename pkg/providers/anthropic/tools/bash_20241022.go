@@ -1,9 +1,6 @@
 package tools
 
 import (
-	"context"
-	"fmt"
-
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -22,7 +19,10 @@ import (
 //	tool := anthropicTools.Bash20241022()
 func Bash20241022() types.Tool {
 	return types.Tool{
-		Name: "anthropic.bash_20241022",
+		Name:         "anthropic.bash_20241022",
+		Type:         types.ToolTypeProviderDefined,
+		ProviderID:   "anthropic.bash_20241022",
+		ProviderArgs: noProviderArgs(),
 		Description: `Bash tool for executing shell commands in a persistent bash session.
 
 This enables:
@@ -48,22 +48,6 @@ By default this tool executes through the configured ExperimentalSandbox.`,
 			},
 			"required": []string{"command"},
 		},
-		Execute: func(ctx context.Context, input map[string]interface{}, options types.ToolExecutionOptions) (interface{}, error) {
-			command, _ := input["command"].(string)
-			if command == "" {
-				return nil, fmt.Errorf("command is required")
-			}
-			if result, ok, err := executeWithSandbox(ctx, options.ExperimentalSandbox, command); ok {
-				return result, err
-			}
-			if sandbox, ok := options.RuntimeContext.(bashCommandSandbox); ok {
-				restart := false
-				if v, ok := input["restart"].(bool); ok {
-					restart = v
-				}
-				return sandbox.ExecuteCommand(ctx, command, restart)
-			}
-			return nil, fmt.Errorf("Sandbox is not available") //nolint:staticcheck // matches TS SDK's exact error text
-		},
+		Execute: executeBash,
 	}
 }

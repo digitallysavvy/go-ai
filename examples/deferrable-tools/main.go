@@ -79,10 +79,12 @@ func runToolSearchExample(model provider.LanguageModel) {
 	for _, tr := range result.ToolResults {
 		fmt.Printf("\nTool: %s\n", tr.ToolName)
 		fmt.Printf("  Provider-Executed: %v\n", tr.ProviderExecuted)
-		if tr.Error != nil {
-			fmt.Printf("  Error: %v\n", tr.Error)
-		} else {
-			fmt.Printf("  Result: %v\n", tr.Result)
+		fmt.Printf("  Result: %v\n", tr.Result)
+	}
+	// Failed tool calls are tool-error content parts, not ToolResults.
+	for _, part := range result.Content {
+		if te, ok := part.(types.ToolErrorContent); ok {
+			fmt.Printf("\nTool: %s\n  Error: %v\n", te.ToolName, te.Error)
 		}
 	}
 }
@@ -204,11 +206,12 @@ func runErrorHandlingExample(model provider.LanguageModel) {
 	// Check for tool errors
 	fmt.Printf("\nTool Results:\n")
 	for _, tr := range result.ToolResults {
-		fmt.Printf("Tool: %s\n", tr.ToolName)
-		if tr.Error != nil {
-			fmt.Printf("  ⚠️  Error: %v\n", tr.Error)
-		} else {
-			fmt.Printf("  ✓ Success\n")
+		fmt.Printf("Tool: %s\n  ✓ Success\n", tr.ToolName)
+	}
+	// Failed tool calls are tool-error content parts, not ToolResults.
+	for _, part := range result.Content {
+		if te, ok := part.(types.ToolErrorContent); ok {
+			fmt.Printf("Tool: %s\n  ⚠️  Error: %v\n", te.ToolName, te.Error)
 		}
 	}
 }

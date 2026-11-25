@@ -3,7 +3,6 @@ package ai
 import (
 	"context"
 	"fmt"
-	"sync"
 	"time"
 
 	retryutil "github.com/digitallysavvy/go-ai/pkg/internal/retry"
@@ -24,7 +23,6 @@ func withEmbedRetry(ctx context.Context, maxRetries int, fn func(ctx context.Con
 	return retryutil.Do(ctx, retryutil.Config{
 		MaxRetries:   maxRetries,
 		InitialDelay: 2 * time.Second,
-		MaxDelay:     60 * time.Second,
 		Multiplier:   2,
 		Jitter:       false,
 		ShouldRetry:  isGatewayCallRetryable,
@@ -34,7 +32,13 @@ func withEmbedRetry(ctx context.Context, maxRetries int, fn func(ctx context.Con
 // embedManyCalls performs the model calls of EmbedMany (split, parallelized,
 // retried and validated) and aggregates the results. Mirrors the body of the
 // TS embedMany try-block.
-func embedManyCalls(ctx context.Context, opts EmbedManyOptions, callID string, maxRetries int) (*EmbedManyResult, error) {
+//
+// usageMissing reports whether any model call sent no usage. TS sums
+// `modelResponse.usage ?? { tokens: NaN }`, so its total is NaN then and the
+// root span drops ai.usage.tokens; the Go result keeps the v0.5.2 sum of the
+// reported calls (coordinator ruling, round 87e: S6 for the result, TS for
+// telemetry).
+func embedManyCalls(ctx context.Context, opts EmbedManyOptions, callID string, maxRetries int) (_ *EmbedManyResult, usageMissing bool, _ error) {
 	model := opts.Model
 	maxEmbeddingsPerCall := model.MaxEmbeddingsPerCall()
 	maxInputBytesPerCall := 0
@@ -56,10 +60,12 @@ func embedManyCalls(ctx context.Context, opts EmbedManyOptions, callID string, m
 				ModelProvider: model.Provider(),
 				ModelID:       model.ModelID(),
 				Values:        values,
+				Dimensions:    opts.Dimensions,
 			})
 			res, err := model.DoEmbedMany(attemptCtx, values, &provider.EmbedModelOptions{
 				ProviderOptions: providerOptions,
 				Headers:         opts.Headers,
+				Dimensions:      opts.Dimensions,
 			})
 			if err != nil {
 				// TS embedMany()'s try/catch rethrows the doEmbed error
@@ -114,7 +120,7 @@ func embedManyCalls(ctx context.Context, opts EmbedManyOptions, callID string, m
 	if !hasEmbeddingLimit && !hasInputByteLimit {
 		result, err := callModel(ctx, opts.Inputs, opts.ProviderOptions)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		return &EmbedManyResult{
 			Embeddings:       result.Embeddings,
@@ -122,7 +128,7 @@ func embedManyCalls(ctx context.Context, opts EmbedManyOptions, callID string, m
 			Warnings:         warningsOrEmpty(result.Warnings),
 			ProviderMetadata: result.ProviderMetadata,
 			Responses:        embeddingResponsesOrPlaceholder(result.Responses),
-		}, nil
+		}, embeddingUsageAbsent(result.Usage), nil
 	}
 
 	valueChunks := splitByEmbeddingLimits(opts.Inputs, maxEmbeddingsPerCall, maxInputBytesPerCall)
@@ -132,8 +138,9 @@ func embedManyCalls(ctx context.Context, opts EmbedManyOptions, callID string, m
 	if model.SupportsParallelCalls() {
 		parallelism = opts.MaxParallelCalls
 		if parallelism < 0 {
-			return nil, &providererrors.InvalidArgumentError{
+			return nil, false, &providererrors.InvalidArgumentError{
 				Field:   "chunkSize",
+				Value:   parallelism,
 				Message: "chunkSize must be greater than 0",
 			}
 		}
@@ -147,6 +154,14 @@ func embedManyCalls(ctx context.Context, opts EmbedManyOptions, callID string, m
 		Warnings:   []types.Warning{},
 		Responses:  []types.EmbeddingResponse{},
 	}
+	// TS sums usage.tokens over the chunks, with NaN for a chunk without
+	// usage (`modelResponse.usage ?? { tokens: NaN }`), so one such chunk
+	// makes the total NaN (dropped from telemetry: usageMissing), a reported
+	// 0 survives only when every chunk reported usage, and zero chunks give
+	// 0. Reported is therefore an AND, true for zero chunks. Tokens keeps
+	// the v0.5.2 sum of the reported chunks and never becomes NaN (S6:
+	// callers sum and json.Marshal it).
+	out.Usage.Reported = true
 
 	nextStartIndex := 0
 	for groupStart := 0; groupStart < len(valueChunks); groupStart += parallelism {
@@ -172,52 +187,70 @@ func embedManyCalls(ctx context.Context, opts EmbedManyOptions, callID string, m
 					EndIndex:        startIndex + len(chunk),
 				})
 				if err != nil {
-					return nil, err
+					return nil, false, err
 				}
 				groupOptions[i] = transformed
 			}
 		}
 
 		results := make([]*types.EmbeddingsResult, len(group))
-		errs := make([]error, len(group))
 		if len(group) == 1 {
-			results[0], errs[0] = callModel(ctx, group[0], groupOptions[0])
+			res, err := callModel(ctx, group[0], groupOptions[0])
+			if err != nil {
+				return nil, false, err
+			}
+			results[0] = res
 		} else {
-			var wg sync.WaitGroup
+			// TS Promise.all rejects with the first failure in time, not
+			// the lowest batch index, as soon as it happens. The siblings
+			// are not cancelled (TS does not abort them either): they run
+			// to completion on their own (bounded by ctx) and their results
+			// are dropped. The channel is buffered so they never block.
+			type batchOutcome struct {
+				index  int
+				result *types.EmbeddingsResult
+				err    error
+			}
+			outcomes := make(chan batchOutcome, len(group))
 			for i := range group {
-				wg.Add(1)
 				go func(i int) {
-					defer wg.Done()
-					results[i], errs[i] = callModel(ctx, group[i], groupOptions[i])
+					res, err := callModel(ctx, group[i], groupOptions[i])
+					outcomes <- batchOutcome{index: i, result: res, err: err}
 				}(i)
 			}
-			wg.Wait()
-		}
-		if err := firstNonNil(errs); err != nil {
-			return nil, err
+			for range group {
+				o := <-outcomes
+				if o.err != nil {
+					return nil, false, o.err
+				}
+				results[o.index] = o.result
+			}
 		}
 
 		for _, result := range results {
 			out.Embeddings = append(out.Embeddings, result.Embeddings...)
 			out.Warnings = append(out.Warnings, result.Warnings...)
 			out.Responses = append(out.Responses, embeddingResponsesOrPlaceholder(result.Responses)...)
+			if embeddingUsageAbsent(result.Usage) {
+				usageMissing = true
+			}
 			out.Usage.Tokens += result.Usage.Tokens
 			out.Usage.InputTokens += result.Usage.InputTokens
 			out.Usage.TotalTokens += result.Usage.TotalTokens
+			out.Usage.Reported = out.Usage.Reported && result.Usage.Reported
 			out.ProviderMetadata = mergeEmbeddingProviderMetadata(out.ProviderMetadata, result.ProviderMetadata)
 		}
 	}
 
-	return out, nil
+	return out, usageMissing, nil
 }
 
-func firstNonNil(errs []error) error {
-	for _, err := range errs {
-		if err != nil {
-			return err
-		}
-	}
-	return nil
+// embeddingUsageAbsent reports whether a model call sent no usage (TS
+// `usage` undefined): the provider did not mark it Reported and every
+// counter is zero. A v0.5.2 custom model that leaves Reported false but
+// fills a counter reported usage.
+func embeddingUsageAbsent(u types.EmbeddingUsage) bool {
+	return !u.Reported && u.Tokens == 0 && u.InputTokens == 0 && u.TotalTokens == 0
 }
 
 // embeddingResponsesOrPlaceholder keeps one response entry per model call

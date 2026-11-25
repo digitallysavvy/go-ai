@@ -39,7 +39,25 @@ func sumTokenCounts(a, b *int64) *int64 {
 }
 
 func stepPerformance(start time.Time, usage types.Usage, firstTokenAt *time.Time, outputChunkGapsMs []int64) types.StepPerformance {
-	responseTimeMs := time.Since(start).Milliseconds()
+	return stepPerformanceFor(start, time.Since(start).Milliseconds(), usage, firstTokenAt, outputChunkGapsMs)
+}
+
+// NonStreamingStepPerformance returns the performance of a step answered by a
+// non-streaming model call that took responseTimeMs, as TS generateText
+// builds it: only the effective rates are set. StepTimeMs equals the
+// response time until the caller sets the full step time and the tool
+// execution times.
+func NonStreamingStepPerformance(responseTimeMs int64, usage types.Usage) types.StepPerformance {
+	return stepPerformanceFor(time.Time{}, responseTimeMs, usage, nil, nil)
+}
+
+// NonStreamingModelCallPerformance is the language-model-call telemetry form
+// of NonStreamingStepPerformance.
+func NonStreamingModelCallPerformance(responseTimeMs int64, usage types.Usage) LanguageModelCallPerformance {
+	return languageModelCallPerformance(NonStreamingStepPerformance(responseTimeMs, usage))
+}
+
+func stepPerformanceFor(start time.Time, responseTimeMs int64, usage types.Usage, firstTokenAt *time.Time, outputChunkGapsMs []int64) types.StepPerformance {
 	var timeToFirstOutputMs *int64
 	var timeBetweenOutputChunksMs *types.OutputChunkTimingStats
 	var outputTokensPerSecond *float64

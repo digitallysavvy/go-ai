@@ -2,11 +2,20 @@ package cohere
 
 import (
 	"context"
+	"net/http"
+	"reflect"
 	"time"
+
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // RerankingModel implements the provider.RerankingModel interface for Cohere
@@ -25,12 +34,12 @@ func NewRerankingModel(provider *Provider, modelID string) *RerankingModel {
 
 // SpecificationVersion returns the specification version
 func (m *RerankingModel) SpecificationVersion() string {
-	return "v3"
+	return "v4"
 }
 
 // Provider returns the provider name
 func (m *RerankingModel) Provider() string {
-	return "cohere"
+	return "cohere.reranking"
 }
 
 // ModelID returns the model ID
@@ -38,47 +47,114 @@ func (m *RerankingModel) ModelID() string {
 	return m.modelID
 }
 
-// DoRerank performs document reranking
+// DoRerank performs document reranking (TS CohereRerankingModel#doRerank).
 func (m *RerankingModel) DoRerank(ctx context.Context, opts *provider.RerankOptions) (*types.RerankResult, error) {
-	// Build request body
-	reqBody := m.buildRequestBody(opts)
+	// Typed-option ruling: read Go-typed option literals in their JSON form.
+	if opts != nil && opts.ProviderOptions != nil {
+		normalized := *opts
+		normalized.ProviderOptions = providerutils.NormalizeOptionsJSON(opts.ProviderOptions)
+		opts = &normalized
+	}
+	if opts == nil {
+		opts = &provider.RerankOptions{}
+	}
+	// TS parseProviderOptions({provider: 'cohere', schema: cohereRerankingModelOptionsSchema}).
+	if _, err := providerutils.ParseProviderOptions("cohere", opts.ProviderOptions, cohereRerankingOptionsSchema); err != nil {
+		return nil, err
+	}
+	reqBody, warnings := m.buildRequestBodyWithWarnings(opts)
 
-	// Make API request
 	var response cohereRerankResponse
-	err := m.provider.client.PostJSON(ctx, "/rerank", reqBody, &response)
+	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{Method: http.MethodPost, Path: "/rerank", Body: reqBody, Headers: opts.Headers, ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaCohereRerank)}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
 	}
 
-	// Convert response
-	return m.convertResponse(response), nil
+	result := m.convertResponse(response)
+	result.Warnings = warnings
+	result.Response.Headers = map[string][]string(httpResp.Headers)
+	var raw interface{}
+	if jsonexact.Unmarshal(httpResp.Body, &raw) == nil {
+		result.Response.Body = raw
+	}
+	return result, nil
 }
 
-// buildRequestBody builds the Cohere rerank API request body
-func (m *RerankingModel) buildRequestBody(opts *provider.RerankOptions) map[string]interface{} {
+// buildRequestBodyWithWarnings mirrors the TS request: object documents are
+// converted to JSON strings (with a compatibility warning) and the
+// providerOptions.cohere maxTokensPerDoc/priority options are forwarded.
+func (m *RerankingModel) buildRequestBodyWithWarnings(opts *provider.RerankOptions) (map[string]interface{}, []types.Warning) {
 	body := map[string]interface{}{
 		"model": m.modelID,
 		"query": opts.Query,
 	}
+	var warnings []types.Warning
 
-	// Convert documents to the format Cohere expects
 	switch docs := opts.Documents.(type) {
 	case []string:
 		body["documents"] = docs
-	case []map[string]interface{}:
-		// Cohere accepts structured documents
-		body["documents"] = docs
+	case nil:
+		body["documents"] = []string{}
 	default:
-		// Fallback: try to convert to []interface{}
-		body["documents"] = opts.Documents
+		// Object documents are JSON.stringify'd: raw JSON keeps its key
+		// order and HTML characters stay literal (a Go map's keys are
+		// sorted). Any slice of documents is accepted, as TS takes any
+		// object values.
+		var items []interface{}
+		if rv := reflect.ValueOf(docs); rv.Kind() == reflect.Slice || rv.Kind() == reflect.Array {
+			for i := 0; i < rv.Len(); i++ {
+				items = append(items, rv.Index(i).Interface())
+			}
+		}
+		strs := make([]string, 0, len(items))
+		allText := true
+		for _, item := range items {
+			if s, ok := item.(string); ok {
+				strs = append(strs, s)
+				continue
+			}
+			allText = false
+			strs = append(strs, cohereStringifyDocument(item))
+		}
+		if !allText {
+			warnings = append(warnings, types.Warning{
+				Type:    "compatibility",
+				Feature: "object documents",
+				Details: "Object documents are converted to strings.",
+			})
+		}
+		body["documents"] = strs
 	}
 
-	// Add topN if specified
-	if opts.TopN != nil && *opts.TopN > 0 {
+	// TS sends `top_n: topN` whenever it is set (a zero stays zero).
+	if opts.TopN != nil {
 		body["top_n"] = *opts.TopN
 	}
 
-	return body
+	if po, ok := opts.ProviderOptions["cohere"].(map[string]interface{}); ok {
+		if v, ok := po["maxTokensPerDoc"]; ok && v != nil {
+			body["max_tokens_per_doc"] = v
+		}
+		if v, ok := po["priority"]; ok && v != nil {
+			body["priority"] = v
+		}
+	}
+	return body, warnings
+}
+
+// cohereStringifyDocument is TS JSON.stringify(value) for an object
+// document.
+func cohereStringifyDocument(doc interface{}) string {
+	if raw, ok := providerutils.RawJSONObject(doc); ok {
+		if parsed, ok := jsonorder.Parse(raw); ok {
+			return jsonorder.Stringify(parsed)
+		}
+	}
+	b, err := jsonstr.Marshal(doc)
+	if err != nil {
+		return "null"
+	}
+	return string(b)
 }
 
 // convertResponse converts a Cohere response to RerankResult
@@ -105,7 +181,16 @@ func (m *RerankingModel) convertResponse(response cohereRerankResponse) *types.R
 
 // handleError converts various errors to provider errors
 func (m *RerankingModel) handleError(err error) error {
-	return providererrors.NewProviderError("cohere", 0, "", err.Error(), err)
+	if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+		return cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
+	}
+	if noResp, ok := internalhttp.NoResponseError(err); ok {
+		return noResp // TS handleFetchError: an abort or timeout is returned unchanged
+	}
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
+	return providererrors.NewSchemaProviderError("cohere", err, cohereErrorSchema)
 }
 
 // cohereRerankResponse represents the Cohere rerank API response
@@ -121,4 +206,11 @@ type cohereRerankResponse struct {
 			Version string `json:"version"`
 		} `json:"api_version"`
 	} `json:"meta,omitempty"`
+}
+
+// cohereRerankingOptionsSchema mirrors cohereRerankingModelOptionsSchema (TS
+// reranking/cohere-reranking-model-options.ts).
+var cohereRerankingOptionsSchema = providerutils.OptionSchema{
+	"maxTokensPerDoc": providerutils.OptNumber,
+	"priority":        providerutils.OptNumber,
 }

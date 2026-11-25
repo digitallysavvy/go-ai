@@ -224,7 +224,7 @@ func TestShellSandboxTextFileEncoding(t *testing.T) {
 	if err := sb.WriteTextFile(context.Background(), SandboxWriteTextFileOptions{
 		Path:     path,
 		Content:  "caf\u00e9",
-		Encoding: "iso-8859-1",
+		Encoding: "latin1",
 	}); err != nil {
 		t.Fatalf("WriteTextFile() error = %v", err)
 	}
@@ -237,7 +237,7 @@ func TestShellSandboxTextFileEncoding(t *testing.T) {
 	}
 	text, err := sb.ReadTextFile(context.Background(), SandboxReadTextFileOptions{
 		Path:     path,
-		Encoding: "iso-8859-1",
+		Encoding: "latin1",
 	})
 	if err != nil {
 		t.Fatalf("ReadTextFile() error = %v", err)
@@ -251,5 +251,24 @@ func TestShellSandboxDescription(t *testing.T) {
 	sb := NewShellSandbox(WithShellSandboxDescription("Ubuntu 22.04, root: /workspace"))
 	if got, want := sb.Description(), "Ubuntu 22.04, root: /workspace"; got != want {
 		t.Fatalf("Description() = %q, want %q", got, want)
+	}
+}
+
+// A cancelled ctx kills the shell, but a child it forked keeps the output
+// pipes open; Run must still return promptly instead of waiting for that
+// child to exit.
+func TestShellSandboxRunReturnsPromptlyOnCancelWithOrphanedChild(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	res, err := NewShellSandbox().Run(ctx, SandboxProcessOptions{Command: "echo started; sleep 20; echo never"})
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("Run took %v after cancellation", elapsed)
+	}
+	if err == nil {
+		t.Fatalf("Run err = nil, want the ctx error (result %+v)", res)
+	}
+	if res.Stdout != "started\n" {
+		t.Fatalf("Stdout = %q, want the output captured before cancellation", res.Stdout)
 	}
 }

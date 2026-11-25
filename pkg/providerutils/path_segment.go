@@ -21,6 +21,11 @@ func EncodePathSegment(value string) string {
 	return encoded
 }
 
+// EncodeURIComponent is JavaScript encodeURIComponent: every byte of the UTF-8
+// encoding is percent-encoded except A-Z a-z 0-9 - _ . ! ~ * ' ( ). Unlike
+// net/url.QueryEscape it encodes a space as %20 and leaves ! * ' ( ) alone.
+func EncodeURIComponent(s string) string { return encodeURIComponent(s) }
+
 const upperHex = "0123456789ABCDEF"
 
 // encodeURIComponent mirrors ECMAScript encodeURIComponent: every byte of the

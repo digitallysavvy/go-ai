@@ -10,8 +10,8 @@ func TestComputerToolset20260801Serialization(t *testing.T) {
 	if tool.Name != "anthropic.computer_toolset_20260801" {
 		t.Errorf("tool.Name = %q, want %q", tool.Name, "anthropic.computer_toolset_20260801")
 	}
-	if !tool.ProviderExecuted {
-		t.Error("tool.ProviderExecuted should be true")
+	if tool.ProviderExecuted {
+		t.Error("tool.ProviderExecuted should be false")
 	}
 
 	opts, ok := tool.ProviderOptions.(*computerToolset20260801Opts)

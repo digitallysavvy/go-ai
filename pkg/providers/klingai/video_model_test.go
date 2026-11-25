@@ -576,8 +576,9 @@ func TestCheckUnsupportedOptions_ZeroValuesNoWarning(t *testing.T) {
 
 	warnings := model.checkUnsupportedOptions(opts)
 
-	if len(warnings) != 0 {
-		t.Errorf("expected no warnings for zero seed/fps, got %d: %+v", len(warnings), warnings)
+	// TS ef2dfb5e9f: seed != null warns for 0; fps keeps its truthy check.
+	if len(warnings) != 1 || warnings[0].Feature != "seed" {
+		t.Errorf("expected only the seed warning for zero seed/fps, got %d: %+v", len(warnings), warnings)
 	}
 }
 
@@ -1983,5 +1984,23 @@ func TestDoStatus_RejectsPrivateIPRedirect(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "not allowed") {
 		t.Errorf("expected an SSRF validation error, got: %v", err)
+	}
+}
+
+func TestMotionControlMissingOptionsUsesTSMessage(t *testing.T) {
+	prov, _ := New(Config{AccessKey: "ak", SecretKey: "sk"})
+	model := &VideoModel{prov: prov, modelID: "kling-v2.6-motion-control", mode: VideoModeMotionControl}
+	_, _, err := model.buildMotionControlBody(&provider.VideoModelV3CallOptions{}, &ProviderOptions{})
+	if err == nil || !strings.Contains(err.Error(), "KlingAI Motion Control requires providerOptions.klingai with videoUrl, characterOrientation, and mode.") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestKlingaiIsVideoFileBareTopLevelType(t *testing.T) {
+	if !klingaiIsVideoFile(&provider.VideoModelV3File{MediaType: "video"}) || !klingaiIsVideoFile(&provider.VideoModelV3File{MediaType: "video/mp4"}) {
+		t.Fatal("video and video/mp4 must be video")
+	}
+	if klingaiIsVideoFile(&provider.VideoModelV3File{MediaType: "image/png"}) || klingaiIsVideoFile(&provider.VideoModelV3File{}) {
+		t.Fatal("non-video must not match")
 	}
 }

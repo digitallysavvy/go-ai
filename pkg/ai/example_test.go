@@ -206,19 +206,19 @@ func ExamplePipeUIMessageStreamToResponse() {
 	//
 	// data: {"type":"start-step"}
 	//
-	// data: {"id":"text-1","type":"text-start"}
+	// data: {"type":"text-start","id":"text-1"}
 	//
-	// data: {"delta":"Hello ","id":"text-1","type":"text-delta"}
+	// data: {"type":"text-delta","id":"text-1","delta":"Hello "}
 	//
-	// data: {"delta":"from ","id":"text-1","type":"text-delta"}
+	// data: {"type":"text-delta","id":"text-1","delta":"from "}
 	//
-	// data: {"delta":"Go.","id":"text-1","type":"text-delta"}
+	// data: {"type":"text-delta","id":"text-1","delta":"Go."}
 	//
-	// data: {"id":"text-1","type":"text-end"}
+	// data: {"type":"text-end","id":"text-1"}
 	//
 	// data: {"type":"finish-step"}
 	//
-	// data: {"finishReason":"stop","type":"finish"}
+	// data: {"type":"finish","finishReason":"stop"}
 	//
 	// data: [DONE]
 }

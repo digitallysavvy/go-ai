@@ -282,11 +282,16 @@ func TestGenerateTextAggregatesFilesSourcesWarningsAcrossSteps(t *testing.T) {
 	if got, want := len(result.FinalStep.Warnings), 1; got != want {
 		t.Fatalf("len(result.FinalStep.Warnings) = %d, want %d", got, want)
 	}
-	if got, want := len(finishEvent.Sources), 1; got != want {
-		t.Fatalf("len(finishEvent.Sources) = %d, want final-step sources only", got)
+	// TS onEnd aggregates across steps (usage: totalUsage, flattened content,
+	// toolCalls, toolResults, sources); the final step is event.FinalStep.
+	if got, want := len(finishEvent.Sources), 2; got != want {
+		t.Fatalf("len(finishEvent.Sources) = %d, want all-step sources", got)
 	}
-	if finishEvent.Sources[0].ID != "src-2" {
-		t.Fatalf("finishEvent.Sources = %+v, want final-step source", finishEvent.Sources)
+	if finishEvent.Sources[0].ID != "src-1" || finishEvent.Sources[1].ID != "src-2" {
+		t.Fatalf("finishEvent.Sources = %+v, want sources of every step", finishEvent.Sources)
+	}
+	if len(finishEvent.FinalStep.Sources) != 1 || finishEvent.FinalStep.Sources[0].ID != "src-2" {
+		t.Fatalf("finishEvent.FinalStep.Sources = %+v, want final-step source", finishEvent.FinalStep.Sources)
 	}
 	if got, want := len(finishEvent.Files), 2; got != want {
 		t.Fatalf("len(finishEvent.Files) = %d, want all-step files", got)
@@ -297,14 +302,17 @@ func TestGenerateTextAggregatesFilesSourcesWarningsAcrossSteps(t *testing.T) {
 	if got := len(result.ToolCalls); got != 1 {
 		t.Fatalf("len(result.ToolCalls) = %d, want all-step tool calls", got)
 	}
-	if got := len(finishEvent.ToolCalls); got != 0 {
-		t.Fatalf("len(finishEvent.ToolCalls) = %d, want final-step tool calls only", got)
+	if got := len(finishEvent.ToolCalls); got != 1 {
+		t.Fatalf("len(finishEvent.ToolCalls) = %d, want all-step tool calls", got)
+	}
+	if got := len(finishEvent.FinalStep.ToolCalls); got != 0 {
+		t.Fatalf("len(finishEvent.FinalStep.ToolCalls) = %d, want final-step tool calls only", got)
 	}
 	if got := len(result.ToolResults); got != 1 {
 		t.Fatalf("len(result.ToolResults) = %d, want all-step tool results", got)
 	}
-	if got := len(finishEvent.ToolResults); got != 0 {
-		t.Fatalf("len(finishEvent.ToolResults) = %d, want final-step tool results only", got)
+	if got := len(finishEvent.ToolResults); got != 1 {
+		t.Fatalf("len(finishEvent.ToolResults) = %d, want all-step tool results", got)
 	}
 	if finishResult == nil {
 		t.Fatal("OnFinish did not receive result")
@@ -320,7 +328,11 @@ func TestGenerateTextAggregatesFilesSourcesWarningsAcrossSteps(t *testing.T) {
 	}
 }
 
-func TestGenerateTextSandboxDescriptionAppendedToSystem(t *testing.T) {
+// TS adds no sandbox description to the model prompt ("The experimental
+// sandbox description is not added to the model prompt automatically",
+// content/docs/03-agents/02-building-agents.mdx); tool description functions
+// and prepareStep read it.
+func TestGenerateTextSandboxDescriptionNotAddedToSystem(t *testing.T) {
 	var seenSystem string
 	model := &testutil.MockLanguageModel{
 		DoGenerateFunc: func(_ context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
@@ -338,8 +350,8 @@ func TestGenerateTextSandboxDescriptionAppendedToSystem(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateText() error = %v", err)
 	}
-	if seenSystem == "" || !containsSubstring(seenSystem, "Ubuntu 22.04, root: /workspace") {
-		t.Fatalf("system prompt missing sandbox description: %q", seenSystem)
+	if seenSystem != "You are helpful." {
+		t.Fatalf("system prompt = %q, want the instructions only", seenSystem)
 	}
 }
 
@@ -380,7 +392,10 @@ func TestGenerateTextStepTimeMsIsPopulatedForToolStep(t *testing.T) {
 	}
 }
 
-func TestStreamTextSandboxDescriptionAppliedOnEveryStep(t *testing.T) {
+// TS never adds experimental_sandbox.description to the model prompt
+// (docs 03-agents/02-building-agents.mdx: "not added to the model prompt
+// automatically").
+func TestStreamTextSandboxDescriptionNotAddedToSystem(t *testing.T) {
 	call := 0
 	var seenSystems []string
 	model := &testutil.MockLanguageModel{
@@ -431,21 +446,8 @@ func TestStreamTextSandboxDescriptionAppliedOnEveryStep(t *testing.T) {
 		t.Fatalf("stream calls = %d, want 2", got)
 	}
 	for i, system := range seenSystems {
-		if !containsSubstring(system, "Ubuntu 22.04, root: /workspace") {
-			t.Fatalf("call %d system missing sandbox description: %q", i+1, system)
+		if system != "You are helpful." {
+			t.Fatalf("call %d system = %q, want the instructions only", i+1, system)
 		}
 	}
-}
-
-func containsSubstring(value, needle string) bool {
-	return len(needle) > 0 && len(value) > 0 && (len(value) >= len(needle)) && (indexOf(value, needle) >= 0)
-}
-
-func indexOf(s, substr string) int {
-	for i := 0; i+len(substr) <= len(s); i++ {
-		if s[i:i+len(substr)] == substr {
-			return i
-		}
-	}
-	return -1
 }

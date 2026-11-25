@@ -122,7 +122,8 @@ type StreamTranslationResult struct {
 	mu          sync.Mutex
 	streamOwner string
 	ch          chan TranslationStreamPart
-	cancel      context.CancelFunc
+	demand      *streamDemand
+	cancel      context.CancelCauseFunc
 	finalErr    *error
 	finalErrMu  sync.Mutex
 }
@@ -162,6 +163,7 @@ func (r *StreamTranslationResult) consumeStream() {
 	}
 	r.streamOwner = "result-promises"
 	r.mu.Unlock()
+	r.demand.drainAll()
 	go func() {
 		for range r.ch { //nolint:revive // drain; results surface via the accessors
 		}
@@ -227,6 +229,10 @@ func (r *StreamTranslationResult) FullStream() (TranslationStream, error) {
 	return &translationFullStream{result: r}, nil
 }
 
+// errTranslationStreamCancelled is the reason FullStream.Close aborts the
+// pipe with (TS Transformer.cancel's default reason).
+var errTranslationStreamCancelled = errors.New("Translation stream was cancelled.") //nolint:staticcheck // matches TS SDK's exact error text
+
 type translationFullStream struct {
 	result    *StreamTranslationResult
 	err       error
@@ -234,6 +240,7 @@ type translationFullStream struct {
 }
 
 func (s *translationFullStream) Next() (*TranslationStreamPart, error) {
+	s.result.demand.request()
 	part, ok := <-s.result.ch
 	if !ok {
 		if err := s.result.getFinalErr(); err != nil {
@@ -249,7 +256,7 @@ func (s *translationFullStream) Err() error { return s.err }
 
 func (s *translationFullStream) Close() error {
 	s.closeOnce.Do(func() {
-		s.result.cancel()
+		s.result.cancel(errTranslationStreamCancelled)
 	})
 	return nil
 }
@@ -266,7 +273,7 @@ func ExperimentalStreamTranslate(ctx context.Context, opts StreamTranslateOption
 		return nil, fmt.Errorf("model is required")
 	}
 
-	pipeCtx, cancel := context.WithCancel(ctx)
+	pipeCtx, cancel := context.WithCancelCause(ctx)
 
 	result := &StreamTranslationResult{
 		sourceTextP:       newStreamPromise[string](),
@@ -278,6 +285,7 @@ func ExperimentalStreamTranslate(ctx context.Context, opts StreamTranslateOption
 		providerMetadataP: newStreamPromise[map[string]interface{}](),
 		streamOwner:       "unclaimed",
 		ch:                make(chan TranslationStreamPart),
+		demand:            newStreamDemand(),
 		cancel:            cancel,
 	}
 
@@ -295,9 +303,25 @@ func runTranslationStreamPipe(pipeCtx context.Context, opts StreamTranslateOptio
 	hasAudioOutput := false
 
 	fail := func(err error) {
+		// A nil Audio has no producer to cancel (and must not crash the
+		// pipe goroutine). The input is cancelled before the result
+		// promises reject, so a caller woken by the rejection sees it
+		// cancelled (TS settles both in one synchronous task).
+		if opts.Audio != nil {
+			opts.Audio.Cancel(err)
+		}
 		result.setFinalErr(err)
 		result.rejectAll(err)
-		opts.Audio.Cancel(err)
+	}
+	// abortReason reports a failure caused by cancellation with the abort
+	// reason, as TS pipeTo rejects with the signal's reason: Close gives
+	// "Translation stream was cancelled.", a cancelled ctx its cause (as
+	// runTranscriptionStreamPipe does).
+	abortReason := func(err error) error {
+		if pipeCtx.Err() != nil {
+			return context.Cause(pipeCtx)
+		}
+		return err
 	}
 
 	streamResult, err := opts.Model.DoStream(pipeCtx, &provider.SpeechTranslationStreamOptions{
@@ -312,7 +336,7 @@ func runTranslationStreamPipe(pipeCtx context.Context, opts StreamTranslateOptio
 		IncludeRawChunks:  opts.IncludeRawChunks,
 	})
 	if err != nil {
-		fail(err)
+		fail(abortReason(err))
 		return
 	}
 	if streamResult.Response != nil {
@@ -333,14 +357,24 @@ func runTranslationStreamPipe(pipeCtx context.Context, opts StreamTranslateOptio
 		logModelWarnings(warnings, opts.Model.Provider(), opts.Model.ModelID())
 	}
 
+	// hasDemand: see runTranscriptionStreamPipe (TS transform runs only on
+	// the reader's demand).
+	hasDemand := false
 	for {
 		part, nextErr := streamResult.Stream.Next()
 		if nextErr == io.EOF {
 			break
 		}
 		if nextErr != nil {
-			fail(nextErr)
+			fail(abortReason(nextErr))
 			return
+		}
+		if !hasDemand {
+			if !result.demand.wait(pipeCtx) {
+				fail(context.Cause(pipeCtx))
+				return
+			}
+			hasDemand = true
 		}
 
 		switch part.Type {
@@ -369,9 +403,10 @@ func runTranslationStreamPipe(pipeCtx context.Context, opts StreamTranslateOptio
 				// pending send that loses to pipeCtx cancellation must still
 				// reject the result promises and cancel the caller's audio,
 				// mirroring TS stream-translate.ts's Transformer.cancel/catch.
-				fail(errors.New("Translation stream was cancelled.")) //nolint:staticcheck // matches TS SDK's exact error text
+				fail(context.Cause(pipeCtx))
 				return
 			}
+			hasDemand = false
 
 		case provider.SpeechTranslationStreamPartTypeOutputTextDelta,
 			provider.SpeechTranslationStreamPartTypeOutputTextFinal,
@@ -381,9 +416,10 @@ func runTranslationStreamPipe(pipeCtx context.Context, opts StreamTranslateOptio
 			provider.SpeechTranslationStreamPartTypeRaw,
 			provider.SpeechTranslationStreamPartTypeError:
 			if !sendTranslationPart(pipeCtx, result.ch, translationPartFromProvider(part)) {
-				fail(errors.New("Translation stream was cancelled.")) //nolint:staticcheck // matches TS SDK's exact error text
+				fail(context.Cause(pipeCtx))
 				return
 			}
+			hasDemand = false
 
 		case provider.SpeechTranslationStreamPartTypeFinish:
 			if !warningsResolved {
@@ -407,8 +443,10 @@ func runTranslationStreamPipe(pipeCtx context.Context, opts StreamTranslateOptio
 		default:
 			// Mirrors TS stream-translate.ts's exhaustive-check default
 			// branch: an unrecognized part type from the provider is a hard
-			// error rather than a silently dropped chunk.
-			fail(fmt.Errorf("unsupported part type: %s", part.Type))
+			// error rather than a silently dropped chunk. TS formats the
+			// part object itself into the message (`${_exhaustiveCheck}`),
+			// which JS renders as "[object Object]".
+			fail(errors.New("Unsupported part type: [object Object]")) //nolint:staticcheck // matches TS SDK's exact error text
 			return
 		}
 	}
@@ -434,7 +472,22 @@ func translationPartFromProvider(part *provider.SpeechTranslationStreamPart) Tra
 	}
 }
 
+// sendTranslationPart sends part on ch, honoring cancellation of ctx; see
+// sendTranscriptionPart for the two cancellations (after FullStream.Close
+// nothing more is written; after the caller's ctx a waiting reader still gets
+// the part).
 func sendTranslationPart(ctx context.Context, ch chan<- TranslationStreamPart, part TranslationStreamPart) bool {
+	if ctx.Err() != nil {
+		if errors.Is(context.Cause(ctx), errTranslationStreamCancelled) {
+			return false
+		}
+		select {
+		case ch <- part:
+			return true
+		default:
+			return false
+		}
+	}
 	select {
 	case ch <- part:
 		return true

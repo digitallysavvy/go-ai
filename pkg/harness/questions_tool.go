@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 )
 
 // QuestionsToolDescription is the description of the askUserQuestions tool.
@@ -45,7 +47,8 @@ func (a *AllowFreeForm) UnmarshalJSON(data []byte) error {
 	var obj struct {
 		Secret *bool `json:"secret"`
 	}
-	if err := json.Unmarshal(data, &obj); err != nil || obj.Secret == nil {
+	// zod matches keys exactly: a "Secret" key is stripped, not read.
+	if err := jsonexact.UnmarshalPlain(data, &obj); err != nil || obj.Secret == nil {
 		return errors.New("allowFreeForm must be a boolean or { secret: boolean }")
 	}
 	*a = AllowFreeForm{Enabled: true, Secret: obj.Secret}
@@ -60,6 +63,23 @@ type Question struct {
 	Options       []QuestionOption `json:"options,omitempty"`
 	AllowMultiple *bool            `json:"allowMultiple,omitempty"`
 	AllowFreeForm *AllowFreeForm   `json:"allowFreeForm,omitempty"`
+}
+
+// MarshalJSON keeps an explicitly empty (non-nil) options array on the wire
+// as TS does (`options: []`); only a nil slice is omitted.
+func (q Question) MarshalJSON() ([]byte, error) {
+	wire := struct {
+		ID            string            `json:"id"`
+		Question      string            `json:"question"`
+		Header        string            `json:"header,omitempty"`
+		Options       *[]QuestionOption `json:"options,omitempty"`
+		AllowMultiple *bool             `json:"allowMultiple,omitempty"`
+		AllowFreeForm *AllowFreeForm    `json:"allowFreeForm,omitempty"`
+	}{ID: q.ID, Question: q.Question, Header: q.Header, AllowMultiple: q.AllowMultiple, AllowFreeForm: q.AllowFreeForm}
+	if q.Options != nil {
+		wire.Options = &q.Options
+	}
+	return json.Marshal(wire)
 }
 
 // QuestionsToolInput is the askUserQuestions input. Mirrors TS
@@ -80,13 +100,59 @@ func ParseQuestionsToolInput(data []byte) (*QuestionsToolInput, error) {
 		return nil, errors.New("invalid askUserQuestions input: allowPartialAnswers is required")
 	}
 	var input QuestionsToolInput
-	if err := json.Unmarshal(data, &input); err != nil {
+	// zod matches the schema's keys exactly (jsonexact).
+	if err := jsonexact.Unmarshal(data, &input); err != nil {
 		return nil, fmt.Errorf("invalid askUserQuestions input: %w", err)
+	}
+	if err := checkQuestionsOptionalKeys(fields["questions"]); err != nil {
+		return nil, err
 	}
 	if err := input.Validate(); err != nil {
 		return nil, err
 	}
 	return &input, nil
+}
+
+// checkQuestionsOptionalKeys applies what the struct decode cannot see:
+// the schema's optional keys (header, options, allowMultiple,
+// allowFreeForm; an option's description and preview) are `.optional()`,
+// so a present null fails as in zod, and the allowFreeForm object form
+// needs its `secret` key spelled exactly.
+func checkQuestionsOptionalKeys(raw json.RawMessage) error {
+	var questions []map[string]json.RawMessage
+	if json.Unmarshal(raw, &questions) != nil {
+		return nil // the struct decode reported any shape error
+	}
+	isNull := func(m map[string]json.RawMessage, key string) bool {
+		v, ok := m[key]
+		return ok && string(v) == "null"
+	}
+	for i, q := range questions {
+		for _, key := range []string{"header", "options", "allowMultiple", "allowFreeForm"} {
+			if isNull(q, key) {
+				return fmt.Errorf("invalid askUserQuestions input: question %d %s must not be null", i, key)
+			}
+		}
+		var form map[string]json.RawMessage
+		if json.Unmarshal(q["allowFreeForm"], &form) == nil && form != nil {
+			var secret bool
+			if v, ok := form["secret"]; !ok || json.Unmarshal(v, &secret) != nil {
+				return errors.New("invalid askUserQuestions input: allowFreeForm must be a boolean or { secret: boolean }")
+			}
+		}
+		var options []map[string]json.RawMessage
+		if json.Unmarshal(q["options"], &options) != nil {
+			continue
+		}
+		for j, o := range options {
+			for _, key := range []string{"description", "preview"} {
+				if isNull(o, key) {
+					return fmt.Errorf("invalid askUserQuestions input: question %d option %d %s must not be null", i, j, key)
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // Validate applies the zod min-length constraints.
@@ -165,7 +231,8 @@ func ParseQuestionsToolOutput(data []byte) (*QuestionsToolOutput, error) {
 		return nil, fmt.Errorf("invalid askUserQuestions output: %w", err)
 	}
 	var out QuestionsToolOutput
-	if err := json.Unmarshal(data, &out); err != nil {
+	// zod matches the discriminator and keys exactly (jsonexact).
+	if err := jsonexact.Unmarshal(data, &out); err != nil {
 		return nil, fmt.Errorf("invalid askUserQuestions output: %w", err)
 	}
 	switch out.Action {
@@ -173,9 +240,26 @@ func ParseQuestionsToolOutput(data []byte) (*QuestionsToolOutput, error) {
 		if raw, ok := fields["answers"]; !ok || string(raw) == "null" {
 			return nil, errors.New("invalid askUserQuestions output: answers is required")
 		}
+		// zod matches keys exactly, and freeform is .optional() (a null
+		// fails).
+		var answers map[string]map[string]json.RawMessage
+		_ = json.Unmarshal(fields["answers"], &answers)
 		for id, answer := range out.Answers {
-			if answer.OptionIDs == nil {
+			raw := answers[id]
+			if v, ok := raw["optionIds"]; answer.OptionIDs == nil || !ok || string(v) == "null" {
 				return nil, fmt.Errorf("invalid askUserQuestions output: answer %q requires optionIds", id)
+			}
+			// z.array(z.string()): a null element fails (encoding/json
+			// leaves it "").
+			var ids []json.RawMessage
+			_ = json.Unmarshal(raw["optionIds"], &ids)
+			for _, v := range ids {
+				if string(v) == "null" {
+					return nil, fmt.Errorf("invalid askUserQuestions output: answer %q optionIds must be strings", id)
+				}
+			}
+			if v, ok := raw["freeform"]; ok && string(v) == "null" {
+				return nil, fmt.Errorf("invalid askUserQuestions output: answer %q freeform must not be null", id)
 			}
 		}
 	case QuestionsActionDeclined, QuestionsActionCancelled:
@@ -253,7 +337,7 @@ func QuestionsToolOutputJSONSchema() map[string]any {
 			"type": "object",
 			"properties": map[string]any{
 				"action":  map[string]any{"type": "string", "const": action},
-				"answers": map[string]any{"type": "object", "additionalProperties": answer},
+				"answers": map[string]any{"type": "object", "propertyNames": map[string]any{"type": "string"}, "additionalProperties": answer},
 			},
 			"required":             []any{"action", "answers"},
 			"additionalProperties": false,

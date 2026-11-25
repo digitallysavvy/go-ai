@@ -2,6 +2,7 @@ package deepseek
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -41,6 +42,13 @@ func TestDeepSeekIsV4Model(t *testing.T) {
 		{"deepseek-pro-mini", true},
 		{"deepseek-chat", false},
 		{"deepseek-reasoner", false},
+		// TS #22493: future models inherit V4 behavior; legacy versions don't.
+		{"deepseek-v5-pro", true},
+		{"deepseek-v10-flash", true},
+		{"deepseek-next", true},
+		{"provider/deepseek-v5-pro", true},
+		{"deepseek-v3.2", false},
+		{"provider/deepseek-v2.5", false},
 	}
 	for _, tt := range tests {
 		if got := isDeepSeekV4Model(tt.modelID); got != tt.want {
@@ -572,5 +580,25 @@ func TestDeepSeekTopLogprobsOptionOutOfRange(t *testing.T) {
 	opts := testGenerateOptions(deepseekOpt("topLogprobs", 21))
 	if _, _, err := m.buildRequestBodyWithWarnings(&opts, false); err == nil {
 		t.Fatal("expected error for topLogprobs > 20")
+	}
+}
+
+// TS resolveDeepSeekImageMediaType resolves a wildcard media type on inline
+// bytes (sniffing the signature) before checking it is a supported image type.
+func TestDeepSeekWildcardImageMediaTypeIsSniffed(t *testing.T) {
+	prov := New(Config{APIKey: "k"})
+	m := NewLanguageModel(prov, "deepseek-v4-flash-vision-exp")
+	png := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0}
+
+	converted, _, err := m.convertMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentPart{types.FileContent{Data: png, MediaType: "image/*"}}},
+	})
+	if err != nil {
+		t.Fatalf("convertMessages error = %v", err)
+	}
+	parts := converted[0]["content"].([]map[string]interface{})
+	url := parts[0]["image_url"].(map[string]interface{})["url"].(string)
+	if !strings.HasPrefix(url, "data:image/png;base64,") {
+		t.Fatalf("image url = %s, want sniffed image/png", url)
 	}
 }

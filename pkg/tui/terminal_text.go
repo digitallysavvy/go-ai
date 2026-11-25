@@ -3,6 +3,9 @@ package tui
 import (
 	"regexp"
 	"strings"
+	"unicode/utf8"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 var ansiPattern = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]`)
@@ -35,7 +38,10 @@ func sliceVisible(input string, width int) string {
 	var out strings.Builder
 	visible := 0
 	i := 0
-	for i < len(input) {
+	// TS: `while (index < input.length && visible < width)`; once the width
+	// is filled only trailing ANSI sequences are kept, so a following
+	// zero-width character (combining mark, control) is dropped.
+	for i < len(input) && visible < width {
 		if input[i] == 0x1b {
 			loc := ansiPattern.FindStringIndex(input[i:])
 			if loc != nil && loc[0] == 0 {
@@ -75,18 +81,17 @@ func wrapVisibleLine(line string, width int) []string {
 	remaining := line
 	for visibleLength(remaining) > width {
 		breakAt := findVisibleBreakPoint(remaining, width)
-		lines = append(lines, strings.TrimRight(remaining[:breakAt], " "))
-		remaining = strings.TrimLeft(remaining[breakAt:], " ")
+		lines = append(lines, jsTrimEnd(remaining[:breakAt]))
+		remaining = jsTrimStart(remaining[breakAt:])
 	}
 	lines = append(lines, remaining)
 	return lines
 }
 
 func nextRune(input string) (rune, int) {
-	for _, r := range input {
-		return r, len(string(r))
-	}
-	return 0, 0
+	// DecodeRuneInString reports the real width of an invalid byte (1), where
+	// len(string(utf8.RuneError)) would claim 3 and skip following text.
+	return utf8.DecodeRuneInString(input)
 }
 
 func codePointWidth(r rune) int {
@@ -164,3 +169,9 @@ func findVisibleBreakPoint(input string, width int) int {
 	}
 	return len(sliceVisible(input, width))
 }
+
+// JS String.prototype.trim/trimStart/trimEnd (shared with providerutils): JS
+// trims U+FEFF but keeps U+0085, unlike unicode.IsSpace.
+func jsTrim(s string) string      { return providerutils.JSTrim(s) }
+func jsTrimStart(s string) string { return providerutils.JSTrimStart(s) }
+func jsTrimEnd(s string) string   { return providerutils.JSTrimEnd(s) }

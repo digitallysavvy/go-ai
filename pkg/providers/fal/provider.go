@@ -1,11 +1,13 @@
 package fal
 
 import (
-	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"os"
+	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
@@ -61,6 +63,8 @@ type Config struct {
 
 // New creates a new Fal.ai provider with the given configuration
 func New(cfg Config) *Provider {
+	// TS withoutTrailingSlash(baseURL): a trailing "/" must not double up with request paths.
+	cfg.BaseURL = providerutils.WithoutTrailingSlash(cfg.BaseURL)
 	if cfg.APIKey == "" {
 		cfg.APIKey = os.Getenv("FAL_API_KEY")
 	}
@@ -78,14 +82,36 @@ func New(cfg Config) *Provider {
 		"Content-Type":  "application/json",
 	}, cfg.Headers), version.ProviderUserAgent("fal"))
 
+	// TS loadFalApiKey runs per request (FAL_API_KEY, then FAL_KEY).
+	headersFunc := func() (map[string]string, error) {
+		for k := range cfg.Headers {
+			if strings.EqualFold(k, "Authorization") {
+				return nil, nil
+			}
+		}
+		key := cfg.APIKey
+		if key == "" {
+			key = os.Getenv("FAL_API_KEY")
+		}
+		if key == "" {
+			key = os.Getenv("FAL_KEY")
+		}
+		if key == "" {
+			return nil, &providererrors.LoadAPIKeyError{Message: "fal.ai API key is missing. Pass it using the 'apiKey' parameter or set either the FAL_API_KEY or FAL_KEY environment variable."}
+		}
+		return map[string]string{"Authorization": "Key " + key}, nil
+	}
+
 	client := http.NewClient(http.Config{
-		BaseURL: baseURL,
-		Headers: headers,
+		BaseURL:     baseURL,
+		Headers:     headers,
+		HeadersFunc: headersFunc,
 	})
 
 	absClient := http.NewClient(http.Config{
-		BaseURL: "",
-		Headers: headers,
+		BaseURL:     "",
+		Headers:     headers,
+		HeadersFunc: headersFunc,
 	})
 
 	return &Provider{
@@ -104,12 +130,12 @@ func (p *Provider) Name() string {
 
 // LanguageModel returns a language model by ID
 func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error) {
-	return nil, fmt.Errorf("fal.ai does not support language models")
+	return nil, providererrors.NewNoSuchModelError(modelID, "languageModel")
 }
 
 // EmbeddingModel returns an embedding model by ID
 func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
-	return nil, fmt.Errorf("fal.ai does not support embeddings")
+	return nil, providererrors.NewNoSuchModelError(modelID, "embeddingModel")
 }
 
 // ImageModel returns an image generation model by ID
@@ -142,7 +168,7 @@ func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionMod
 
 // RerankingModel returns a reranking model by ID
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("Fal.ai does not support reranking") //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
+	return nil, providererrors.NewNoSuchModelError(modelID, "rerankingModel")
 }
 
 // Client returns the HTTP client for making API requests

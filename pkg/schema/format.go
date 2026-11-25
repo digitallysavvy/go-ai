@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/url"
 	"regexp"
+	"strings"
 	"time"
 )
 
@@ -73,13 +74,16 @@ func validateFormat(value, format string) error {
 			return fmt.Errorf("%q is not a valid uuid", value)
 		}
 	case "ipv4":
+		// net.ParseIP also accepts IPv4-mapped IPv6 text ("::ffff:1.2.3.4"),
+		// which is not a dotted-quad ipv4 string.
 		ip := net.ParseIP(value)
-		if ip == nil || ip.To4() == nil {
+		if ip == nil || ip.To4() == nil || strings.Contains(value, ":") {
 			return fmt.Errorf("%q is not a valid ipv4 address", value)
 		}
 	case "ipv6":
+		// An IPv4-mapped address ("::ffff:1.2.3.4") is a valid ipv6 string.
 		ip := net.ParseIP(value)
-		if ip == nil || ip.To4() != nil || ip.To16() == nil {
+		if ip == nil || !strings.Contains(value, ":") || ip.To16() == nil {
 			return fmt.Errorf("%q is not a valid ipv6 address", value)
 		}
 	}

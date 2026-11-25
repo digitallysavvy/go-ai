@@ -1,7 +1,6 @@
 package tools
 
 import (
-	"context"
 	"fmt"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -145,14 +144,13 @@ Note: The undo_edit command is not supported in Claude 4 models.`
 	}
 
 	return types.Tool{
-		Name:        "anthropic.text_editor_20250728",
-		Description: description,
-		Parameters:  parameters,
-		Execute: func(ctx context.Context, input map[string]interface{}, options types.ToolExecutionOptions) (interface{}, error) {
-			return nil, fmt.Errorf("text editor tool must be executed by the provider (Anthropic). Set ProviderExecuted: true")
-		},
-		ProviderExecuted: true,
-		ProviderOptions:  &textEditor20250728Opts{MaxCharacters: args.MaxCharacters},
+		Name:            "anthropic.text_editor_20250728",
+		Type:            types.ToolTypeProviderDefined,
+		ProviderID:      "anthropic.text_editor_20250728",
+		ProviderArgs:    textEditor20250728ProviderArgs(args),
+		Description:     description,
+		Parameters:      parameters,
+		ProviderOptions: &textEditor20250728Opts{MaxCharacters: args.MaxCharacters},
 	}
 }
 

@@ -1,14 +1,16 @@
 package codemode
 
+import (
+	"fmt"
+	"strings"
+)
+
 // skipInterfaceDecl returns the index just past a balanced
 // `interface ... { ... }` block starting at tokens[i] (the "interface"
 // token), dropping it entirely. If no opening brace is found, only the
 // "interface" token itself is skipped.
 func skipInterfaceDecl(tokens []tsToken, i int) int {
-	j := i + 1
-	for j < len(tokens) && (tokens[j].kind != "punct" || tokens[j].text != "{") {
-		j++
-	}
+	j := scanUntilTopLevelBrace(tokens, i+1)
 	if j >= len(tokens) {
 		return i + 1
 	}
@@ -60,7 +62,137 @@ func looksLikeTypeAlias(tokens []tsToken, i int) bool {
 // starting at tokens[i] (the "type" token), consuming through the matching
 // top-level semicolon (or end of input), dropping it entirely.
 func skipTypeAlias(tokens []tsToken, i int) int {
-	return scanToStatementEnd(tokens, i+1)
+	eq := nextSignificant(tokens, i+1)
+	if eq >= 0 {
+		eq = nextSignificant(tokens, eq+1)
+	}
+	if eq >= 0 && tokens[eq].kind == "punct" && tokens[eq].text == "<" {
+		if end, ok := consumeAngleTypeArgsBalanced(tokens, eq); ok {
+			eq = nextSignificant(tokens, end)
+		}
+	}
+	if eq < 0 || tokens[eq].kind != "punct" || tokens[eq].text != "=" {
+		return scanToStatementEnd(tokens, i+1)
+	}
+	// The aliased type ends where the type grammar ends (a line break can end
+	// it), not at the next `;`.
+	end := consumeTypeExpr(tokens, eq+1, false)
+	// Node takes a `;` on a later line as the alias's terminator too
+	// (`type T = {...}` newline `;(async () => 1)()` erases both).
+	if semi := nextSignificant(tokens, end); semi >= 0 && tokens[semi].kind == "punct" && tokens[semi].text == ";" {
+		return semi + 1
+	}
+	return end
+}
+
+// consumeOptionalSemicolon returns the index past a `;` that ends the
+// statement on the same line as tokens[end-1]; a `;` on a later line is a
+// separate empty statement and stays.
+func consumeOptionalSemicolon(tokens []tsToken, end int) int {
+	for k := end; k < len(tokens); k++ {
+		switch tokens[k].kind {
+		case "space", "comment":
+			if strings.ContainsAny(tokens[k].text, "\n\r") {
+				return end
+			}
+		case "punct":
+			if tokens[k].text == ";" {
+				return k + 1
+			}
+			return end
+		default:
+			return end
+		}
+	}
+	return end
+}
+
+// declareVarEnd returns the end of an ambient `declare var/let/const a: T, b:
+// U` statement, which a line break ends when no `;` follows.
+func declareVarEnd(tokens []tsToken, i int) int {
+	for {
+		name := nextSignificant(tokens, i)
+		if name < 0 || tokens[name].kind != "ident" {
+			return scanToStatementEnd(tokens, i)
+		}
+		i = name + 1
+		if c := nextSignificant(tokens, i); c >= 0 && tokens[c].kind == "punct" && tokens[c].text == ":" {
+			i = consumeTypeExpr(tokens, c+1, false)
+		}
+		// `declare const a = 1`: the initializer goes with the declaration.
+		if c := nextSignificant(tokens, i); c >= 0 && tokens[c].kind == "punct" && tokens[c].text == "=" {
+			i = declareInitializerEnd(tokens, c+1)
+		}
+		if c := nextSignificant(tokens, i); c >= 0 && tokens[c].kind == "punct" && tokens[c].text == "," {
+			i = c + 1
+			continue
+		}
+		return consumeOptionalSemicolon(tokens, i)
+	}
+}
+
+// declareInitializerEnd returns the index where the initializer expression
+// that starts at tokens[i] ends: at the first top-level `,` or `;`, at a
+// closing bracket of the enclosing scope, or at a line break that ends the
+// statement (ASI). Trailing whitespace and comments are not part of it.
+func declareInitializerEnd(tokens []tsToken, i int) int {
+	depth := 0
+	end := i
+	for j := i; j < len(tokens); j++ {
+		t := tokens[j]
+		switch t.kind {
+		case "space", "comment":
+			if t.kind == "space" && depth == 0 && strings.ContainsAny(t.text, "\n\r\u2028\u2029") && end > i && asiBreaksBefore(tokens, j) {
+				return end
+			}
+			continue
+		case "punct":
+			switch t.text {
+			case "(", "[", "{":
+				depth++
+			case ")", "]", "}":
+				if depth == 0 {
+					return end
+				}
+				depth--
+			case ",", ";":
+				if depth == 0 {
+					return end
+				}
+			}
+		}
+		end = j + 1
+	}
+	return end
+}
+
+// declareFunctionEnd returns the end of an ambient `declare function f<T>(a:
+// A): R` statement.
+func declareFunctionEnd(tokens []tsToken, i int) int {
+	if s := nextSignificant(tokens, i); s >= 0 && tokens[s].kind == "punct" && tokens[s].text == "*" {
+		i = s + 1
+	}
+	if n := nextSignificant(tokens, i); n >= 0 && tokens[n].kind == "ident" {
+		i = n + 1
+	}
+	if lt := nextSignificant(tokens, i); lt >= 0 && tokens[lt].kind == "punct" && tokens[lt].text == "<" {
+		if end, ok := consumeAngleTypeArgsBalanced(tokens, lt); ok {
+			i = end
+		}
+	}
+	open := nextSignificant(tokens, i)
+	if open < 0 || tokens[open].kind != "punct" || tokens[open].text != "(" {
+		return scanToStatementEnd(tokens, i)
+	}
+	closeIdx := matchParen(tokens, open)
+	if closeIdx < 0 {
+		return scanToStatementEnd(tokens, i)
+	}
+	i = closeIdx + 1
+	if c := nextSignificant(tokens, i); c >= 0 && tokens[c].kind == "punct" && tokens[c].text == ":" {
+		i = consumeTypeExpr(tokens, c+1, false)
+	}
+	return consumeOptionalSemicolon(tokens, i)
 }
 
 // scanToStatementEnd returns the index just past the next top-level (at
@@ -90,14 +222,38 @@ func scanToStatementEnd(tokens []tsToken, i int) int {
 }
 
 // findBraceOrSemi returns the index of the first "{" or ";" token at or
-// after i (a plain forward scan, not bracket-depth aware -- used only to
-// locate the start of an ambient `declare ...` body/terminator, where type
-// parameter lists containing neither are the only thing that could precede
-// it).
+// after i that is not inside (...), [...] or <...> -- used to locate the body
+// or terminator of an ambient `declare ...` statement, whose heritage clause
+// can hold an object type: `declare class C extends B<{ a: 1 }> { ... }`.
 func findBraceOrSemi(tokens []tsToken, i int) int {
+	depth := 0
 	for i < len(tokens) {
-		if tokens[i].kind == "punct" && (tokens[i].text == "{" || tokens[i].text == ";") {
-			return i
+		if tokens[i].kind == "punct" {
+			switch tokens[i].text {
+			case "(", "[", "<":
+				depth++
+			case ")", "]", ">":
+				if depth > 0 {
+					depth--
+				}
+			case ">>":
+				depth = max(depth-2, 0)
+			case ">>>":
+				depth = max(depth-3, 0)
+			case "{":
+				if depth == 0 {
+					return i
+				}
+				depth++
+			case "}":
+				if depth > 0 {
+					depth--
+				}
+			case ";":
+				if depth == 0 {
+					return i
+				}
+			}
 		}
 		i++
 	}
@@ -113,8 +269,27 @@ func handleDeclare(tokens []tsToken, i int, out *[]tsToken) (int, error) {
 		return i + 1, nil
 	}
 	switch tokens[next].text {
-	case "var", "let", "const", "function":
-		return scanToStatementEnd(tokens, next+1), nil
+	case "const":
+		if nextIdentIs(tokens, next+1, "enum") {
+			// `declare const enum E { ... }`: ambient, erased like `declare enum`.
+			idx := findBraceOrSemi(tokens, next+1)
+			if idx < len(tokens) && tokens[idx].kind == "punct" && tokens[idx].text == "{" {
+				return skipBalancedBraces(tokens, idx), nil
+			}
+			return scanToStatementEnd(tokens, idx), nil
+		}
+		return declareVarEnd(tokens, next+1), nil
+	case "var", "let":
+		return declareVarEnd(tokens, next+1), nil
+	case "type":
+		// `declare type X = ...;`: an alias, erased whole.
+		if looksLikeTypeAlias(tokens, next) {
+			return skipTypeAlias(tokens, next), nil
+		}
+		*out = append(*out, tokens[i])
+		return i + 1, nil
+	case "function":
+		return declareFunctionEnd(tokens, next+1), nil
 	case "class", "interface", "namespace", "module", "enum", "global":
 		idx := findBraceOrSemi(tokens, next+1)
 		if idx < len(tokens) && tokens[idx].kind == "punct" && tokens[idx].text == "{" {
@@ -143,19 +318,19 @@ func handleDeclare(tokens []tsToken, i int, out *[]tsToken) (int, error) {
 	}
 }
 
-// handleImportExport erases a whole `import type ...;` / `export type
-// ...;` statement (which has no runtime effect). Any other `import`/
-// `export` statement is left for the caller to hand to the JavaScript
-// engine unchanged -- it isn't TypeScript-only syntax this stripper
-// removes, and (like TypeScript code-mode, which wraps snippets as a
-// function body before stripping -- see strip_types.go) it will fail to
-// parse in the sandbox the same way it would upstream, since import/export
-// declarations cannot appear inside a function body.
+// handleImportExport rejects a static `import`/`export` statement. code-mode
+// wraps the snippet in a function body before stripping (see strip_types.go),
+// where neither can appear, so Node's stripTypeScriptTypes throws
+// ERR_INVALID_TYPESCRIPT_SYNTAX for them -- `import type` and `export type`
+// included -- and the whole snippet is handed to the engine unstripped, which
+// reports the SyntaxError. A dynamic `import(...)` or `import.meta` is an
+// expression and is copied through.
 func handleImportExport(tokens []tsToken, i int, out *[]tsToken) (int, error) {
-	next := nextSignificant(tokens, i+1)
-	if next >= 0 && tokens[next].kind == "ident" && tokens[next].text == "type" {
-		return scanToStatementEnd(tokens, next+1), nil
+	if tokens[i].text == "import" {
+		if next := nextSignificant(tokens, i+1); next >= 0 && tokens[next].kind == "punct" && (tokens[next].text == "(" || tokens[next].text == ".") {
+			*out = append(*out, tokens[i])
+			return i + 1, nil
+		}
 	}
-	*out = append(*out, tokens[i])
-	return i + 1, nil
+	return i, fmt.Errorf("code mode source uses %s outside a module", tokens[i].text)
 }

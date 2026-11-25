@@ -5,7 +5,9 @@ import (
 	"regexp"
 	"strconv"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // deepseekHTTPStatusCode mirrors TS deepseek-chat-language-model.ts's
@@ -94,19 +96,16 @@ func newDeepSeekStreamProviderErrorChunk(raw json.RawMessage, fullFrame json.Raw
 		Type    string          `json:"type"`
 		Code    json.RawMessage `json:"code"`
 	}
-	_ = json.Unmarshal(raw, &payload)
-	message := payload.Message
-	if message == "" {
-		message = deepseekStreamErrorText(raw)
-	}
+	_ = jsonexact.Unmarshal(raw, &payload)
+	message := deepseekStreamErrorText(raw)
 	var code interface{}
 	if len(payload.Code) > 0 {
-		_ = json.Unmarshal(payload.Code, &code)
+		_ = jsonexact.Unmarshal(payload.Code, &code)
 	}
 	codeStr, _ := code.(string)
 	if codeStr == "" {
 		if n, ok := code.(float64); ok {
-			codeStr = strconv.FormatFloat(n, 'f', -1, 64)
+			codeStr = providerutils.JSNumberString(n)
 		}
 	}
 	statusCode, isRetryable, matched := deepseekStreamErrorMetadata(codeStr, payload.Type)
@@ -115,7 +114,7 @@ func newDeepSeekStreamProviderErrorChunk(raw json.RawMessage, fullFrame json.Raw
 		dataSrc = raw
 	}
 	var data interface{}
-	_ = json.Unmarshal(dataSrc, &data)
+	_ = jsonexact.Unmarshal(dataSrc, &data)
 	var statusPtr *int
 	var retryablePtr *bool
 	if matched {

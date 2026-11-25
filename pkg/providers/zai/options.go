@@ -1,6 +1,9 @@
 package zai
 
-import "fmt"
+import (
+	"fmt"
+	"unicode/utf16"
+)
 
 // ThinkingType controls Z.AI's thinking mode
 // (providerOptions.zai.thinking.type).
@@ -113,15 +116,16 @@ func decodeZaiOptions(options map[string]interface{}) (*resolvedOptions, error) 
 		resolved.toolStream = &v
 	}
 
+	// zod string length counts UTF-16 code units, not bytes.
 	if v, ok := options["requestId"].(string); ok {
-		if len(v) < 6 || len(v) > 64 {
+		if n := len(utf16.Encode([]rune(v))); n < 6 || n > 64 {
 			return nil, fmt.Errorf("invalid zai provider options: requestId must be between 6 and 64 characters")
 		}
 		resolved.requestID = v
 	}
 
 	if v, ok := options["userId"].(string); ok {
-		if len(v) < 6 || len(v) > 128 {
+		if n := len(utf16.Encode([]rune(v))); n < 6 || n > 128 {
 			return nil, fmt.Errorf("invalid zai provider options: userId must be between 6 and 128 characters")
 		}
 		resolved.userID = v

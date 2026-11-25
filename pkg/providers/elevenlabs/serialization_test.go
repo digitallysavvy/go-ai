@@ -9,7 +9,7 @@ func TestElevenLabsSerializeAndDeserializeSpeechModel(t *testing.T) {
 		t.Fatalf("SpeechModel error = %v", err)
 	}
 	serialized := model.(*SpeechModel).Serialize()
-	if serialized.Provider != "elevenlabs" || serialized.ModelID != "eleven_multilingual_v2" {
+	if serialized.Provider != "elevenlabs.speech" || serialized.ModelID != "eleven_multilingual_v2" {
 		t.Fatalf("serialize mismatch: %#v", serialized)
 	}
 	if _, ok := serialized.Config["APIKey"]; ok {
@@ -19,7 +19,7 @@ func TestElevenLabsSerializeAndDeserializeSpeechModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("deserializeSpeechModel error = %v", err)
 	}
-	if restored.Provider() != "elevenlabs" || restored.ModelID() != "eleven_multilingual_v2" {
+	if restored.Provider() != "elevenlabs.speech" || restored.ModelID() != "eleven_multilingual_v2" {
 		t.Fatalf("restored mismatch: provider=%s model=%s", restored.Provider(), restored.ModelID())
 	}
 }
@@ -31,14 +31,14 @@ func TestElevenLabsSerializeAndDeserializeTranscriptionModel(t *testing.T) {
 		t.Fatalf("TranscriptionModel error = %v", err)
 	}
 	serialized := model.(*TranscriptionModel).Serialize()
-	if serialized.Provider != "elevenlabs" || serialized.ModelID != "scribe_v1" {
+	if serialized.Provider != "elevenlabs.transcription" || serialized.ModelID != "scribe_v1" {
 		t.Fatalf("serialize mismatch: %#v", serialized)
 	}
 	restored, err := deserializeTranscriptionModel(serialized)
 	if err != nil {
 		t.Fatalf("deserializeTranscriptionModel error = %v", err)
 	}
-	if restored.Provider() != "elevenlabs" || restored.ModelID() != "scribe_v1" {
+	if restored.Provider() != "elevenlabs.transcription" || restored.ModelID() != "scribe_v1" {
 		t.Fatalf("restored mismatch: provider=%s model=%s", restored.Provider(), restored.ModelID())
 	}
 }

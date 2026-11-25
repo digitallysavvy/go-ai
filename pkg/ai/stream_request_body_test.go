@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
@@ -23,7 +24,8 @@ func (s *requestBodyTextStream) RequestBody() interface{} { return s.body }
 // when a provider's TextStream implements the optional
 // provider.StreamRequestBody capability, StreamText copies it into the
 // step's types.StepRequest.Body (hand-off: "stream request body field"),
-// mirroring TS doStream() resolving {request: {body}} alongside {stream}.
+// mirroring TS doStream() resolving {request: {body}} alongside {stream},
+// when Include.RequestBody is set.
 func TestStreamText_PopulatesStepRequestBodyFromStreamRequestBody(t *testing.T) {
 	t.Parallel()
 
@@ -40,8 +42,9 @@ func TestStreamText_PopulatesStepRequestBodyFromStreamRequestBody(t *testing.T) 
 	}
 
 	result, err := StreamText(context.Background(), StreamTextOptions{
-		Model:  model,
-		Prompt: "hi",
+		Model:   model,
+		Prompt:  "hi",
+		Include: &IncludeOptions{RequestBody: true},
 	})
 	if err != nil {
 		t.Fatalf("StreamText() error = %v", err)
@@ -69,5 +72,70 @@ func TestStreamText_PopulatesStepRequestBodyFromStreamRequestBody(t *testing.T) 
 	}
 	if gotMap["model"] != "test-model" || gotMap["stream"] != true {
 		t.Fatalf("Request().Body = %#v, want %#v", gotMap, wantBody)
+	}
+}
+
+// TS getStepRequest: include.requestBody defaults to false, so the step
+// request, the start-step part and Request() carry no body unless asked.
+func TestStreamText_RequestBodyOmittedByDefault(t *testing.T) {
+	t.Parallel()
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+			base := testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: "hi"},
+				{Type: provider.ChunkTypeFinish, FinishReason: "stop"},
+			})
+			return &requestBodyTextStream{TextStream: base, body: map[string]interface{}{"model": "m"}}, nil
+		},
+	}
+	result, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "hi"})
+	if err != nil {
+		t.Fatalf("StreamText() error = %v", err)
+	}
+	var startStepBody interface{} = "unset"
+	for chunk := range result.Chunks() {
+		if chunk.Type == provider.ChunkTypeStartStep && chunk.Request != nil {
+			startStepBody = chunk.Request.Body
+		}
+	}
+	if startStepBody != nil {
+		t.Errorf("start-step request body = %#v, want nil", startStepBody)
+	}
+	if _, err := result.ReadAll(); err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+	if body := result.Steps()[0].Request.Body; body != nil {
+		t.Errorf("step request body = %#v, want nil", body)
+	}
+	if body := result.Request().Body; body != nil {
+		t.Errorf("Request().Body = %#v, want nil", body)
+	}
+}
+
+// The GenerateText step-end event is the step result in TS, so its request
+// and response bodies follow Include (both default to false).
+func TestGenerateText_StepEndEventBodiesFollowInclude(t *testing.T) {
+	t.Parallel()
+	model := &testutil.MockLanguageModel{
+		DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{
+				Text: "hi", FinishReason: types.FinishReasonStop,
+				RawRequest: map[string]interface{}{"req": 1}, RawResponse: map[string]interface{}{"res": 1},
+			}, nil
+		},
+	}
+	for _, include := range []*IncludeOptions{nil, {RequestBody: true, ResponseBody: true}} {
+		var event OnStepFinishEvent
+		_, err := GenerateText(context.Background(), GenerateTextOptions{
+			Model: model, Prompt: "hi", Include: include,
+			OnStepEndEvent: func(_ context.Context, e OnStepFinishEvent) { event = e },
+		})
+		if err != nil {
+			t.Fatalf("GenerateText() error = %v", err)
+		}
+		want := include != nil
+		if (event.Request.Body != nil) != want || (event.Response.Body != nil) != want {
+			t.Errorf("include=%v: step-end request body %#v, response body %#v", include, event.Request.Body, event.Response.Body)
+		}
 	}
 }

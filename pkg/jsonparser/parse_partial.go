@@ -1,7 +1,7 @@
 package jsonparser
 
 import (
-	"encoding/json"
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 )
 
 // ParseState represents the state of JSON parsing
@@ -39,7 +39,7 @@ type ParseResult struct {
 func ParsePartialJSON(jsonText string) ParseResult {
 	// Phase 1: Try direct parsing
 	var value interface{}
-	err := json.Unmarshal([]byte(jsonText), &value)
+	err := securejson.Unmarshal([]byte(jsonText), &value)
 	if err == nil {
 		return ParseResult{
 			Value: value,
@@ -58,7 +58,7 @@ func ParsePartialJSON(jsonText string) ParseResult {
 		}
 	}
 
-	err = json.Unmarshal([]byte(repairedJSON), &value)
+	err = securejson.Unmarshal([]byte(repairedJSON), &value)
 	if err == nil {
 		return ParseResult{
 			Value: value,

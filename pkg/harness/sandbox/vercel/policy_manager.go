@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // PolicySandbox is the minimal surface VercelNetworkPolicyManager needs from
@@ -20,6 +21,20 @@ type PolicySandbox interface {
 	CurrentNetworkPolicy() NetworkPolicy
 	// UpdateNetworkPolicy replaces the sandbox's network policy.
 	UpdateNetworkPolicy(ctx context.Context, policy NetworkPolicy) error
+}
+
+// PolicySessionInspector is an optional PolicySandbox extension that reports
+// the current session's network policy metadata exactly as the Vercel API
+// returns it (TS `sandbox.listSessions()` metadata `networkPolicy`), which
+// can carry response rules the decoded policy omits. It returns nil when
+// the session or its policy metadata cannot be found.
+//
+// Before mutating a custom (object) policy it did not create, PolicyManager
+// requires it (TS 44a4261e52): a PolicySandbox without it fails closed with
+// a CapabilityUnsupportedError. *Sandbox implements it by listing the
+// sandbox's sessions, as TS does.
+type PolicySessionInspector interface {
+	CurrentSessionNetworkPolicyMetadata(ctx context.Context) (json.RawMessage, error)
 }
 
 // PolicyManager owns the complete Vercel Sandbox network-policy value for one
@@ -83,7 +98,7 @@ type currentPolicyInspection struct {
 	currentPolicy              NetworkPolicy
 }
 
-func (m *PolicyManager) inspectPolicy() currentPolicyInspection {
+func (m *PolicyManager) inspectPolicy(ctx context.Context) (currentPolicyInspection, error) {
 	m.mu.Lock()
 	state := m.state
 	m.mu.Unlock()
@@ -92,19 +107,68 @@ func (m *PolicyManager) inspectPolicy() currentPolicyInspection {
 			accessPolicy:  state.accessPolicy,
 			forwardRules:  state.forwardRules,
 			currentPolicy: state.effectivePolicy,
-		}
+		}, nil
 	}
 	policy := m.sandbox.CurrentNetworkPolicy()
 	if policy.IsZero() {
 		policy = AllowAllNetworkPolicy()
 	}
-	return inspectCurrentPolicy(policy)
+	inspection, err := inspectCurrentPolicy(policy)
+	if err != nil {
+		return currentPolicyInspection{}, err
+	}
+	if policy.Mode != "" {
+		return inspection, nil
+	}
+	// TS #inspectPolicy (44a4261e52): native policy readback omits response
+	// rules, so an object policy is checked against the raw session
+	// metadata, failing closed when it cannot be inspected.
+	inspector, ok := m.sandbox.(PolicySessionInspector)
+	if !ok {
+		return currentPolicyInspection{}, newPolicyConflictError(policyNotInspectableMessage)
+	}
+	raw, err := inspector.CurrentSessionNetworkPolicyMetadata(ctx)
+	if err != nil {
+		return currentPolicyInspection{}, err
+	}
+	if isJSONNull(raw) {
+		return currentPolicyInspection{}, newPolicyConflictError(policyNotInspectableMessage)
+	}
+	var metadata map[string]json.RawMessage
+	if json.Unmarshal(raw, &metadata) == nil {
+		if rules, ok := metadata["responseRules"]; ok && !isJSONNull(rules) {
+			var list []json.RawMessage
+			if json.Unmarshal(rules, &list) != nil || len(list) > 0 {
+				return currentPolicyInspection{}, newResponseRuleConflictError()
+			}
+		}
+	}
+	if len(policy.apiUnmapped) > 0 {
+		// Go-only: members of the API policy shape this package cannot
+		// carry (e.g. injection rules) would be dropped by recomposition.
+		return currentPolicyInspection{}, newPolicyConflictError(policyNotInspectableMessage)
+	}
+	return inspection, nil
+}
+
+const policyNotInspectableMessage = "Cannot mutate the network policy because the current Vercel Sandbox session policy could not be inspected for response rules."
+
+func newResponseRuleConflictError() error {
+	return newPolicyConflictError("Cannot mutate the network policy because the current Vercel Sandbox policy contains response rules that cannot be preserved safely. Manage this policy through the native Sandbox SDK with the complete original rules instead.")
+}
+
+func isJSONNull(raw json.RawMessage) bool {
+	t := strings.TrimSpace(string(raw))
+	return t == "" || t == "null"
 }
 
 // SetNetworkPolicy replaces the access policy (mirrors setNetworkPolicy).
 func (m *PolicyManager) SetNetworkPolicy(ctx context.Context, policy harness.NetworkPolicy) error {
 	return m.enqueue(func() error {
-		inspection := m.inspectPolicy()
+		inspection, err := m.inspectPolicy(ctx)
+		if err != nil {
+			return err
+		}
 		m.mu.Lock()
 		hasState := m.state != nil
 		m.mu.Unlock()
@@ -128,7 +192,10 @@ func (m *PolicyManager) SetNetworkPolicy(ctx context.Context, policy harness.Net
 // SetRequestTransformations replaces the complete request-transformation set.
 func (m *PolicyManager) SetRequestTransformations(ctx context.Context, transformations []harness.RequestTransformation) error {
 	return m.enqueue(func() error {
-		inspection := m.inspectPolicy()
+		inspection, err := m.inspectPolicy(ctx)
+		if err != nil {
+			return err
+		}
 		return m.applyState(ctx, inspection.accessPolicy, cloneRequestTransformations(transformations), cloneForwardRules(inspection.forwardRules), inspection.currentPolicy)
 	})
 }
@@ -137,7 +204,10 @@ func (m *PolicyManager) SetRequestTransformations(ctx context.Context, transform
 // replacing existing ones.
 func (m *PolicyManager) AddRequestTransformations(ctx context.Context, transformations []harness.RequestTransformation) error {
 	return m.enqueue(func() error {
-		inspection := m.inspectPolicy()
+		inspection, err := m.inspectPolicy(ctx)
+		if err != nil {
+			return err
+		}
 		incoming := cloneRequestTransformations(transformations)
 
 		m.mu.Lock()
@@ -189,12 +259,12 @@ func newPolicyConflictError(message string) error {
 
 // --- inspection of the current (unmanaged) policy ---
 
-func inspectCurrentPolicy(policy NetworkPolicy) currentPolicyInspection {
+func inspectCurrentPolicy(policy NetworkPolicy) (currentPolicyInspection, error) {
 	if policy.Mode == "allow-all" || policy.Mode == "deny-all" {
 		return currentPolicyInspection{
 			accessPolicy:  networkAccessPolicy{mode: policy.Mode},
 			currentPolicy: policy,
-		}
+		}, nil
 	}
 
 	var allowedHosts []string
@@ -218,8 +288,11 @@ func inspectCurrentPolicy(policy NetworkPolicy) currentPolicyInspection {
 		sort.Strings(hosts)
 		for _, host := range hosts {
 			for _, rule := range policy.AllowMap[host] {
+				if rule.Response != nil {
+					return currentPolicyInspection{}, newResponseRuleConflictError()
+				}
 				if hasRequestTransformation(rule) {
-					transformationHostSet[strings.ToLower(host)] = struct{}{}
+					transformationHostSet[providerutils.JSToLower(host)] = struct{}{}
 				}
 				if rule.ForwardURL != "" {
 					forwardRules = append(forwardRules, forwardRule{
@@ -254,7 +327,7 @@ func inspectCurrentPolicy(policy NetworkPolicy) currentPolicyInspection {
 		forwardRules:               forwardRules,
 		requestTransformationHosts: hosts,
 		currentPolicy:              policy,
-	}
+	}, nil
 }
 
 func toNetworkAccessPolicy(policy harness.NetworkPolicy) (networkAccessPolicy, error) {
@@ -382,8 +455,8 @@ func intersectHostPatterns(first, second string) (string, bool) {
 }
 
 func isHostPatternSubset(candidate, container string) bool {
-	normalizedCandidate := strings.ToLower(candidate)
-	normalizedContainer := strings.ToLower(container)
+	normalizedCandidate := providerutils.JSToLower(candidate)
+	normalizedContainer := providerutils.JSToLower(container)
 	if normalizedCandidate == normalizedContainer || normalizedContainer == "*" {
 		return true
 	}
@@ -468,7 +541,7 @@ func getRequestTransformationHosts(policy NetworkPolicy) []string {
 	for host, rules := range policy.AllowMap {
 		for _, rule := range rules {
 			if hasRequestTransformation(rule) {
-				set[strings.ToLower(host)] = struct{}{}
+				set[providerutils.JSToLower(host)] = struct{}{}
 			}
 		}
 	}
@@ -483,10 +556,10 @@ func getRequestTransformationHosts(policy NetworkPolicy) []string {
 func isHostSetSubset(subset, superset []string) bool {
 	set := map[string]struct{}{}
 	for _, h := range superset {
-		set[strings.ToLower(h)] = struct{}{}
+		set[providerutils.JSToLower(h)] = struct{}{}
 	}
 	for _, h := range subset {
-		if _, ok := set[strings.ToLower(h)]; !ok {
+		if _, ok := set[providerutils.JSToLower(h)]; !ok {
 			return false
 		}
 	}
@@ -517,7 +590,7 @@ func mergeRequestTransformations(existing, incoming []harness.RequestTransformat
 func requestTransformationIdentity(t harness.RequestTransformation) string {
 	names := make([]string, 0, len(t.Transform.Headers))
 	for name := range t.Transform.Headers {
-		names = append(names, strings.ToLower(name))
+		names = append(names, providerutils.JSToLower(name))
 	}
 	sort.Strings(names)
 	payload := struct {

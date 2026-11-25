@@ -169,8 +169,7 @@ func TestDeepgramSpeechModel_ProviderOptions(t *testing.T) {
 				"encoding":       "mp3",
 				"bitRate":        48000,
 				"container":      "wav",
-				"callback":       "https://example.com/callback",
-				"callbackMethod": "POST",
+				"callbackMethod": "POST", // ignored with a warning (TS 5cc6dcaa65)
 				"mipOptOut":      true,
 				"tag":            "test-tag",
 			},

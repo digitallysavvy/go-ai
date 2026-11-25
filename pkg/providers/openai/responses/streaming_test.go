@@ -33,10 +33,15 @@ func TestCompactionEventToChunk_EmitsCustomContent(t *testing.T) {
 		t.Fatal("ProviderMetadata is nil")
 	}
 
-	var meta map[string]interface{}
-	if err := json.Unmarshal(chunk.CustomContent.ProviderMetadata, &meta); err != nil {
+	var top map[string]interface{}
+	if err := json.Unmarshal(chunk.CustomContent.ProviderMetadata, &top); err != nil {
 		t.Fatalf("unmarshal ProviderMetadata: %v", err)
 	}
+	// TS providerMetadata is {openai: {...}} only (no flat v0.5.2 keys).
+	if len(top) != 1 {
+		t.Fatalf("ProviderMetadata keys = %v, want only openai", top)
+	}
+	meta, _ := top["openai"].(map[string]interface{})
 
 	if meta["type"] != "compaction" {
 		t.Errorf("meta.type = %v, want %q", meta["type"], "compaction")
@@ -61,10 +66,15 @@ func TestCompactionEventToChunk_EmptyFields(t *testing.T) {
 		t.Fatal("chunk.CustomContent is nil")
 	}
 
-	var meta map[string]interface{}
-	if err := json.Unmarshal(chunk.CustomContent.ProviderMetadata, &meta); err != nil {
+	var top map[string]interface{}
+	if err := json.Unmarshal(chunk.CustomContent.ProviderMetadata, &top); err != nil {
 		t.Fatalf("unmarshal ProviderMetadata: %v", err)
 	}
+	// TS providerMetadata is {openai: {...}} only (no flat v0.5.2 keys).
+	if len(top) != 1 {
+		t.Fatalf("ProviderMetadata keys = %v, want only openai", top)
+	}
+	meta, _ := top["openai"].(map[string]interface{})
 
 	if meta["type"] != "compaction" {
 		t.Errorf("meta.type = %v, want %q", meta["type"], "compaction")

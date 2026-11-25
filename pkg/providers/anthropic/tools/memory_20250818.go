@@ -1,9 +1,6 @@
 package tools
 
 import (
-	"context"
-	"fmt"
-
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -23,7 +20,10 @@ import (
 //	tool := anthropicTools.Memory20250818()
 func Memory20250818() types.Tool {
 	return types.Tool{
-		Name: "anthropic.memory_20250818",
+		Name:         "anthropic.memory_20250818",
+		Type:         types.ToolTypeProviderDefined,
+		ProviderID:   "anthropic.memory_20250818",
+		ProviderArgs: noProviderArgs(),
 		Description: `Memory tool for storing and retrieving information across conversations.
 
 Supported commands:
@@ -42,7 +42,7 @@ Use this tool to persist information that should survive across conversation ses
 					"properties": map[string]interface{}{
 						"command":    map[string]interface{}{"type": "string", "enum": []string{"view"}},
 						"path":       map[string]interface{}{"type": "string", "description": "Absolute path to file or directory."},
-						"view_range": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "integer"}, "minItems": 2, "maxItems": 2, "description": "Optional [start_line, end_line] range."},
+						"view_range": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "number"}, "minItems": 2, "maxItems": 2, "description": "Optional [start_line, end_line] range."},
 					},
 					"required": []string{"command", "path"},
 				},
@@ -67,7 +67,7 @@ Use this tool to persist information that should survive across conversation ses
 					"properties": map[string]interface{}{
 						"command":     map[string]interface{}{"type": "string", "enum": []string{"insert"}},
 						"path":        map[string]interface{}{"type": "string", "description": "Absolute path to the file."},
-						"insert_line": map[string]interface{}{"type": "integer", "description": "Insert after this line number."},
+						"insert_line": map[string]interface{}{"type": "number", "description": "Insert after this line number."},
 						"insert_text": map[string]interface{}{"type": "string", "description": "Text to insert."},
 					},
 					"required": []string{"command", "path", "insert_line", "insert_text"},
@@ -89,9 +89,5 @@ Use this tool to persist information that should survive across conversation ses
 				},
 			},
 		},
-		Execute: func(ctx context.Context, input map[string]interface{}, options types.ToolExecutionOptions) (interface{}, error) {
-			return nil, fmt.Errorf("memory tool must be executed by the provider (Anthropic)")
-		},
-		ProviderExecuted: true,
 	}
 }

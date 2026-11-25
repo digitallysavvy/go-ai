@@ -1,0 +1,45 @@
+{
+ "source": "node v24.20.0 fetch (redirect: manual) against a raw TCP response; TS 30548ee7f9 mcp/src/tool/oauth.ts extractWWWAuthenticateParams (377-405, verbatim)",
+ "cases": [
+  {
+   "name": "raw utf-8 resource_metadata",
+   "raw": "SFRUUC8xLjEgNDAxIFVuYXV0aG9yaXplZA0KV1dXLUF1dGhlbnRpY2F0ZTogQmVhcmVyIHJlc291cmNlX21ldGFkYXRhPSJodHRwczovL2F1dGguZXhhbXBsZS5jb20vY2Fmw6kiDQpDb250ZW50LUxlbmd0aDogMA0KQ29ubmVjdGlvbjogY2xvc2UNCg0K",
+   "ts": {
+    "resourceMetadataUrl": "https://auth.example.com/caf%C3%83%C2%A9",
+    "scope": null
+   }
+  },
+  {
+   "name": "nbsp before scope",
+   "raw": "SFRUUC8xLjEgNDAxIFVuYXV0aG9yaXplZA0KV1dXLUF1dGhlbnRpY2F0ZTogQmVhcmVyIHJlYWxtPSJ4IqBzY29wZT0icmVhZCINCkNvbnRlbnQtTGVuZ3RoOiAwDQpDb25uZWN0aW9uOiBjbG9zZQ0KDQo=",
+   "ts": {
+    "resourceMetadataUrl": null,
+    "scope": "read"
+   }
+  },
+  {
+   "name": "latin-1 scope",
+   "raw": "SFRUUC8xLjEgNDAxIFVuYXV0aG9yaXplZA0KV1dXLUF1dGhlbnRpY2F0ZTogQmVhcmVyIHNjb3BlPSJy6WFkIHdyaXRlIg0KQ29udGVudC1MZW5ndGg6IDANCkNvbm5lY3Rpb246IGNsb3NlDQoNCg==",
+   "ts": {
+    "resourceMetadataUrl": null,
+    "scope": "réad write"
+   }
+  },
+  {
+   "name": "repeated lines",
+   "raw": "SFRUUC8xLjEgNDAxIFVuYXV0aG9yaXplZA0KV1dXLUF1dGhlbnRpY2F0ZTogQmVhcmVyIHJlYWxtPSJhIg0KV1dXLUF1dGhlbnRpY2F0ZTogc2NvcGU9InMyIg0KQ29udGVudC1MZW5ndGg6IDANCkNvbm5lY3Rpb246IGNsb3NlDQoNCg==",
+   "ts": {
+    "resourceMetadataUrl": null,
+    "scope": "s2"
+   }
+  },
+  {
+   "name": "nbsp after scheme",
+   "raw": "SFRUUC8xLjEgNDAxIFVuYXV0aG9yaXplZA0KV1dXLUF1dGhlbnRpY2F0ZTogQmVhcmVyoHNjb3BlPSJ4Ig0KQ29udGVudC1MZW5ndGg6IDANCkNvbm5lY3Rpb246IGNsb3NlDQoNCg==",
+   "ts": {
+    "resourceMetadataUrl": null,
+    "scope": null
+   }
+  }
+ ]
+}

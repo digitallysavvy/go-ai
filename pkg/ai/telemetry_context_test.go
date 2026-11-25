@@ -27,8 +27,11 @@ func TestTelemetryContextFiltering(t *testing.T) {
 		"weather": map[string]interface{}{"city": "Paris", "zip": "75000"},
 		"clock":   map[string]interface{}{"tz": "UTC"},
 	})
-	if len(tools) != 1 {
+	if len(tools) != 2 {
 		t.Fatalf("tools context mismatch: %#v", tools)
+	}
+	if clock, ok := tools["clock"].(map[string]interface{}); !ok || len(clock) != 0 {
+		t.Fatalf("tool with nothing included must keep an empty entry (TS filterToolsContext): %#v", tools["clock"])
 	}
 	weather := tools["weather"].(map[string]interface{})
 	if len(weather) != 1 || weather["city"] != "Paris" {

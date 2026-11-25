@@ -25,6 +25,15 @@ const (
 // `DeepAgentsAuthenticationMode` = `HarnessV1Authentication<'anthropic'>`.
 type AuthenticationMode = harness.Authentication
 
+// AuthModeAnthropic is the adapter-specific `auth` choice. Mirrors TS
+// `DeepAgentsAuthenticationMode = HarnessV1Authentication<'anthropic'>`.
+// The shared "direct" mode is accepted as an alias for it.
+const AuthModeAnthropic = "anthropic"
+
+func isAnthropicMode(auth harness.Authentication) bool {
+	return !auth.IsEnvironment() && (auth.Mode == AuthModeAnthropic || auth.Mode == harness.AuthModeDirect)
+}
+
 // createRequestTransformationsInput is the input of
 // createDeepAgentsRequestTransformations.
 type createRequestTransformationsInput struct {
@@ -75,7 +84,7 @@ func resolveEnv(auth AuthenticationMode, processEnv map[string]string) map[strin
 	if auth.IsEnvironment() {
 		authEnv = auth.Environment
 	}
-	if auth.Mode == harness.AuthModeDirect {
+	if isAnthropicMode(auth) {
 		return pickAnthropic(authEnv)
 	}
 	gateway := harnessutil.GetAIGatewayAuthFromEnv(authEnv)
@@ -94,7 +103,7 @@ func resolveAuthenticationMode(auth AuthenticationMode, processEnv map[string]st
 		return AuthAnthropic
 	}
 	switch auth.Mode {
-	case harness.AuthModeDirect:
+	case AuthModeAnthropic, harness.AuthModeDirect:
 		return AuthAnthropic
 	case harness.AuthModeAIGateway:
 		return AuthAIGateway

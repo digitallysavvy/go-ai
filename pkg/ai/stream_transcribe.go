@@ -88,7 +88,8 @@ type StreamTranscriptionResult struct {
 	mu          sync.Mutex
 	streamOwner string // "unclaimed" | "full-stream" | "result-promises"
 	ch          chan TranscriptionStreamPart
-	cancel      context.CancelFunc
+	demand      *streamDemand
+	cancel      context.CancelCauseFunc
 	finalErr    *error
 	finalErrMu  sync.Mutex
 }
@@ -128,6 +129,7 @@ func (r *StreamTranscriptionResult) consumeStream() {
 	}
 	r.streamOwner = "result-promises"
 	r.mu.Unlock()
+	r.demand.drainAll()
 	go func() {
 		for range r.ch { //nolint:revive // drain; results surface via the accessors
 		}
@@ -191,6 +193,10 @@ func (r *StreamTranscriptionResult) FullStream() (TranscriptionStream, error) {
 	return &transcriptionFullStream{result: r}, nil
 }
 
+// errTranscriptionStreamCancelled is the reason FullStream.Close aborts the
+// pipe with (TS Transformer.cancel's default reason).
+var errTranscriptionStreamCancelled = errors.New("Transcription stream was cancelled.") //nolint:staticcheck // matches TS SDK's exact error text
+
 // TranscriptionStream is a Next()-based stream of TranscriptionStreamPart,
 // following the same convention as provider.TextStream.
 type TranscriptionStream interface {
@@ -206,6 +212,7 @@ type transcriptionFullStream struct {
 }
 
 func (s *transcriptionFullStream) Next() (*TranscriptionStreamPart, error) {
+	s.result.demand.request()
 	part, ok := <-s.result.ch
 	if !ok {
 		if err := s.result.getFinalErr(); err != nil {
@@ -221,7 +228,7 @@ func (s *transcriptionFullStream) Err() error { return s.err }
 
 func (s *transcriptionFullStream) Close() error {
 	s.closeOnce.Do(func() {
-		s.result.cancel()
+		s.result.cancel(errTranscriptionStreamCancelled)
 	})
 	return nil
 }
@@ -242,7 +249,7 @@ func ExperimentalStreamTranscribe(ctx context.Context, opts StreamTranscribeOpti
 		return nil, &providererrors.UnsupportedFunctionalityError{
 			Functionality: "streaming transcription",
 			Message: fmt.Sprintf(
-				"The %s model %q does not support streaming transcription.",
+				"The %s model \"%s\" does not support streaming transcription.",
 				opts.Model.Provider(), opts.Model.ModelID(),
 			),
 		}
@@ -250,7 +257,7 @@ func ExperimentalStreamTranscribe(ctx context.Context, opts StreamTranscribeOpti
 	opts.ExperimentalTelemetry = effectiveTelemetrySettings(opts.Telemetry, opts.ExperimentalTelemetry)
 	callID := newCallID()
 
-	pipeCtx, cancel := context.WithCancel(ctx)
+	pipeCtx, cancel := context.WithCancelCause(ctx)
 
 	result := &StreamTranscriptionResult{
 		textP:             newStreamPromise[string](),
@@ -262,6 +269,7 @@ func ExperimentalStreamTranscribe(ctx context.Context, opts StreamTranscribeOpti
 		providerMetadataP: newStreamPromise[map[string]interface{}](),
 		streamOwner:       "unclaimed",
 		ch:                make(chan TranscriptionStreamPart),
+		demand:            newStreamDemand(),
 		cancel:            cancel,
 	}
 
@@ -301,9 +309,16 @@ func runTranscriptionStreamPipe(pipeCtx context.Context, streamer provider.Trans
 	warningsResolved := false
 	telemetrySettled := false
 
+	// TS destructures `providerOptions = {}`: the start event and the model
+	// call both get {} when the caller gave none.
+	providerOptions := opts.ProviderOptions
+	if providerOptions == nil {
+		providerOptions = map[string]interface{}{}
+	}
+
 	var audioByteLength int64
 	audio := opts.Audio
-	if telemetry.Enabled(opts.ExperimentalTelemetry) {
+	if telemetry.Enabled(opts.ExperimentalTelemetry) && opts.Audio != nil {
 		audio = telemetryCountingAudioStream{inner: opts.Audio, total: &audioByteLength}
 	}
 
@@ -315,6 +330,9 @@ func runTranscriptionStreamPipe(pipeCtx context.Context, streamer provider.Trans
 		Settings:       opts.ExperimentalTelemetry,
 		AudioMediaType: opts.InputAudioFormat.Type,
 		Headers:        opts.Headers,
+		// TS StreamTranscriptionStartEvent inputAudioFormat / providerOptions.
+		InputAudioFormat: &telemetry.TelemetryAudioFormat{Type: opts.InputAudioFormat.Type, Rate: opts.InputAudioFormat.Rate},
+		ProviderOptions:  providerOptions,
 	})
 
 	fail := func(err error) {
@@ -326,21 +344,36 @@ func runTranscriptionStreamPipe(pipeCtx context.Context, streamer provider.Trans
 			telemetrySettled = true
 			telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{CallID: callID, Settings: opts.ExperimentalTelemetry, Error: err})
 		}
+		// A nil Audio has no producer to cancel (and must not crash the
+		// pipe goroutine). The input is cancelled before the result
+		// promises reject, so a caller woken by the rejection sees it
+		// cancelled (TS settles both in one synchronous task).
+		if opts.Audio != nil {
+			opts.Audio.Cancel(err)
+		}
 		result.setFinalErr(err)
 		result.rejectAll(err)
-		opts.Audio.Cancel(err)
+	}
+	// abortReason reports a failure caused by cancellation with the abort
+	// reason, as TS pipeTo rejects with the signal's reason: Close gives
+	// "Transcription stream was cancelled.", a cancelled ctx its cause.
+	abortReason := func(err error) error {
+		if pipeCtx.Err() != nil {
+			return context.Cause(pipeCtx)
+		}
+		return err
 	}
 
 	streamResult, err := streamer.DoStream(ctx, &provider.TranscriptionStreamOptions{
 		Audio:            audio,
 		InputAudioFormat: opts.InputAudioFormat,
-		ProviderOptions:  opts.ProviderOptions,
+		ProviderOptions:  providerOptions,
 		AbortSignal:      ctx,
 		Headers:          transcribeHeadersWithUserAgent(opts.Headers),
 		IncludeRawChunks: opts.IncludeRawChunks,
 	})
 	if err != nil {
-		fail(err)
+		fail(abortReason(err))
 		return
 	}
 	if streamResult.Response != nil {
@@ -352,23 +385,37 @@ func runTranscriptionStreamPipe(pipeCtx context.Context, streamer provider.Trans
 	}
 	defer streamResult.Stream.Close() //nolint:errcheck
 
+	// resolvedWarnings is TS's `warnings` variable: the stream-start
+	// warnings, reported on the end event.
+	var resolvedWarnings []types.Warning
 	resolveWarnings := func(warnings []types.Warning) {
 		if warnings == nil {
 			warnings = []types.Warning{}
 		}
+		resolvedWarnings = warnings
 		result.warningsP.resolve(warnings)
 		warningsResolved = true
 		logModelWarnings(warnings, opts.Model.Provider(), opts.Model.ModelID())
 	}
 
+	// hasDemand: a read of the output is pending (TS transform runs only
+	// on the reader's demand); given back after each forwarded part.
+	hasDemand := false
 	for {
 		part, nextErr := streamResult.Stream.Next()
 		if nextErr == io.EOF {
 			break
 		}
 		if nextErr != nil {
-			fail(nextErr)
+			fail(abortReason(nextErr))
 			return
+		}
+		if !hasDemand {
+			if !result.demand.wait(ctx) {
+				fail(context.Cause(ctx))
+				return
+			}
+			hasDemand = true
 		}
 
 		switch part.Type {
@@ -388,7 +435,9 @@ func runTranscriptionStreamPipe(pipeCtx context.Context, streamer provider.Trans
 			if part.Headers != nil {
 				headers = part.Headers
 			}
-			response = &TranscriptionModelResponseMetadata{Timestamp: ts, ModelID: modelID, Headers: headers, Body: part.Body}
+			// TS keeps timestamp, modelId and headers only: the part's body
+			// is not part of the transcription response metadata.
+			response = &TranscriptionModelResponseMetadata{Timestamp: ts, ModelID: modelID, Headers: headers}
 
 		case provider.TranscriptionStreamPartTypeDelta,
 			provider.TranscriptionStreamPartTypePartial,
@@ -403,9 +452,10 @@ func runTranscriptionStreamPipe(pipeCtx context.Context, streamer provider.Trans
 				// path: reject the still-pending result promises and cancel
 				// the caller's audio stream instead of leaving them to block
 				// forever (TS stream-transcribe.ts cancel()/catch()).
-				fail(errors.New("Transcription stream was cancelled.")) //nolint:staticcheck // matches TS SDK's exact error text
+				fail(context.Cause(ctx))
 				return
 			}
+			hasDemand = false
 
 		case provider.TranscriptionStreamPartTypeFinish:
 			if !warningsResolved {
@@ -416,8 +466,10 @@ func runTranscriptionStreamPipe(pipeCtx context.Context, streamer provider.Trans
 				return
 			}
 			segments := make([]TranscriptionSegment, 0, len(part.Segments))
+			telemetrySegments := make([]telemetry.TelemetryTranscriptTiming, 0, len(part.Segments))
 			for _, seg := range part.Segments {
 				segments = append(segments, TranscriptionSegment{Text: seg.Text, StartSecond: seg.StartSecond, EndSecond: seg.EndSecond})
+				telemetrySegments = append(telemetrySegments, telemetry.TelemetryTranscriptTiming{Text: seg.Text, StartSecond: seg.StartSecond, EndSecond: seg.EndSecond})
 			}
 			providerMetadata := part.ProviderMetadata
 			if providerMetadata == nil {
@@ -433,16 +485,30 @@ func runTranscriptionStreamPipe(pipeCtx context.Context, streamer provider.Trans
 			telemetrySettled = true
 			finalAudioByteLength := atomic.LoadInt64(&audioByteLength)
 			telemetry.FireOnEnd(ctx, telemetry.TelemetryFinishEvent{
-				CallID:           callID,
-				OperationType:    "ai.streamTranscribe",
-				ModelProvider:    opts.Model.Provider(),
-				ModelID:          opts.Model.ModelID(),
-				Settings:         opts.ExperimentalTelemetry,
-				Text:             part.FinishText,
-				AudioByteLength:  &finalAudioByteLength,
-				AudioMediaType:   opts.InputAudioFormat.Type,
-				ProviderMetadata: providerMetadata,
+				CallID:          callID,
+				OperationType:   "ai.streamTranscribe",
+				ModelProvider:   opts.Model.Provider(),
+				ModelID:         opts.Model.ModelID(),
+				Settings:        opts.ExperimentalTelemetry,
+				Text:            part.FinishText,
+				AudioByteLength: &finalAudioByteLength,
+				AudioMediaType:  opts.InputAudioFormat.Type,
+				// TS end event: value.providerMetadata as reported (no
+				// ai.response.providerMetadata when the model sent none);
+				// only the result resolves `?? {}`.
+				ProviderMetadata: part.ProviderMetadata,
 				ProviderUsage:    part.Usage,
+				// TS StreamTranscriptionEndEvent segments / language /
+				// durationInSeconds / warnings / response.
+				Segments:          telemetrySegments,
+				Language:          part.Language,
+				DurationInSeconds: part.DurationInSeconds,
+				Warnings:          resolvedWarnings,
+				Response: &telemetry.TelemetryAudioResponse{
+					Timestamp: response.Timestamp,
+					ModelID:   response.ModelID,
+					Headers:   response.Headers,
+				},
 			})
 
 			result.textP.resolve(part.FinishText)
@@ -478,7 +544,26 @@ func transcriptionPartFromProvider(part *provider.TranscriptionStreamPart) Trans
 // sendTranscriptionPart sends part on ch, honoring cancellation of ctx so a
 // blocked send unblocks (instead of leaking) when FullStream is closed.
 // Returns false when ctx was cancelled before the send completed.
+//
+// The two cancellations differ as in TS. After FullStream.Close (TS
+// pipeTo's signal) no further part is written, even to a waiting reader.
+// The caller's ctx (TS abortSignal, passed only to the model) does not stop
+// the pipe: a part the provider still returns goes to a reader that is
+// waiting for it, and only a reader that stopped reading ends the pipe.
+// Without these checks Go's select picked between a ready reader and the
+// done ctx at random.
 func sendTranscriptionPart(ctx context.Context, ch chan<- TranscriptionStreamPart, part TranscriptionStreamPart) bool {
+	if ctx.Err() != nil {
+		if errors.Is(context.Cause(ctx), errTranscriptionStreamCancelled) {
+			return false
+		}
+		select {
+		case ch <- part:
+			return true
+		default:
+			return false
+		}
+	}
 	select {
 	case ch <- part:
 		return true

@@ -146,7 +146,7 @@ func TestGenerateObject_LogsModelWarnings(t *testing.T) {
 	if _, err := GenerateObject(context.Background(), GenerateObjectOptions{Model: model, Prompt: "hi", Schema: sch}); err != nil {
 		t.Fatalf("GenerateObject() error = %v", err)
 	}
-	if lines := logLines(buf); len(lines) != 2 || !strings.Contains(lines[1], "generate-object warning") {
+	if lines := logLines(buf); len(lines) != 3 || !strings.Contains(lines[1], "Deprecated") || !strings.Contains(lines[2], "generate-object warning") {
 		t.Fatalf("expected a logged warning, got lines=%v", lines)
 	}
 }
@@ -171,7 +171,7 @@ func TestStreamObject_LogsModelWarnings(t *testing.T) {
 	if _, err := StreamObject(context.Background(), StreamObjectOptions{Model: model, Prompt: "hi", Schema: sch}); err != nil {
 		t.Fatalf("StreamObject() error = %v", err)
 	}
-	if lines := logLines(buf); len(lines) != 2 || !strings.Contains(lines[1], "stream-object warning") {
+	if lines := logLines(buf); len(lines) != 3 || !strings.Contains(lines[1], "Deprecated") || !strings.Contains(lines[2], "stream-object warning") {
 		t.Fatalf("expected a logged warning, got lines=%v", lines)
 	}
 }

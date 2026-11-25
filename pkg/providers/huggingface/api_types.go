@@ -1,5 +1,12 @@
 package huggingface
 
+import (
+	"encoding/json"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+)
+
 // hfUsage mirrors TS HuggingFaceResponsesUsage.
 type hfUsage struct {
 	InputTokens        int64 `json:"input_tokens"`
@@ -11,11 +18,39 @@ type hfUsage struct {
 		ReasoningTokens int64 `json:"reasoning_tokens"`
 	} `json:"output_tokens_details,omitempty"`
 	TotalTokens int64 `json:"total_tokens"`
+
+	// raw is the usage object as the TS usage schema outputs it (TS raw:
+	// usage): the declared keys with each number as sent; set by
+	// UnmarshalJSON.
+	raw map[string]interface{}
+}
+
+// UnmarshalJSON decodes the counts (TS z.number(): a fraction is truncated
+// into the int64 fields instead of failing the decode) and keeps the
+// declared keys of the wire object, numbers exact, for Usage.Raw.
+func (u *hfUsage) UnmarshalJSON(b []byte) error {
+	type plain hfUsage
+	var p plain
+	if err := providerutils.UnmarshalChunk(b, &p); err != nil {
+		return err
+	}
+	*u = hfUsage(p)
+	var wire map[string]interface{}
+	if jsonexact.Unmarshal(b, &wire) == nil && wire != nil {
+		raw := providerutils.PickSchemaKeys(wire, "input_tokens", "input_tokens_details", "output_tokens", "output_tokens_details", "total_tokens")
+		for key, nested := range map[string]string{"input_tokens_details": "cached_tokens", "output_tokens_details": "reasoning_tokens"} {
+			if obj := providerutils.PickSchemaKeys(raw[key], nested); obj != nil {
+				raw[key] = obj
+			}
+		}
+		u.raw = raw
+	}
+	return nil
 }
 
 // hfIncompleteDetails mirrors the response's incomplete_details object.
 type hfIncompleteDetails struct {
-	Reason string `json:"reason"`
+	Reason *string `json:"reason"` // pointer: TS `reason ?? 'stop'` keeps ""
 }
 
 // hfResponseError mirrors the top-level response.error object.
@@ -65,7 +100,7 @@ type hfOutputItem struct {
 type hfResponse struct {
 	ID                string               `json:"id"`
 	Model             string               `json:"model"`
-	CreatedAt         int64                `json:"created_at"`
+	CreatedAt         float64              `json:"created_at"`
 	Error             *hfResponseError     `json:"error"`
 	IncompleteDetails *hfIncompleteDetails `json:"incomplete_details"`
 	Usage             *hfUsage             `json:"usage"`
@@ -90,7 +125,7 @@ type hfStreamItem struct {
 type hfStreamResponse struct {
 	ID                string               `json:"id"`
 	Model             string               `json:"model"`
-	CreatedAt         int64                `json:"created_at"`
+	CreatedAt         json.RawMessage      `json:"created_at"`
 	IncompleteDetails *hfIncompleteDetails `json:"incomplete_details"`
 	Usage             *hfUsage             `json:"usage"`
 }

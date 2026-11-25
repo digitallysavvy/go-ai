@@ -1,5 +1,5 @@
 // Package harness is the Go port of the TypeScript `@ai-sdk/harness` package
-// (pinned to ai@7.0.113).
+// (pinned to ai@7.0.167, TS 9f7a842ae1).
 //
 // It contains the harness-v1 specification types that adapters implement
 // (TS `HarnessV1*`), the stream-part vocabulary, JSON lifecycle state that is
@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
@@ -427,6 +428,17 @@ type SkillFile struct {
 // by harness id. Mirrors TS `HarnessV1Metadata`.
 type Metadata map[string]map[string]any
 
+// UnmarshalJSON decodes the record and rejects a null harness entry like
+// `harnessV1MetadataSchema` (every value must be an object).
+func (m *Metadata) UnmarshalJSON(data []byte) error {
+	out, err := decodeNamespacedRecord(data)
+	if err != nil {
+		return err
+	}
+	*m = out
+	return nil
+}
+
 // CallWarningType discriminates CallWarning.
 type CallWarningType string
 
@@ -467,6 +479,59 @@ func (w CallWarning) MarshalJSON() ([]byte, error) {
 			Message string          `json:"message"`
 		}{w.Type, w.Message})
 	}
+}
+
+// UnmarshalJSON decodes the keys of the warning's variant only, like the
+// `harnessV1CallWarningSchema` union member zod picks: the members are plain
+// objects, so a key of another variant (a `details` on an `other` warning, a
+// `tool` on an `unsupported-setting` one) is stripped whatever its value. An
+// unknown type decodes every field; the stream-part validation rejects it.
+func (w *CallWarning) UnmarshalJSON(data []byte) error {
+	if string(data) == "null" {
+		return nil
+	}
+	var head struct {
+		Type CallWarningType `json:"type"`
+	}
+	if err := jsonexact.UnmarshalPlain(data, &head); err != nil {
+		return err
+	}
+	switch head.Type {
+	case CallWarningUnsupportedSetting:
+		var v struct {
+			Setting string `json:"setting"`
+			Details string `json:"details"`
+		}
+		if err := jsonexact.UnmarshalPlain(data, &v); err != nil {
+			return err
+		}
+		*w = CallWarning{Type: head.Type, Setting: v.Setting, Details: v.Details}
+	case CallWarningUnsupportedTool:
+		var v struct {
+			Tool    string `json:"tool"`
+			Details string `json:"details"`
+		}
+		if err := jsonexact.UnmarshalPlain(data, &v); err != nil {
+			return err
+		}
+		*w = CallWarning{Type: head.Type, Tool: v.Tool, Details: v.Details}
+	case CallWarningOther:
+		var v struct {
+			Message string `json:"message"`
+		}
+		if err := jsonexact.UnmarshalPlain(data, &v); err != nil {
+			return err
+		}
+		*w = CallWarning{Type: head.Type, Message: v.Message}
+	default:
+		type plain CallWarning
+		var v plain
+		if err := jsonexact.UnmarshalPlain(data, &v); err != nil {
+			return err
+		}
+		*w = CallWarning(v)
+	}
+	return nil
 }
 
 // Observability is diagnostics wiring handed to DoStart. Mirrors TS
@@ -542,6 +607,10 @@ type CredentialForwardingOptions struct {
 // `HarnessV1CredentialForwarding`.
 type CredentialForwarding func(ctx context.Context, opts CredentialForwardingOptions) (string, error)
 
-// MintBridgeTokenCallback creates the bridge channel token for one session.
-// Mirrors TS `HarnessV1MintBridgeTokenCallback`.
+// MintBridgeTokenCallback created the bridge channel token for one session.
+// Mirrors TS `HarnessV1MintBridgeTokenCallback`, which TS c849d37dac
+// deprecates: sandbox bridge authentication uses adapter-generated Ed25519
+// key pairs, and adapters ignore a callback passed in their (deprecated)
+// MintBridgeToken settings and warn once when the harness is created. The
+// adapters' settings fields carry the formal deprecation notice.
 type MintBridgeTokenCallback func(sandboxID string) string

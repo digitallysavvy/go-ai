@@ -2,11 +2,11 @@ package vercel
 
 import (
 	"context"
-	"net/url"
 	"strconv"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
+	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -78,7 +78,9 @@ func (n *NetworkSession) GetPortEndpoint(_ context.Context, opts harness.PortEnd
 	if err != nil {
 		return harness.PortEndpoint{}, err
 	}
-	u, err := url.Parse(domain)
+	// TS `new URL(domain)`, the `protocol` setter and `toString()` (WHATWG,
+	// so the serialization always has a path and drops a default port).
+	u, err := urlnorm.Parse(domain)
 	if err != nil {
 		return harness.PortEndpoint{}, err
 	}
@@ -87,27 +89,31 @@ func (n *NetworkSession) GetPortEndpoint(_ context.Context, opts harness.PortEnd
 	if protocol == "" {
 		protocol = harness.PortProtocolHTTPS
 	}
+	setProtocol := func(scheme string) {
+		// The setter cannot turn a non-special URL into a special one.
+		if !u.IsSpecial() {
+			return
+		}
+		u.Scheme = scheme
+		if (u.Port == 80 && (scheme == "http" || scheme == "ws")) || (u.Port == 443 && (scheme == "https" || scheme == "wss")) {
+			u.Port = -1
+		}
+	}
 	switch protocol {
 	case harness.PortProtocolHTTP:
 		if isSecure {
-			u.Scheme = "https"
+			setProtocol("https")
 		} else {
-			u.Scheme = "http"
+			setProtocol("http")
 		}
 	case harness.PortProtocolHTTPS:
-		u.Scheme = "https"
+		setProtocol("https")
 	case harness.PortProtocolWS:
 		if isSecure {
-			u.Scheme = "wss"
+			setProtocol("wss")
 		} else {
-			u.Scheme = "ws"
+			setProtocol("ws")
 		}
-	}
-	if u.Path == "" {
-		// JavaScript's URL#toString always includes a "/" path when the URL
-		// has an authority and no explicit path; Go's net/url omits it. Add
-		// it back so the formatted endpoint matches TS byte-for-byte.
-		u.Path = "/"
 	}
 	return harness.PortEndpoint{URL: u.String()}, nil
 }

@@ -12,9 +12,9 @@ func TestTextEditor20250728_Basic(t *testing.T) {
 
 	assert.Equal(t, "anthropic.text_editor_20250728", tool.Name)
 	assert.NotEmpty(t, tool.Description)
-	assert.True(t, tool.ProviderExecuted)
+	assert.False(t, tool.ProviderExecuted)
 	assert.NotNil(t, tool.Parameters)
-	assert.NotNil(t, tool.Execute)
+	assert.Nil(t, tool.Execute)
 }
 
 func TestTextEditor20250728_WithMaxCharacters(t *testing.T) {

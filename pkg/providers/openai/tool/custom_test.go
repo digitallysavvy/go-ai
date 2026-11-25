@@ -176,8 +176,12 @@ func TestCustomTool_ToTool(t *testing.T) {
 	if sdkTool.Name != "my-tool" {
 		t.Errorf("expected name %q, got %q", "my-tool", sdkTool.Name)
 	}
-	if !sdkTool.ProviderExecuted {
-		t.Error("expected ProviderExecuted to be true")
+	// TS openai.custom is a provider-defined (client-executed) tool.
+	if sdkTool.ProviderExecuted {
+		t.Error("custom tools are client-executed: ProviderExecuted must be false")
+	}
+	if sdkTool.Execute != nil {
+		t.Error("no stub Execute: callers attach their own")
 	}
 	if sdkTool.ProviderOptions == nil {
 		t.Error("expected ProviderOptions to be set")

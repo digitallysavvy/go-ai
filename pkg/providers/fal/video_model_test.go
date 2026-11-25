@@ -27,13 +27,13 @@ func newTestVideoModel(t *testing.T, modelID string, mux *http.ServeMux) (*Video
 func TestVideoModel_ConstructorInfo(t *testing.T) {
 	model, _ := newTestVideoModel(t, "luma-dream-machine", http.NewServeMux())
 
-	if model.Provider() != "fal" {
-		t.Errorf("Provider() = %q, want fal", model.Provider())
+	if model.Provider() != "fal.video" {
+		t.Errorf("Provider() = %q, want fal.video", model.Provider())
 	}
 	if model.ModelID() != "luma-dream-machine" {
 		t.Errorf("ModelID() = %q, want luma-dream-machine", model.ModelID())
 	}
-	if model.SpecificationVersion() != "v3" {
+	if model.SpecificationVersion() != "v4" {
 		t.Errorf("SpecificationVersion() = %q, want v3", model.SpecificationVersion())
 	}
 	if got := model.MaxVideosPerCall(); got == nil || *got != 1 {
@@ -543,5 +543,52 @@ func TestVideoModel_DoStatus_SendsProviderAuthorization(t *testing.T) {
 	}
 	if !strings.HasPrefix(statusAuth, "Key ") {
 		t.Fatalf("status request Authorization = %q, want provider Key header", statusAuth)
+	}
+}
+
+// A status poll failure whose body is not the fal error schema reports the
+// HTTP status text, like TS createJsonErrorResponseHandler.
+func TestVideoModel_DoStatus_OffSchemaErrorUsesStatusText(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fal-ai/luma-dream-machine", videoQueueHandler(t, "id", "/fal-ai/luma-dream-machine/requests/id", nil, nil))
+	mux.HandleFunc("/fal-ai/luma-dream-machine/requests/id", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(502)
+		_, _ = w.Write([]byte(`{"detail":"upstream exploded"}`))
+	})
+	model, _ := newTestVideoModel(t, "luma-dream-machine", mux)
+	startResult, err := model.DoStart(context.Background(), &provider.VideoModelV3StartOptions{
+		VideoModelV3CallOptions: provider.VideoModelV3CallOptions{Prompt: "x"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := model.DoStatus(context.Background(), &provider.VideoModelV3StatusOptions{Operation: startResult.Operation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Status != provider.VideoOperationStatusError || status.Error != "Bad Gateway" {
+		t.Fatalf("status = %+v", status)
+	}
+}
+
+// TS encodes the webhook with encodeURIComponent: a space is %20 (not +) and
+// ! * ' ( ) stay literal.
+func TestVideoModel_DoStart_WebhookUsesEncodeURIComponent(t *testing.T) {
+	var gotURL string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fal-ai/luma-dream-machine", func(w http.ResponseWriter, r *http.Request) {
+		gotURL = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"request_id": "i", "response_url": "http://" + r.Host + "/x"})
+	})
+	model, _ := newTestVideoModel(t, "luma-dream-machine", mux)
+	if _, err := model.DoStart(context.Background(), &provider.VideoModelV3StartOptions{
+		VideoModelV3CallOptions: provider.VideoModelV3CallOptions{Prompt: "x"},
+		WebhookURL:              "https://x.test/hook?a=b c&d=(e)!",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if want := "fal_webhook=https%3A%2F%2Fx.test%2Fhook%3Fa%3Db%20c%26d%3D(e)!"; gotURL != want {
+		t.Fatalf("query = %q, want %q", gotURL, want)
 	}
 }

@@ -45,8 +45,18 @@ func main() {
 	}
 
 	fmt.Println(result.Text)
+	// Executed calls are in ToolResults (as in the TS SDK); approval requests
+	// and responses are content parts.
 	for _, toolResult := range result.ToolResults {
-		fmt.Printf("%s approval=%s result=%v\n", toolResult.ToolName, toolResult.ApprovalStatus, toolResult.Result)
+		fmt.Printf("%s result=%v\n", toolResult.ToolName, toolResult.Result)
+	}
+	for _, part := range result.Content {
+		switch p := part.(type) {
+		case types.ToolApprovalRequestContent:
+			fmt.Printf("%s approval requested (%s)\n", p.ToolCall.ToolName, p.ApprovalID)
+		case types.ToolApprovalResponseContent:
+			fmt.Printf("%s approved=%v\n", p.ToolCall.ToolName, p.Approved)
+		}
 	}
 }
 

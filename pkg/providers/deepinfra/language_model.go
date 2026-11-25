@@ -23,7 +23,7 @@ func NewLanguageModel(provider *openai.Provider, modelID string) *LanguageModel 
 
 // Provider returns the provider name
 func (m *LanguageModel) Provider() string {
-	return "deepinfra"
+	return "deepinfra.chat"
 }
 
 // DoGenerate performs non-streaming text generation with token usage fixes

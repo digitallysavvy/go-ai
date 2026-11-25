@@ -126,23 +126,23 @@ Control computers through mouse, keyboard, and screenshots:
 ```go
 import "github.com/digitallysavvy/go-ai/pkg/providers/anthropic/tools"
 
-computerTool := tools.Computer20251124(tools.Computer20251124Args{
-    DisplayWidthPx:  1920,
-    DisplayHeightPx: 1080,
-    EnableZoom:      true,
-})
+// The computer tool runs on your machine: install an executor with
+// tools.WithExecute (without one, the tool call is returned to you).
+computerTool := tools.WithExecute(
+    tools.Computer20251124(tools.Computer20251124Args{
+        DisplayWidthPx:  1920,
+        DisplayHeightPx: 1080,
+        EnableZoom:      true,
+    }),
+    func(ctx context.Context, input map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+        return runComputerAction(input) // your screen control
+    },
+)
 
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
-    Model: model,
-    Messages: []ai.Message{{
-        Role: ai.RoleUser,
-        Content: ai.MessageContent{
-            Text: stringPtr("Take a screenshot"),
-        },
-    }},
-    Tools: map[string]ai.Tool{
-        "computer": computerTool,
-    },
+    Model:  model,
+    Prompt: "Take a screenshot",
+    Tools:  []types.Tool{computerTool},
 })
 ```
 

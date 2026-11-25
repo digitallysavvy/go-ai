@@ -28,6 +28,9 @@ type MCPConfig struct {
 	RequireApproval   interface{}       `json:"requireApproval,omitempty"`
 	ServerDescription string            `json:"serverDescription,omitempty"`
 	ServerURL         string            `json:"serverUrl,omitempty"`
+	// TunnelID is an OpenAI Secure MCP tunnel; it cannot be combined with
+	// ServerURL or ConnectorID (TS 7a905226b6). One of the three is required.
+	TunnelID string `json:"tunnelId,omitempty"`
 
 	// Name optionally overrides the tool's SDK name (default: "openai.mcp").
 	// TS callers pick this name freely as the tools-object key (e.g.
@@ -46,12 +49,22 @@ func MCP(config MCPConfig) types.Tool {
 	if name == "" {
 		name = "openai.mcp"
 	}
-	return types.Tool{
+	return providerTool(types.Tool{
 		Name:             name,
-		ProviderID:       "openai.mcp",
 		Description:      config.ServerDescription,
 		ProviderExecuted: true,
 		ProviderOptions:  config,
-		Parameters:       map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
+		Parameters:       schemaFromJSON(emptyObjectSchemaJSON),
+		OutputSchema:     schemaFromJSON(mcpOutputSchemaJSON),
+	}, "openai.mcp", mcpArgs(config))
+}
+
+// mcpArgs is providerArgs for MCPConfig: an empty ServerLabel is unset (TS
+// args without serverLabel, which the args schema rejects).
+func mcpArgs(config MCPConfig) map[string]interface{} {
+	args := providerArgs(config)
+	if config.ServerLabel == "" {
+		delete(args, "serverLabel")
 	}
+	return args
 }

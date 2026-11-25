@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"errors"
+	"github.com/digitallysavvy/go-ai/pkg/internal/sdkversion"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -74,8 +75,8 @@ func TestGenerateText_AppendsAIUserAgent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if capturedHeaders["user-agent"] != "ai/0.5.3" {
-		t.Fatalf("user-agent = %q, want ai/0.5.3", capturedHeaders["user-agent"])
+	if capturedHeaders["user-agent"] != "ai/"+sdkversion.Version {
+		t.Fatalf("user-agent = %q, want ai/<sdk version>", capturedHeaders["user-agent"])
 	}
 
 	// Existing user-agent values are kept as a prefix, not replaced.
@@ -88,8 +89,8 @@ func TestGenerateText_AppendsAIUserAgent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if capturedHeaders["user-agent"] != "custom-agent ai/0.5.3" {
-		t.Fatalf("user-agent = %q, want custom-agent ai/0.5.3", capturedHeaders["user-agent"])
+	if capturedHeaders["user-agent"] != "custom-agent ai/"+sdkversion.Version {
+		t.Fatalf("user-agent = %q, want custom-agent ai/<sdk version>", capturedHeaders["user-agent"])
 	}
 }
 
@@ -877,12 +878,13 @@ func TestGenerateText_ToolNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Tool not found should still create a result with an error in the tool result
-	if len(result.ToolResults) != 1 {
-		t.Fatalf("expected 1 tool result, got %d", len(result.ToolResults))
+	// A tool that is not found is a tool-error content part, not a tool
+	// result (TS toolResults holds only tool-result parts).
+	if len(result.ToolResults) != 0 {
+		t.Fatalf("expected no tool results, got %+v", result.ToolResults)
 	}
-	if result.ToolResults[0].Error == nil {
-		t.Error("expected error in tool result for nonexistent tool")
+	if toolErrors := r71integToolErrors(result.Content); len(toolErrors) != 1 {
+		t.Errorf("expected one tool error for the nonexistent tool, got %+v", toolErrors)
 	}
 }
 
@@ -928,14 +930,12 @@ func TestGenerateText_ToolExecutionError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(result.ToolResults) != 1 {
-		t.Fatalf("expected 1 tool result, got %d", len(result.ToolResults))
+	if len(result.ToolResults) != 0 {
+		t.Fatalf("expected no tool results, got %+v", result.ToolResults)
 	}
-	if result.ToolResults[0].Error == nil {
-		t.Error("expected error in tool result")
-	}
-	if result.ToolResults[0].Error.Error() != "tool execution failed" {
-		t.Errorf("unexpected error message: %v", result.ToolResults[0].Error)
+	toolErrors := r71integToolErrors(result.Content)
+	if len(toolErrors) != 1 || toolErrors[0].Error != "tool execution failed" || toolErrors[0].ErrorText != "Error: tool execution failed" {
+		t.Errorf("tool errors = %+v, want the execution error", toolErrors)
 	}
 }
 
@@ -1580,8 +1580,9 @@ func TestGenerateText_ToolApprovalDeniedSkipsExecution(t *testing.T) {
 	}
 
 	result, err := GenerateText(context.Background(), GenerateTextOptions{
-		Model: model,
-		Tools: []types.Tool{tool},
+		Prompt: "hi",
+		Model:  model,
+		Tools:  []types.Tool{tool},
 		ToolApproval: types.ToolApprovalFunc(func(toolCall types.ToolCall, tools []types.Tool, messages []types.Message, runtimeCtx interface{}, toolsCtx map[string]interface{}) types.ToolApprovalResult { //nolint:staticcheck // exercises the legacy function-type approval path for backward compatibility
 			approvalCalled = true
 			return types.ToolApprovalResult{Status: types.ToolApprovalStatusDenied, Reason: &denyReason}
@@ -1594,22 +1595,19 @@ func TestGenerateText_ToolApprovalDeniedSkipsExecution(t *testing.T) {
 	if !approvalCalled {
 		t.Fatal("expected approval function to be called")
 	}
-	if len(result.ToolResults) != 1 {
-		t.Fatalf("expected 1 tool result, got %d", len(result.ToolResults))
+	// TS toolResults holds tool-result parts only: an auto-denied call is a
+	// tool-approval-request + tool-approval-response pair in the content.
+	if len(result.ToolResults) != 0 {
+		t.Fatalf("expected no tool results, got %#v", result.ToolResults)
 	}
-	tr := result.ToolResults[0]
-	if tr.ApprovalStatus != types.ToolApprovalStatusDenied {
-		t.Fatalf("expected denied approval status, got %s", tr.ApprovalStatus)
+	var resp *types.ToolApprovalResponseContent
+	for _, part := range result.Content {
+		if r, ok := part.(types.ToolApprovalResponseContent); ok {
+			resp = &r
+		}
 	}
-	if tr.ApprovalReason == nil || *tr.ApprovalReason != denyReason {
-		t.Fatalf("expected denial reason %q, got %#v", denyReason, tr.ApprovalReason)
-	}
-	output, ok := tr.Result.(types.ToolResultOutput)
-	if !ok {
-		t.Fatalf("expected ToolResultOutput, got %T", tr.Result)
-	}
-	if output.Type != types.ToolResultOutputExecutionDenied || output.Reason != denyReason {
-		t.Fatalf("unexpected denied output: %#v", output)
+	if resp == nil || resp.Approved || resp.Reason != denyReason {
+		t.Fatalf("expected denied approval response with reason %q, got %#v", denyReason, resp)
 	}
 }
 
@@ -1637,6 +1635,7 @@ func TestGenerateText_ToolApprovalUserApprovalPauses(t *testing.T) {
 	}
 
 	result, err := GenerateText(context.Background(), GenerateTextOptions{
+		Prompt:       "hi",
 		Model:        model,
 		Tools:        []types.Tool{tool},
 		ToolApproval: map[string]types.ToolApprovalValue{"needs_human": types.ToolApprovalStatusUserApproval},
@@ -1652,18 +1651,22 @@ func TestGenerateText_ToolApprovalUserApprovalPauses(t *testing.T) {
 	if result.FinishReason != types.FinishReasonToolCalls {
 		t.Fatalf("expected tool-calls finish reason, got %s", result.FinishReason)
 	}
-	if len(result.ToolResults) != 1 {
-		t.Fatalf("expected 1 tool result, got %d", len(result.ToolResults))
+	// TS toolResults holds tool-result parts only; the pending call is a
+	// tool-approval-request part in the content.
+	if len(result.ToolResults) != 0 {
+		t.Fatalf("expected no tool results, got %#v", result.ToolResults)
 	}
-	request, ok := result.ToolResults[0].Result.(map[string]interface{})
-	if !ok {
-		t.Fatalf("expected approval request output, got %T", result.ToolResults[0].Result)
+	var request *types.ToolApprovalRequestContent
+	for _, part := range result.Content {
+		if r, ok := part.(types.ToolApprovalRequestContent); ok {
+			request = &r
+		}
 	}
-	if request["type"] != "tool-approval-request" || request["approvalId"] == "" || request["approvalId"] == "call_1" {
-		t.Fatalf("unexpected approval request output: %#v", request)
+	if request == nil {
+		t.Fatalf("expected a tool-approval-request in content, got %#v", result.Content)
 	}
-	if result.ToolResults[0].ApprovalID != request["approvalId"] {
-		t.Fatalf("tool result ApprovalID = %q, want %q", result.ToolResults[0].ApprovalID, request["approvalId"])
+	if request.ApprovalID == "" || request.ApprovalID == "call_1" || request.ToolCallID != "call_1" {
+		t.Fatalf("unexpected approval request: %#v", request)
 	}
 }
 
@@ -1694,8 +1697,9 @@ func TestGenerateText_ToolApprovalUserApprovalWithReason(t *testing.T) {
 	}
 
 	result, err := GenerateText(context.Background(), GenerateTextOptions{
-		Model: model,
-		Tools: []types.Tool{tool},
+		Prompt: "hi",
+		Model:  model,
+		Tools:  []types.Tool{tool},
 		ToolApproval: types.ToolApprovalFunc(func(toolCall types.ToolCall, tools []types.Tool, messages []types.Message, runtimeCtx interface{}, toolsCtx map[string]interface{}) types.ToolApprovalResult { //nolint:staticcheck // exercises the legacy function-type approval path for backward compatibility
 			return types.ToolApprovalResult{Status: types.ToolApprovalStatusUserApproval, Reason: &reviewReason}
 		}),
@@ -1763,6 +1767,7 @@ func TestGenerateText_ToolApprovalEmptySecretStillSigns(t *testing.T) {
 	}
 
 	result, err := GenerateText(context.Background(), GenerateTextOptions{
+		Prompt:                         "hi",
 		Model:                          model,
 		Tools:                          []types.Tool{tool},
 		ToolApproval:                   map[string]types.ToolApprovalValue{"needs_human": types.ToolApprovalStatusUserApproval},
@@ -1817,6 +1822,7 @@ func TestGenerateText_ToolApprovalOverridesNeedsApproval(t *testing.T) {
 	}
 
 	_, err := GenerateText(context.Background(), GenerateTextOptions{
+		Prompt:       "hi",
 		Model:        model,
 		Tools:        []types.Tool{tool},
 		ToolApproval: map[string]types.ToolApprovalValue{"tool": types.ToolApprovalStatusApproved},
@@ -1854,8 +1860,9 @@ func TestGenerateText_ProviderExecutedResolvesApproval(t *testing.T) {
 	}
 
 	result, err := GenerateText(context.Background(), GenerateTextOptions{
-		Model: model,
-		Tools: []types.Tool{tool},
+		Prompt: "hi",
+		Model:  model,
+		Tools:  []types.Tool{tool},
 		ToolApproval: types.ToolApprovalFunc(func(toolCall types.ToolCall, tools []types.Tool, messages []types.Message, runtimeCtx interface{}, toolsCtx map[string]interface{}) types.ToolApprovalResult { //nolint:staticcheck // exercises the legacy function-type approval path for backward compatibility
 			approvalCalls++
 			return types.ToolApprovalResult{Status: types.ToolApprovalStatusDenied}
@@ -1868,8 +1875,8 @@ func TestGenerateText_ProviderExecutedResolvesApproval(t *testing.T) {
 	if approvalCalls != 1 {
 		t.Fatalf("approval calls = %d, want 1", approvalCalls)
 	}
-	if len(result.ToolResults) != 1 || !result.ToolResults[0].ProviderExecuted || result.ToolResults[0].ApprovalStatus != types.ToolApprovalStatusDenied {
-		t.Fatalf("expected provider-executed denied result, got %#v", result.ToolResults)
+	if len(result.ToolResults) != 0 {
+		t.Fatalf("expected no tool results (denied calls are approval parts), got %#v", result.ToolResults)
 	}
 	if got, want := len(result.Content), 3; got != want {
 		t.Fatalf("content len = %d, want %d: %#v", got, want, result.Content)

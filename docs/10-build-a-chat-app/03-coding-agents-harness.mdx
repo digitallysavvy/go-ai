@@ -377,6 +377,8 @@ The demo lists every file with `find`, reads each one, and keeps the ones that d
 - **One writer per workspace.** The demo guards coding runs with a mutex because of the fixed bridge port and because two agents editing one workspace would conflict.
 - **Pass a cancellable context.** Cancelling it stops the stream and the agent. Tie it to the HTTP request so a closed tab does not leave an agent running.
 - **Keep the stream open.** Coding runs go quiet for long stretches. Use `KeepAliveMs` on the chat response, as described in [Serve a useChat frontend](./01-serve-usechat-from-go.mdx#keep-alive).
+- **Parallel approvals.** When the model asks for several tools at once, every approval request of that step is reported before the turn pauses. Collect them from the `ToolApprovalRequest` chunks or the session's pending approvals and answer them together with `ContinueStream`.
+- **Tool results for the model.** A host tool can set `ToModelOutput` to send the runtime text and inline images instead of its raw result. The raw result still appears in `ToolResults`, and `ResponseMessages` reports what the model saw. See [Adapters](../07-reference/harness/adapters.mdx#promptcontrol).
 - **Gate the start.** Put the call that starts a coding agent behind `ToolApproval`, as in [Tool approval end to end](./02-tool-approval.mdx).
 
 ## See it in the demo

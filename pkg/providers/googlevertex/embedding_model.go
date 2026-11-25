@@ -2,11 +2,14 @@ package googlevertex
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
@@ -30,7 +33,7 @@ func NewEmbeddingModel(p *Provider, modelID string) *EmbeddingModel {
 func (m *EmbeddingModel) SpecificationVersion() string { return "v4" }
 
 // Provider returns the provider name.
-func (m *EmbeddingModel) Provider() string { return "google-vertex" }
+func (m *EmbeddingModel) Provider() string { return "google.vertex.embedding" }
 
 // ModelID returns the model ID.
 func (m *EmbeddingModel) ModelID() string { return m.modelID }
@@ -72,7 +75,15 @@ type VertexEmbeddingProviderOptions struct {
 	// AutoTruncate controls whether input text is truncated when too long.
 	// Defaults to true. When false, an error is returned for oversized input.
 	AutoTruncate *bool
+
+	// titleSet records a present title read from a providerOptions map, ""
+	// included (TS sends title: "").
+	titleSet bool
 }
+
+// hasTitle is TS `title !== undefined`: a typed struct sets it by a
+// non-empty Title.
+func (o VertexEmbeddingProviderOptions) hasTitle() bool { return o.titleSet || o.Title != "" }
 
 // DoEmbed performs embedding for a single text input.
 func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provider.EmbedModelOptions) (*types.EmbeddingResult, error) {
@@ -84,8 +95,14 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 	if len(result.Responses) > 0 {
 		resp = result.Responses[0]
 	}
+	// TS does not check the number of predictions, so a response without any
+	// yields an empty embedding rather than an error.
+	var embedding []float64
+	if len(result.Embeddings) > 0 {
+		embedding = result.Embeddings[0]
+	}
 	return &types.EmbeddingResult{
-		Embedding: result.Embeddings[0],
+		Embedding: embedding,
 		Usage:     result.Usage,
 		Response:  resp,
 	}, nil
@@ -96,11 +113,24 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	if len(inputs) == 0 {
 		return &types.EmbeddingsResult{Embeddings: [][]float64{}, Usage: types.EmbeddingUsage{}}, nil
 	}
-	if len(inputs) > m.MaxEmbeddingsPerCall() {
-		return nil, fmt.Errorf("too many embedding values: %d exceeds max %d per call", len(inputs), m.MaxEmbeddingsPerCall())
+	// TS parses (and validates) providerOptions before the value-count check.
+	if err := validateVertexEmbeddingOptions(opts); err != nil {
+		return nil, err
 	}
-
+	if len(inputs) > m.MaxEmbeddingsPerCall() {
+		return nil, &providererrors.TooManyEmbeddingValuesForCallError{
+			Provider:             m.Provider(),
+			ModelID:              m.modelID,
+			MaxEmbeddingsPerCall: m.MaxEmbeddingsPerCall(),
+			Values:               inputs,
+		}
+	}
 	vopts := vertexEmbeddingOptions(opts)
+	if vopts.OutputDimensionality == nil && opts != nil && opts.Dimensions != nil {
+		// Top-level dimensions (TS #22338); the provider option wins.
+		d := *opts.Dimensions
+		vopts.OutputDimensionality = &d
+	}
 
 	if usesEmbedContentEndpoint(m.modelID) {
 		return m.doEmbedContent(ctx, inputs[0], vopts, opts)
@@ -112,61 +142,64 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 		if vopts.TaskType != "" {
 			inst["task_type"] = vopts.TaskType
 		}
-		if vopts.Title != "" {
+		if vopts.hasTitle() {
 			inst["title"] = vopts.Title
 		}
 		instances[i] = inst
 	}
 
-	params := map[string]interface{}{}
+	// TS always sends the parameters object, empty when no option is set, with
+	// outputDimensionality before autoTruncate.
+	params := providerutils.OrderedMap{Vals: map[string]interface{}{}}
 	if vopts.OutputDimensionality != nil {
-		params["outputDimensionality"] = *vopts.OutputDimensionality
+		params.Keys = append(params.Keys, "outputDimensionality")
+		params.Vals["outputDimensionality"] = *vopts.OutputDimensionality
 	}
 	if vopts.AutoTruncate != nil {
-		params["autoTruncate"] = *vopts.AutoTruncate
+		params.Keys = append(params.Keys, "autoTruncate")
+		params.Vals["autoTruncate"] = *vopts.AutoTruncate
 	}
 
-	body := map[string]interface{}{"instances": instances}
-	if len(params) > 0 {
-		body["parameters"] = params
-	}
+	body := map[string]interface{}{"instances": instances, "parameters": params}
 
 	path := fmt.Sprintf("/models/%s:predict", m.modelID)
 
 	var response vertexEmbeddingResponse
-	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    path,
-		Body:    body,
-		Headers: embedOptsHeaders(opts),
+	httpResp, err := m.provider.mainClient().DoJSONResponse(ctx, internalhttp.Request{
+		ValidateResponse: vertexValidator(m.Provider(), zVertexTextEmbedding),
+		Method:           http.MethodPost,
+		Path:             path,
+		Body:             body,
+		Headers:          embedOptsHeaders(opts),
 	}, &response)
 	if err != nil {
-		return nil, fmt.Errorf("vertex embedding request failed: %w", err)
+		// A ProviderError keeps the HTTP status, body and the extracted
+		// error.message, so embed/embedMany can retry 429/5xx like TS.
+		return nil, vertexEmbeddingError(m.Provider(), err)
 	}
 
-	if len(response.Predictions) != len(inputs) {
-		return nil, fmt.Errorf("vertex returned %d predictions for %d inputs", len(response.Predictions), len(inputs))
-	}
-
-	embeddings := make([][]float64, len(inputs))
-	var totalTokens int
+	// TS maps every prediction and does not compare their number with the
+	// number of inputs.
+	embeddings := make([][]float64, len(response.Predictions))
+	var totalTokens float64
 	for i, pred := range response.Predictions {
 		embeddings[i] = pred.Embeddings.Values
 		totalTokens += pred.Embeddings.Statistics.TokenCount
 	}
 
-	respEntry := types.EmbeddingResponse{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: response}
-	responses := make([]types.EmbeddingResponse, len(inputs))
-	for i := range inputs {
-		responses[i] = respEntry
-	}
+	// One response per model call, as TS doEmbed returns one `response`
+	// (embedMany pushes one per call), not one per input.
+	responses := []types.EmbeddingResponse{{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: rawEmbeddingBody(httpResp.Body, response)}}
 
 	return &types.EmbeddingsResult{
 		Embeddings: embeddings,
 		Usage: types.EmbeddingUsage{
-			Tokens:      float64(totalTokens),
-			InputTokens: totalTokens,
-			TotalTokens: totalTokens,
+			Tokens:      totalTokens,
+			InputTokens: int(totalTokens),
+			TotalTokens: int(totalTokens),
+			// TS always returns usage for :predict (the summed
+			// statistics.token_count).
+			Reported: true,
 		},
 		Responses: responses,
 	}, nil
@@ -176,49 +209,59 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 // for gemini-embedding-2 / gemini-embedding-2-preview which do not support
 // the batch :predict endpoint (TS google-vertex-embedding-model.ts).
 func (m *EmbeddingModel) doEmbedContent(ctx context.Context, value string, vopts VertexEmbeddingProviderOptions, opts *provider.EmbedModelOptions) (*types.EmbeddingsResult, error) {
-	config := map[string]interface{}{}
+	// TS always sends embedContentConfig (empty when no option is set), with
+	// the keys in this order.
+	config := providerutils.OrderedMap{Vals: map[string]interface{}{}}
+	setConfig := func(key string, v interface{}) {
+		config.Keys = append(config.Keys, key)
+		config.Vals[key] = v
+	}
 	if vopts.OutputDimensionality != nil {
-		config["outputDimensionality"] = *vopts.OutputDimensionality
+		setConfig("outputDimensionality", *vopts.OutputDimensionality)
 	}
 	if vopts.TaskType != "" {
-		config["taskType"] = vopts.TaskType
+		setConfig("taskType", vopts.TaskType)
 	}
-	if vopts.Title != "" {
-		config["title"] = vopts.Title
+	if vopts.hasTitle() {
+		setConfig("title", vopts.Title)
 	}
 	if vopts.AutoTruncate != nil {
-		config["autoTruncate"] = *vopts.AutoTruncate
+		setConfig("autoTruncate", *vopts.AutoTruncate)
 	}
 
 	body := map[string]interface{}{
 		"content": map[string]interface{}{
 			"parts": []map[string]interface{}{{"text": value}},
 		},
-	}
-	if len(config) > 0 {
-		body["embedContentConfig"] = config
+		"embedContentConfig": config,
 	}
 
 	path := fmt.Sprintf("/models/%s:embedContent", m.modelID)
 
 	var response vertexEmbedContentResponse
-	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    path,
-		Body:    body,
-		Headers: embedOptsHeaders(opts),
+	httpResp, err := m.provider.mainClient().DoJSONResponse(ctx, internalhttp.Request{
+		ValidateResponse: vertexValidator(m.Provider(), zVertexEmbedContent),
+		Method:           http.MethodPost,
+		Path:             path,
+		Body:             body,
+		Headers:          embedOptsHeaders(opts),
 	}, &response)
 	if err != nil {
-		return nil, fmt.Errorf("vertex embedding request failed: %w", err)
+		// A ProviderError keeps the HTTP status, body and the extracted
+		// error.message, so embed/embedMany can retry 429/5xx like TS.
+		return nil, vertexEmbeddingError(m.Provider(), err)
 	}
 
+	// TS `usageMetadata?.promptTokenCount == null ? undefined : { tokens }`:
+	// Reported only when the response carried a prompt token count.
 	usage := types.EmbeddingUsage{}
-	if response.UsageMetadata != nil {
-		tokens := float64(response.UsageMetadata.PromptTokenCount)
+	if response.UsageMetadata != nil && response.UsageMetadata.PromptTokenCount != nil {
+		count := *response.UsageMetadata.PromptTokenCount
 		usage = types.EmbeddingUsage{
-			Tokens:      tokens,
-			InputTokens: response.UsageMetadata.PromptTokenCount,
-			TotalTokens: response.UsageMetadata.PromptTokenCount,
+			Tokens:      count,
+			InputTokens: int(count),
+			TotalTokens: int(count),
+			Reported:    true,
 		}
 	}
 
@@ -227,7 +270,7 @@ func (m *EmbeddingModel) doEmbedContent(ctx context.Context, value string, vopts
 		Usage:      usage,
 		Responses: []types.EmbeddingResponse{{
 			Headers: providerutils.ExtractHeaders(httpResp.Headers),
-			Body:    response,
+			Body:    rawEmbeddingBody(httpResp.Body, response),
 		}},
 	}, nil
 }
@@ -239,7 +282,7 @@ type vertexEmbedContentResponse struct {
 		Values []float64 `json:"values"`
 	} `json:"embedding"`
 	UsageMetadata *struct {
-		PromptTokenCount int `json:"promptTokenCount"`
+		PromptTokenCount *float64 `json:"promptTokenCount"`
 	} `json:"usageMetadata,omitempty"`
 }
 
@@ -254,13 +297,19 @@ func vertexEmbeddingOptions(opts *provider.EmbedModelOptions) VertexEmbeddingPro
 	}
 	for _, key := range []string{"googleVertex", "vertex", "google"} {
 		if v, ok := opts.ProviderOptions[key]; ok {
+			if typed, isTyped := typedVertexEmbeddingOptions(v); isTyped {
+				return typed
+			}
+			// Typed-option ruling: other Go-typed objects are read in their
+			// JSON form.
+			v = providerutils.NormalizeOptionsJSON(map[string]interface{}{key: v})[key]
 			if m, ok := v.(map[string]interface{}); ok {
 				result := VertexEmbeddingProviderOptions{}
 				if t, ok := m["taskType"].(string); ok {
 					result.TaskType = t
 				}
 				if t, ok := m["title"].(string); ok {
-					result.Title = t
+					result.Title, result.titleSet = t, true
 				}
 				// CoerceInt (not a bare `.(int)` assertion) because
 				// ProviderOptions commonly arrives via encoding/json.Unmarshal,
@@ -292,8 +341,131 @@ type vertexEmbeddingResponse struct {
 		Embeddings struct {
 			Values     []float64 `json:"values"`
 			Statistics struct {
-				TokenCount int `json:"token_count"`
+				// TS z.number(): usage.tokens is the exact sum.
+				TokenCount float64 `json:"token_count"`
 			} `json:"statistics"`
 		} `json:"embeddings"`
 	} `json:"predictions"`
+}
+
+// rawEmbeddingBody is the response body as sent (TS response.body =
+// rawValue), so fields outside the minimal schema (e.g. metadata) survive; it
+// matches the Google Generative AI embedding model's json.RawMessage body.
+func rawEmbeddingBody(body []byte, typed interface{}) interface{} {
+	if json.Valid(body) {
+		return json.RawMessage(body)
+	}
+	return typed
+}
+
+// validateVertexEmbeddingOptions mirrors TS parseProviderOptions with
+// googleVertexEmbeddingModelOptions: the first of googleVertex, vertex and
+// google that is present is validated, and a wrong type or an unknown task
+// type is an InvalidArgumentError.
+func validateVertexEmbeddingOptions(opts *provider.EmbedModelOptions) error {
+	if opts == nil || opts.ProviderOptions == nil {
+		return nil
+	}
+	for _, key := range []string{"googleVertex", "vertex", "google"} {
+		v, ok := opts.ProviderOptions[key]
+		if !ok || v == nil {
+			// TS parseProviderOptions returns undefined for an absent or
+			// null entry, so the next key is tried.
+			continue
+		}
+		// TS parseProviderOptions: InvalidArgumentError "invalid <key>
+		// provider options" with the schema failure as the cause.
+		bad := func(field, want string) error {
+			return providererrors.NewArgumentError("providerOptions", fmt.Sprintf("invalid %s provider options", key), fmt.Errorf("%s must be %s", field, want))
+		}
+		if typed, isTyped := typedVertexEmbeddingOptions(v); isTyped {
+			if typed.TaskType != "" && !validVertexTaskType(typed.TaskType) {
+				return bad("taskType", "one of SEMANTIC_SIMILARITY, CLASSIFICATION, CLUSTERING, RETRIEVAL_DOCUMENT, RETRIEVAL_QUERY, QUESTION_ANSWERING, FACT_VERIFICATION, CODE_RETRIEVAL_QUERY")
+			}
+			return nil
+		}
+		m, ok := providerutils.NormalizeOptionsJSON(map[string]interface{}{key: v})[key].(map[string]interface{})
+		if !ok {
+			return bad("value", "an object")
+		}
+		// An explicit null is treated as absent, as v0.5.2 did (TS zod
+		// .optional() rejects it; known difference "Bedrock and Anthropic
+		// null option values").
+		if x, set := m["outputDimensionality"]; set && x != nil && !isNumber(x) {
+			return bad("outputDimensionality", "a number")
+		}
+		if x, set := m["taskType"]; set && x != nil {
+			task, isString := x.(string)
+			if !isString || !validVertexTaskType(task) {
+				return bad("taskType", "one of SEMANTIC_SIMILARITY, CLASSIFICATION, CLUSTERING, RETRIEVAL_DOCUMENT, RETRIEVAL_QUERY, QUESTION_ANSWERING, FACT_VERIFICATION, CODE_RETRIEVAL_QUERY")
+			}
+		}
+		if x, set := m["title"]; set && x != nil {
+			if _, isString := x.(string); !isString {
+				return bad("title", "a string")
+			}
+		}
+		if x, set := m["autoTruncate"]; set && x != nil {
+			if _, isBool := x.(bool); !isBool {
+				return bad("autoTruncate", "a boolean")
+			}
+		}
+		return nil
+	}
+	return nil
+}
+
+// typedVertexEmbeddingOptions reads the exported VertexEmbeddingProviderOptions
+// (value or pointer) given as a provider options entry, the Go form of the
+// TS options object.
+func typedVertexEmbeddingOptions(v interface{}) (VertexEmbeddingProviderOptions, bool) {
+	switch t := v.(type) {
+	case VertexEmbeddingProviderOptions:
+		return t, true
+	case *VertexEmbeddingProviderOptions:
+		if t == nil {
+			return VertexEmbeddingProviderOptions{}, true
+		}
+		return *t, true
+	}
+	return VertexEmbeddingProviderOptions{}, false
+}
+
+func validVertexTaskType(task string) bool {
+	switch task {
+	case "SEMANTIC_SIMILARITY", "CLASSIFICATION", "CLUSTERING", "RETRIEVAL_DOCUMENT", "RETRIEVAL_QUERY",
+		"QUESTION_ANSWERING", "FACT_VERIFICATION", "CODE_RETRIEVAL_QUERY":
+		return true
+	}
+	return false
+}
+
+func isNumber(v interface{}) bool {
+	switch v.(type) {
+	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64, json.Number:
+		return true
+	}
+	return false
+}
+
+// vertexEmbeddingError maps a failed predict/embedContent call: an HTTP
+// failure gives the TS googleVertexFailedResponseHandler message (error.message
+// of a Google error body, else the HTTP status text).
+func vertexEmbeddingError(providerName string, err error) error {
+	if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+		return cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
+	}
+	if noResp, ok := internalhttp.NoResponseError(err); ok {
+		return noResp // TS handleFetchError: an abort or timeout is returned unchanged
+	}
+	if providerutils.IsInvalidJSONResponse(err) {
+		return err // TS createJsonResponseHandler failure is an APICallError as is
+	}
+	var statusErr *internalhttp.HTTPStatusError
+	if errors.As(err, &statusErr) {
+		return vertexHTTPError(providerName, statusErr.StatusCode, statusErr.Headers, statusErr.Body, err)
+	}
+	// TS postJsonToApi: the client's error (the "Cannot connect to API"
+	// APICallError, or an abort) unchanged, with no prefix.
+	return err
 }

@@ -50,9 +50,9 @@ func runDeepseekStreamRecursionChild() {
 	for i := 0; i < n; i++ {
 		// No "choices" field: falls through every branch to the final
 		// `return s.Next()` (now `continue`).
-		sb.WriteString(`data: {}` + "\n\n")
+		sb.WriteString(`data: {"choices":[]}` + "\n\n")
 	}
-	sb.WriteString(`data: {"choices":[{"delta":{"content":"hello"},"finish_reason":null}]}` + "\n\n")
+	sb.WriteString(`data: {"choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}]}` + "\n\n")
 	sb.WriteString("data: [DONE]\n\n")
 
 	s := newDeepseekStream(io.NopCloser(strings.NewReader(sb.String())))
@@ -62,6 +62,22 @@ func runDeepseekStreamRecursionChild() {
 	if err != nil {
 		fmt.Println("BF5_CHILD_FAIL: unexpected error:", err)
 		return
+	}
+	if chunk != nil && chunk.Type == provider.ChunkTypeResponseMetadata {
+		// TS isFirstChunk: the first valid chunk yields response-metadata.
+		chunk, err = s.Next()
+		if err != nil {
+			fmt.Println("BF5_CHILD_FAIL: unexpected error:", err)
+			return
+		}
+	}
+	if chunk != nil && chunk.Type == provider.ChunkTypeTextStart {
+		// TS opens the "txt-0" text block before the first delta.
+		chunk, err = s.Next()
+		if err != nil {
+			fmt.Println("BF5_CHILD_FAIL: unexpected error:", err)
+			return
+		}
 	}
 	if chunk == nil || chunk.Type != provider.ChunkTypeText || chunk.Text != "hello" {
 		fmt.Printf("BF5_CHILD_FAIL: unexpected chunk: %+v\n", chunk)

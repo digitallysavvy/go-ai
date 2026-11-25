@@ -158,7 +158,8 @@ func FixJSON(input string) string {
 				lastValidIndex = i
 				pop()
 			} else {
-				lastValidIndex = i
+				// TS fix-json.ts 234 (8ba3a5c254): the array start is not a
+				// valid end on its own, so "[-" repairs to "[]".
 				processValueStart(ch, i, stateInsideArrayAfterValue)
 			}
 

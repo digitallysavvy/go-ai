@@ -83,8 +83,8 @@ func main() {
     // Configure telemetry
     telemetrySettings := &telemetry.Options{
         IsEnabled:     telemetry.Bool(true),
-        RecordInputs:  true,
-        RecordOutputs: true,
+        RecordInputs:  telemetry.Bool(true),
+        RecordOutputs: telemetry.Bool(true),
         FunctionID:    "text-generation",
     }
 
@@ -194,8 +194,8 @@ telemetrySettings := &telemetry.Options{
     IsEnabled: telemetry.Bool(true),
 
     // Control what gets recorded
-    RecordInputs:  true,  // Record prompts and messages
-    RecordOutputs: true,  // Record generated responses
+    RecordInputs:  telemetry.Bool(true),  // Record prompts and messages
+    RecordOutputs: telemetry.Bool(true),  // Record generated responses
 
     // Function identifier for grouping traces
     FunctionID: "chatbot-generation",
@@ -215,8 +215,8 @@ Control sensitive data recording:
 // Disable input/output recording for sensitive data
 telemetrySettings := &telemetry.Options{
     IsEnabled: telemetry.Bool(true),
-    RecordInputs:  false, // Don't log user prompts
-    RecordOutputs: false, // Don't log responses
+    RecordInputs:  telemetry.Bool(false), // Don't log user prompts
+    RecordOutputs: telemetry.Bool(false), // Don't log responses
 }
 // Token usage and latency still tracked
 ```

@@ -76,8 +76,8 @@ func IsToolReference(block types.CustomContentBlock) (toolName string, isToolRef
 		return "", false
 	}
 
-	// Convert to map
-	optsMap, ok := anthropicOpts.(map[string]interface{})
+	// Convert to map (a Go-typed map is read through its JSON form)
+	optsMap, ok := normalizedOptionsMap(anthropicOpts)
 	if !ok {
 		return "", false
 	}

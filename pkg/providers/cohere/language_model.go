@@ -4,10 +4,16 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -33,12 +39,12 @@ func NewLanguageModel(provider *Provider, modelID string) *LanguageModel {
 
 // SpecificationVersion returns the specification version
 func (m *LanguageModel) SpecificationVersion() string {
-	return "v3"
+	return "v4"
 }
 
 // Provider returns the provider name
 func (m *LanguageModel) Provider() string {
-	return "cohere"
+	return "cohere.chat"
 }
 
 // ModelID returns the model ID
@@ -63,12 +69,35 @@ func (m *LanguageModel) SupportsImageInput() bool {
 
 // DoGenerate performs non-streaming text generation
 func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+	// Typed-option ruling: read Go-typed option literals in their JSON form.
+	if opts != nil && opts.ProviderOptions != nil {
+		normalized := *opts
+		normalized.ProviderOptions = providerutils.NormalizeOptionsJSON(opts.ProviderOptions)
+		opts = &normalized
+	}
+	if err := validateChatProviderOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
+	if err := prompt.RejectProviderReferenceFiles(opts.Prompt.Messages); err != nil {
+		return nil, err
+	}
+	// TS cohere prepareTools throws for an unknown tool choice type.
+	if err := prompt.ValidateToolChoiceType(opts.Tools, opts.ToolChoice); err != nil {
+		return nil, err
+	}
 	reqBody, warnings, err := m.buildRequestBodyWithWarnings(opts)
 	if err != nil {
 		return nil, m.handleError(err)
 	}
 	var response cohereV2Response
-	err = m.provider.client.PostJSON(ctx, "/chat", reqBody, &response)
+	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
+		Method:  http.MethodPost,
+		Path:    "/chat",
+		Body:    reqBody,
+		Headers: opts.Headers,
+		// TS createJsonResponseHandler(cohereChatResponseSchema).
+		ValidateResponse: providerutils.ChatResponseValidator(m.Provider(), providerutils.ResponseKindCohere),
+	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
 	}
@@ -76,28 +105,60 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	if err != nil {
 		return nil, err
 	}
+	result.RawRequest = reqBody
 	result.Warnings = append(warnings, result.Warnings...)
+	// TS 73400b299d: response { id: id ?? generation_id, headers } (no
+	// timestamp/model id); v2 returns `id`, generation_id is the v1 field.
+	result.ResponseHeaders = providerutils.ExtractHeaders(httpResp.Headers)
+	// TS response.body is the raw parsed JSON, not the schema-filtered value.
+	if len(httpResp.Body) > 0 {
+		result.RawResponse = providerutils.RawJSONBody(httpResp.Body)
+	}
+	responseID := response.GenerationID
+	if response.ID != nil {
+		responseID = *response.ID
+	}
+	result.ResponseMetadata = &types.ResponseMetadata{ID: responseID, Headers: result.ResponseHeaders}
 	return result, nil
 }
 
 // DoStream performs streaming text generation
 func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+	// Typed-option ruling: read Go-typed option literals in their JSON form.
+	if opts != nil && opts.ProviderOptions != nil {
+		normalized := *opts
+		normalized.ProviderOptions = providerutils.NormalizeOptionsJSON(opts.ProviderOptions)
+		opts = &normalized
+	}
+	if err := validateChatProviderOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
+	if err := prompt.RejectProviderReferenceFiles(opts.Prompt.Messages); err != nil {
+		return nil, err
+	}
+	// TS cohere prepareTools throws for an unknown tool choice type.
+	if err := prompt.ValidateToolChoiceType(opts.Tools, opts.ToolChoice); err != nil {
+		return nil, err
+	}
 	reqBody, warnings, err := m.buildRequestBodyWithWarnings(opts)
 	if err != nil {
 		return nil, m.handleError(err)
 	}
 	reqBody["stream"] = true
 	httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{
-		Method: http.MethodPost,
-		Path:   "/chat",
-		Body:   reqBody,
+		Method:  http.MethodPost,
+		Path:    "/chat",
+		Body:    reqBody,
+		Headers: opts.Headers,
 	})
 	if err != nil {
 		return nil, m.handleError(err)
 	}
 	inner := newCohereV2Stream(httpResp.Body)
+	inner.generateID = m.provider.config.GenerateID
 	inner.requestBody = reqBody
-	return streaming.NewWarningsStream(inner, warnings), nil
+	inner.includeRawChunks = opts.IncludeRawChunks
+	return providerutils.WithResponseMetadata(streaming.NewWarningsStream(inner, warnings), httpResp.Header, m.ModelID()), nil
 }
 
 // buildRequestBody builds the Cohere v2 chat request body without warnings.
@@ -112,6 +173,10 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions) (map[st
 // (frequency_penalty, presence_penalty, p, k, seed, stop_sequences),
 // response_format (json mode), tools/tool_choice, and thinking.
 func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOptions) (map[string]interface{}, []types.Warning, error) {
+	// TS parseProviderOptions: an invalid provider option fails the call.
+	if err := validateChatProviderOptions(opts.ProviderOptions); err != nil {
+		return nil, nil, err
+	}
 	body := map[string]interface{}{"model": m.modelID}
 	var messages []map[string]interface{}
 	var documents []map[string]interface{}
@@ -161,7 +226,8 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	if opts.Seed != nil {
 		body["seed"] = *opts.Seed
 	}
-	if len(opts.StopSequences) > 0 {
+	// TS stop_sequences: stopSequences -- an empty array is sent as is.
+	if opts.StopSequences != nil {
 		body["stop_sequences"] = opts.StopSequences
 	}
 
@@ -225,7 +291,11 @@ func (m *LanguageModel) toCohereMessages(src []types.Message) ([]map[string]inte
 					return nil, nil, err
 				}
 				img := map[string]interface{}{"url": url}
-				if detail := cohereImageDetail(normalized.ProviderOptions); detail != "" {
+				detail, err := cohereImageDetail(normalized.ProviderOptions)
+				if err != nil {
+					return nil, nil, err
+				}
+				if detail != "" {
 					img["detail"] = detail
 				}
 				content = append(content, map[string]interface{}{"type": "image_url", "image_url": img})
@@ -235,13 +305,19 @@ func (m *LanguageModel) toCohereMessages(src []types.Message) ([]map[string]inte
 				if err != nil {
 					return nil, nil, err
 				}
-				if strings.HasPrefix(normalized.FileData.MediaType, "image") {
+				// TS getTopLevelMediaType(mediaType) === 'image': the text
+				// before the first slash, not a prefix match.
+				if cohereTopLevelMediaType(normalized.FileData.MediaType) == "image" {
 					url, err := fileDataToImageURL(normalized)
 					if err != nil {
 						return nil, nil, err
 					}
 					img := map[string]interface{}{"url": url}
-					if detail := cohereImageDetail(normalized.ProviderOptions); detail != "" {
+					detail, err := cohereImageDetail(normalized.ProviderOptions)
+					if err != nil {
+						return nil, nil, err
+					}
+					if detail != "" {
 						img["detail"] = detail
 					}
 					content = append(content, map[string]interface{}{"type": "image_url", "image_url": img})
@@ -278,6 +354,15 @@ func (m *LanguageModel) toCohereMessages(src []types.Message) ([]map[string]inte
 	return out, documents, nil
 }
 
+// cohereTopLevelMediaType mirrors TS getTopLevelMediaType: the media type up
+// to its first slash (the whole value when there is none).
+func cohereTopLevelMediaType(mediaType string) string {
+	if idx := strings.Index(mediaType, "/"); idx >= 0 {
+		return mediaType[:idx]
+	}
+	return mediaType
+}
+
 func fileDataToImageURL(file types.FileContent) (string, error) {
 	switch file.FileData.Type {
 	case types.FileDataTypeURL:
@@ -287,40 +372,68 @@ func fileDataToImageURL(file types.FileContent) (string, error) {
 		if media == "" {
 			media = "image/jpeg"
 		}
-		return "data:" + media + ";base64," + base64.StdEncoding.EncodeToString(file.FileData.Data), nil
+		// TS buildImageUrl: resolveFullMediaType sniffs a bare or wildcard
+		// type (image, image/*) from the inline bytes.
+		// TS convertToBase64(part.data.data): a base64 string payload
+		// (DataString) is embedded as is; detection decodes only its sniffed
+		// prefix.
+		payload, sniff, sniffString := base64.StdEncoding.EncodeToString(file.FileData.Data), file.FileData.Data, ""
+		if len(file.FileData.Data) == 0 && file.FileData.DataString != "" {
+			payload = file.FileData.DataString
+			sniffString = file.FileData.DataString
+		}
+		media, err := cohereResolveFullMediaType(media, sniff, sniffString)
+		if err != nil {
+			return "", err
+		}
+		return "data:" + media + ";base64," + payload, nil
+	case types.FileDataTypeReference:
+		return "", &providererrors.UnsupportedFunctionalityError{Functionality: "image file parts with provider references"}
 	default:
-		return "", providererrors.NewValidationError("messages[].content[].file", "unsupported image file data type for cohere", nil)
+		return "", &providererrors.UnsupportedFunctionalityError{Functionality: "image file parts with text data"}
 	}
 }
+
+// cohereImagePartOptionsSchema mirrors cohereImagePartProviderOptions.
+var cohereImagePartOptionsSchema = providerutils.OptionSchema{"detail": providerutils.OptEnum("auto", "low", "high")}
 
 func cohereDocumentText(file types.FileContent) (string, error) {
 	switch file.FileData.Type {
 	case types.FileDataTypeText:
 		return file.FileData.Text, nil
 	case types.FileDataTypeData:
-		return string(file.FileData.Data), nil
+		// TS 7a93864932: a string payload is base64 (convertBase64ToUint8Array,
+		// which throws on invalid input), then TextDecoder-decoded like bytes.
+		if file.FileData.DataString != "" {
+			data, err := fileutil.ConvertBase64ToBytes(file.FileData.DataString)
+			if err != nil {
+				return "", err
+			}
+			return prompt.DecodeUTF8Text(data), nil
+		}
+		return prompt.DecodeUTF8Text(file.FileData.Data), nil
 	case types.FileDataTypeURL:
-		return "", providererrors.NewValidationError("messages[].content[].file", "unsupported file URL data for cohere", nil)
+		return "", &providererrors.UnsupportedFunctionalityError{
+			Functionality: "File URL data",
+			Message:       "URLs should be downloaded by the AI SDK and not reach this point. This indicates a configuration issue.",
+		}
 	case types.FileDataTypeReference:
-		return "", providererrors.NewValidationError("messages[].content[].file", "unsupported file reference data for cohere", nil)
+		return "", &providererrors.UnsupportedFunctionalityError{Functionality: "file parts with provider references"}
 	default:
 		return "", providererrors.NewValidationError("messages[].content[].file", "unsupported file data type for cohere", nil)
 	}
 }
 
-func cohereImageDetail(providerOptions map[string]interface{}) string {
-	raw, ok := providerOptions["cohere"]
-	if !ok {
-		return ""
+// cohereImageDetail parses providerOptions.cohere on an image part (TS
+// parseProviderOptions with cohereImagePartProviderOptions): an invalid
+// detail is an InvalidArgumentError.
+func cohereImageDetail(providerOptions map[string]interface{}) (string, error) {
+	parsed, err := providerutils.ParseProviderOptions("cohere", providerOptions, cohereImagePartOptionsSchema)
+	if err != nil {
+		return "", err
 	}
-	asMap, ok := raw.(map[string]interface{})
-	if !ok {
-		return ""
-	}
-	if d, ok := asMap["detail"].(string); ok {
-		return d
-	}
-	return ""
+	detail, _ := parsed["detail"].(string)
+	return detail, nil
 }
 
 func (m *LanguageModel) resolveThinking(opts *provider.GenerateOptions) map[string]interface{} {
@@ -358,42 +471,77 @@ func (m *LanguageModel) resolveThinking(opts *provider.GenerateOptions) map[stri
 		return map[string]interface{}{"type": "enabled", "token_budget": 19661}
 	case types.ReasoningXHigh:
 		return map[string]interface{}{"type": "enabled", "token_budget": 29491}
+	case types.ReasoningMax:
+		return map[string]interface{}{"type": "enabled", "token_budget": 31130}
 	default:
 		return nil
 	}
 }
 
 // convertCohereUsage decodes a raw Cohere v2 usage object into SDK usage
-// format, matching TS convertCohereUsage (cohere/src/convert-cohere-usage.ts):
-// Raw preserves the complete usage object -- tokens, billed_units and
-// cached_tokens -- rather than a hand-built subset (0599400).
+// format, matching TS convertCohereUsage (cohere/src/convert-cohere-usage.ts,
+// 3aad18a417): only `tokens` gives token counts (billed_units is kept in Raw
+// only); input and output stay unset when tokens or its fields are missing
+// or null; noCache subtracts cached_tokens only when both are present. Raw
+// preserves the complete usage object.
 func convertCohereUsage(raw json.RawMessage) types.Usage {
 	if len(raw) == 0 || string(raw) == "null" {
 		return types.Usage{}
 	}
 
 	var usage struct {
-		Tokens struct {
-			InputTokens  int `json:"input_tokens"`
-			OutputTokens int `json:"output_tokens"`
+		// TS z.number().nullish(): a fractional count parses (Go keeps the
+		// integer part).
+		Tokens *struct {
+			InputTokens  *float64 `json:"input_tokens"`
+			OutputTokens *float64 `json:"output_tokens"`
 		} `json:"tokens"`
+		CachedTokens *float64 `json:"cached_tokens"`
 	}
-	if err := json.Unmarshal(raw, &usage); err != nil {
+	if err := jsonexact.Unmarshal(raw, &usage); err != nil {
 		return types.Usage{}
 	}
 
 	var rawMap map[string]interface{}
-	_ = json.Unmarshal(raw, &rawMap)
+	_ = jsonexact.Unmarshal(raw, &rawMap)
 
-	inputTokens := int64(usage.Tokens.InputTokens)
-	outputTokens := int64(usage.Tokens.OutputTokens)
-	totalTokens := inputTokens + outputTokens
+	var inputTokens, outputTokens, totalTokens, cacheRead, noCache *int64
+	if usage.Tokens != nil {
+		if usage.Tokens.InputTokens != nil {
+			v := int64(*usage.Tokens.InputTokens)
+			inputTokens = &v
+		}
+		if usage.Tokens.OutputTokens != nil {
+			v := int64(*usage.Tokens.OutputTokens)
+			outputTokens = &v
+		}
+	}
+	if usage.CachedTokens != nil {
+		v := int64(*usage.CachedTokens)
+		cacheRead = &v
+	}
+	noCache = inputTokens
+	if inputTokens != nil && cacheRead != nil {
+		v := *inputTokens - *cacheRead
+		noCache = &v
+	}
+	// TS core addTokenCounts: unset only when both sides are unset.
+	if inputTokens != nil || outputTokens != nil {
+		var v int64
+		if inputTokens != nil {
+			v += *inputTokens
+		}
+		if outputTokens != nil {
+			v += *outputTokens
+		}
+		totalTokens = &v
+	}
 	return types.Usage{
-		InputTokens:   &inputTokens,
-		OutputTokens:  &outputTokens,
-		TotalTokens:   &totalTokens,
-		InputDetails:  &types.InputTokenDetails{NoCacheTokens: &inputTokens},
-		OutputDetails: &types.OutputTokenDetails{TextTokens: &outputTokens},
+		InputTokens:   inputTokens,
+		OutputTokens:  outputTokens,
+		TotalTokens:   totalTokens,
+		InputDetails:  &types.InputTokenDetails{NoCacheTokens: noCache, CacheReadTokens: cacheRead},
+		OutputDetails: &types.OutputTokenDetails{TextTokens: outputTokens},
 		Raw:           rawMap,
 	}
 }
@@ -405,10 +553,16 @@ func (m *LanguageModel) convertV2Response(resp cohereV2Response) (*types.Generat
 		RawResponse:     resp,
 	}
 	result.Usage = convertCohereUsage(resp.Usage)
+	// TS pushes each non-empty text and thinking item as its own part, in
+	// wire order; the text parts go into Content too so core keeps that
+	// order (Text stays the concatenation).
 	for _, item := range resp.Message.Content {
 		switch item.Type {
 		case "text":
-			result.Text += item.Text
+			if item.Text != "" {
+				result.Text += item.Text
+				result.Content = append(result.Content, types.TextContent{Text: item.Text})
+			}
 		case "thinking":
 			if item.Thinking != "" {
 				result.Content = append(result.Content, types.ReasoningContent{Text: item.Thinking})
@@ -416,55 +570,68 @@ func (m *LanguageModel) convertV2Response(resp cohereV2Response) (*types.Generat
 		}
 	}
 
-	// citations -> source content parts, matching TS doGenerate's citation
-	// loop (cohere-chat-language-model.ts:196-214). Only doGenerate emits
-	// these; Cohere's streaming citation-start/citation-end events carry no
-	// accumulable citation payload in the TS SDK's limited chunk schema, so
-	// streaming intentionally ignores them (see cohereV2Stream.Next default
-	// case).
+	// citations -> source content parts (TS doGenerate citation loop,
+	// mapCohereCitationToSource): tool-only citations have no document and
+	// are skipped.
 	for _, citation := range resp.Message.Citations {
-		title := "Document"
-		if len(citation.Sources) > 0 && citation.Sources[0].Document != nil && citation.Sources[0].Document.Title != "" {
-			title = citation.Sources[0].Document.Title
+		if source := mapCohereCitationToSourceID(citation, m.provider.config.GenerateID); source != nil {
+			result.Content = append(result.Content, *source)
 		}
-		cohereMeta := map[string]interface{}{
-			"start":   citation.Start,
-			"end":     citation.End,
-			"text":    citation.Text,
-			"sources": citation.Sources,
-		}
-		if citation.Type != "" {
-			cohereMeta["citationType"] = citation.Type
-		}
-		metaJSON, err := json.Marshal(map[string]interface{}{"cohere": cohereMeta})
-		if err != nil {
-			return nil, err
-		}
-		result.Content = append(result.Content, types.SourceContent{
-			SourceType:       "document",
-			ID:               streaming.GenerateID(),
-			MediaType:        "text/plain",
-			Title:            title,
-			ProviderMetadata: metaJSON,
-		})
 	}
 
 	for _, tc := range resp.Message.ToolCalls {
-		args, err := parseCohereToolArguments(tc.Function.Arguments)
-		if err != nil {
-			return nil, err
+		// TS: `input: toolCall.function.arguments.replace(/^null$/, '{}')` --
+		// the text is not parsed here (core parses it, and treats malformed
+		// input as an invalid tool call), and its formatting is kept.
+		rawInput := tc.Function.Arguments
+		if rawInput == "null" {
+			rawInput = "{}"
+		}
+		var args map[string]interface{}
+		if strings.TrimSpace(rawInput) != "" {
+			_ = jsonexact.Unmarshal([]byte(rawInput), &args) //nolint:errcheck // malformed input stays in RawArguments
+		}
+		if args == nil {
+			args = map[string]interface{}{}
 		}
 		result.ToolCalls = append(result.ToolCalls, types.ToolCall{
-			ID:        tc.ID,
-			ToolName:  tc.Function.Name,
-			Arguments: args,
+			ID:           tc.ID,
+			ToolName:     tc.Function.Name,
+			Arguments:    args,
+			RawArguments: rawInput,
 		})
 	}
 	return result, nil
 }
 
 func (m *LanguageModel) handleError(err error) error {
-	return providererrors.NewProviderError("cohere", 0, "", err.Error(), err)
+	if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+		return cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
+	}
+	if noResp, ok := internalhttp.NoResponseError(err); ok {
+		return noResp // TS handleFetchError: an abort or timeout is returned unchanged
+	}
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
+	if providerutils.IsInvalidJSONResponse(err) {
+		return err // TS createJsonResponseHandler failure
+	}
+	return providererrors.NewSchemaProviderError("cohere", err, cohereErrorSchema)
+}
+
+// cohereErrorSchema is TS cohereFailedResponseHandler (cohere-error.ts):
+// z.object({message: z.string()}), errorToMessage data.message.
+func cohereErrorSchema(body interface{}) (string, interface{}, bool) {
+	obj, ok := body.(map[string]interface{})
+	if !ok {
+		return "", nil, false
+	}
+	msg, ok := obj["message"].(string)
+	if !ok {
+		return "", nil, false
+	}
+	return msg, map[string]interface{}{"message": msg}, true
 }
 
 func mapCohereV2FinishReason(reason string) types.FinishReason {
@@ -483,7 +650,8 @@ func mapCohereV2FinishReason(reason string) types.FinishReason {
 }
 
 type cohereV2Response struct {
-	GenerationID string `json:"generation_id"`
+	ID           *string `json:"id"`
+	GenerationID string  `json:"generation_id"`
 	Message      struct {
 		Role    string `json:"role"`
 		Content []struct {
@@ -499,33 +667,12 @@ type cohereV2Response struct {
 				Arguments string `json:"arguments"`
 			} `json:"function"`
 		} `json:"tool_calls"`
-		Citations []cohereCitation `json:"citations"`
+		// Kept raw: the loose document keys and tool_output survive into
+		// the source metadata (TS cohereCitationSchema).
+		Citations []json.RawMessage `json:"citations"`
 	} `json:"message"`
 	FinishReason string          `json:"finish_reason"`
 	Usage        json.RawMessage `json:"usage"`
-}
-
-// cohereCitation mirrors the Cohere v2 chat citation shape, matching TS
-// cohere-chat-language-model.ts's inline citation type used in the
-// `cohereChatResponseSchema.message.citations` field.
-type cohereCitation struct {
-	Start   int                    `json:"start"`
-	End     int                    `json:"end"`
-	Text    string                 `json:"text"`
-	Sources []cohereCitationSource `json:"sources"`
-	Type    string                 `json:"type,omitempty"`
-}
-
-type cohereCitationSource struct {
-	Type     string             `json:"type,omitempty"`
-	ID       string             `json:"id,omitempty"`
-	Document *cohereCitationDoc `json:"document,omitempty"`
-}
-
-type cohereCitationDoc struct {
-	ID    string `json:"id,omitempty"`
-	Text  string `json:"text"`
-	Title string `json:"title"`
 }
 
 type cohereV2Stream struct {
@@ -533,19 +680,57 @@ type cohereV2Stream struct {
 	parser            *streaming.SSEParser
 	err               error
 	flushQueue        []*provider.StreamChunk
-	contentType       map[int]string // index → "text" | "thinking"
-	pendingTools      map[string]*cohereV2PendingTool
+	pendingTool       *cohereV2PendingTool
 	isActiveReasoning bool
+
+	// includeRawChunks emits a raw chunk before each event is processed
+	// (TS: options.includeRawChunks); pendingEvent is the event whose raw
+	// chunk was just returned.
+	includeRawChunks bool
+	pendingEvent     *streaming.SSEEvent
+
+	// The finish part is emitted when the stream ends (TS flush(): reason
+	// "other" until a message-end supplies one).
+	finishRaw     string
+	finishSeen    bool
+	finishUsage   json.RawMessage
+	finishQueued  bool
+	finishErrored bool
 
 	// requestBody is the raw request body this stream was opened with,
 	// exposed via RequestBody() (provider.StreamRequestBody, hand-off:
 	// "stream request body field").
 	requestBody interface{}
+
+	// generateID is Config.GenerateID (TS config.generateId) for citation
+	// source ids.
+	generateID func() string
 }
 
 // RequestBody implements provider.StreamRequestBody, exposing the raw
 // request body that was sent to open this stream.
 func (s *cohereV2Stream) RequestBody() interface{} { return s.requestBody }
+
+// queueFinishAtEnd queues the terminal finish part once.
+func (s *cohereV2Stream) queueFinishAtEnd() bool {
+	if s.finishQueued {
+		return false
+	}
+	s.finishQueued = true
+	finish := &provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonInterrupted}
+	if s.finishSeen {
+		finish.FinishReason = mapCohereV2FinishReason(s.finishRaw)
+		finish.RawFinishReason = s.finishRaw
+	} else if s.finishErrored {
+		finish.FinishReason = types.FinishReasonError
+	}
+	if s.finishUsage != nil {
+		u := convertCohereUsage(s.finishUsage)
+		finish.Usage = &u
+	}
+	s.flushQueue = append(s.flushQueue, finish)
+	return true
+}
 
 type cohereV2PendingTool struct {
 	id        string
@@ -554,38 +739,10 @@ type cohereV2PendingTool struct {
 	finished  bool
 }
 
-func parseCohereToolArguments(raw string) (map[string]interface{}, error) {
-	if raw == "" || raw == "null" {
-		return map[string]interface{}{}, nil
-	}
-	var parsed interface{}
-	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
-		return nil, providererrors.NewValidationError(
-			"tool_calls[].function.arguments",
-			fmt.Sprintf("invalid JSON arguments in Cohere tool call: %v", err),
-			err,
-		)
-	}
-	if parsed == nil {
-		return map[string]interface{}{}, nil
-	}
-	obj, ok := parsed.(map[string]interface{})
-	if !ok {
-		return nil, providererrors.NewValidationError(
-			"tool_calls[].function.arguments",
-			"Cohere tool call arguments must decode to a JSON object",
-			nil,
-		)
-	}
-	return obj, nil
-}
-
 func newCohereV2Stream(reader io.ReadCloser) *cohereV2Stream {
 	return &cohereV2Stream{
-		reader:       reader,
-		parser:       streaming.NewSSEParser(reader),
-		contentType:  make(map[int]string),
-		pendingTools: make(map[string]*cohereV2PendingTool),
+		reader: reader,
+		parser: streaming.NewSSEParser(reader),
 	}
 }
 
@@ -607,29 +764,74 @@ func (s *cohereV2Stream) Next() (*provider.StreamChunk, error) {
 		if s.err != nil {
 			return nil, s.err
 		}
-		event, err := s.parser.Next()
-		if err != nil {
-			s.err = err
-			return nil, err
-		}
-		if streaming.IsStreamDone(event) {
-			s.err = io.EOF
-			return nil, io.EOF
+		var event *streaming.SSEEvent
+		if s.pendingEvent != nil {
+			event, s.pendingEvent = s.pendingEvent, nil
+		} else {
+			var err error
+			event, err = s.parser.Next()
+			if err != nil {
+				if err == io.EOF && s.queueFinishAtEnd() {
+					continue
+				}
+				s.err = err
+				return nil, err
+			}
+			if streaming.IsStreamDone(event) {
+				// TS parseJsonEventStream drops the [DONE] frame and keeps
+				// reading; the end-of-body branch above does the end work.
+				continue
+			}
+			if s.includeRawChunks {
+				s.pendingEvent = event
+				raw := streaming.RawChunkValue(event.Data)
+				return &provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: raw}, nil
+			}
 		}
 
 		// Cohere v2 SSE: each event has a type field plus a delta field.
+		// TS index is z.number() and the part ids are String(value.index),
+		// so a fractional index parses and keeps its JS text. The schema is
+		// checked first: only the content members declare index, so an
+		// index of another type on any other member is stripped, not an
+		// error.
+		if err := validateCohereChunk([]byte(event.Data)); err != nil {
+			// TS: a chunk that fails parsing becomes an error part, and
+			// finishReason is last-writer-wins: a bad chunk after
+			// message-end replaces the finish reason with "error".
+			s.finishSeen = false
+			s.finishErrored = true
+			msg, perr := providerutils.ChunkParseFailure(event.Data, err)
+			return &provider.StreamChunk{
+				Type: provider.ChunkTypeError,
+				Text: msg,
+				Err:  perr,
+			}, nil
+		}
 		var ev struct {
 			Type  string          `json:"type"`
-			Index int             `json:"index"`
 			Delta json.RawMessage `json:"delta"`
 		}
-		if err := json.Unmarshal([]byte(event.Data), &ev); err != nil {
-			continue
+		_ = jsonexact.Unmarshal([]byte(event.Data), &ev) //nolint:errcheck // validated above
+		var indexed struct {
+			Index float64 `json:"index"`
 		}
+		// A number on every member that reads it (validated above).
+		_ = jsonexact.Unmarshal([]byte(event.Data), &indexed) //nolint:errcheck // see above
+		index := indexed.Index
 
 		switch ev.Type {
 		case "message-start":
-			continue
+			var start struct {
+				ID *string `json:"id"`
+			}
+			// TS: response-metadata { id: value.id ?? undefined } on every
+			// message-start, with or without an id.
+			meta := &provider.ResponseMetadata{}
+			if jsonexact.Unmarshal([]byte(event.Data), &start) == nil && start.ID != nil {
+				meta.ID = *start.ID
+			}
+			return &provider.StreamChunk{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: meta}, nil
 
 		case "content-start":
 			var delta struct {
@@ -639,63 +841,59 @@ func (s *cohereV2Stream) Next() (*provider.StreamChunk, error) {
 					} `json:"content"`
 				} `json:"message"`
 			}
-			if err := json.Unmarshal(ev.Delta, &delta); err == nil {
-				contentType := delta.Message.Content.Type
-				s.contentType[ev.Index] = contentType
-				if contentType == "thinking" {
-					s.isActiveReasoning = true
-					return &provider.StreamChunk{
-						Type: provider.ChunkTypeReasoningStart,
-						ID:   fmt.Sprintf("reasoning-%d", ev.Index),
-					}, nil
-				}
+			if err := jsonexact.Unmarshal(ev.Delta, &delta); err != nil {
+				continue
 			}
-			continue
+			// TS: ids are String(value.index) for text and reasoning blocks.
+			if delta.Message.Content.Type == "thinking" {
+				s.isActiveReasoning = true
+				return &provider.StreamChunk{
+					Type: provider.ChunkTypeReasoningStart,
+					ID:   providerutils.JSNumberString(index),
+				}, nil
+			}
+			return &provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: providerutils.JSNumberString(index)}, nil
 
 		case "content-delta":
-			ctype := s.contentType[ev.Index]
-			if ctype == "thinking" {
-				var delta struct {
-					Message struct {
-						Content struct {
-							Thinking string `json:"thinking"`
-						} `json:"content"`
-					} `json:"message"`
-				}
-				if err := json.Unmarshal(ev.Delta, &delta); err == nil && delta.Message.Content.Thinking != "" {
-					return &provider.StreamChunk{
-						Type:      provider.ChunkTypeReasoning,
-						Reasoning: delta.Message.Content.Thinking,
-						ID:        fmt.Sprintf("reasoning-%d", ev.Index),
-					}, nil
-				}
-			} else {
-				var delta struct {
-					Message struct {
-						Content struct {
-							Text string `json:"text"`
-						} `json:"content"`
-					} `json:"message"`
-				}
-				if err := json.Unmarshal(ev.Delta, &delta); err == nil && delta.Message.Content.Text != "" {
-					return &provider.StreamChunk{
-						Type: provider.ChunkTypeText,
-						Text: delta.Message.Content.Text,
-					}, nil
-				}
+			// TS decides by key (`'thinking' in content`), not by the type the
+			// block was opened with.
+			var delta struct {
+				Message struct {
+					Content map[string]json.RawMessage `json:"content"`
+				} `json:"message"`
+			}
+			if err := jsonexact.Unmarshal(ev.Delta, &delta); err != nil {
+				continue
+			}
+			// The content is z.union([{text}, {thinking}]): the first member
+			// that parses wins and strips the other key, so a string text
+			// makes a text-delta even next to a thinking key. TS emits the
+			// text-delta even when the delta is empty.
+			var text string
+			if raw, ok := delta.Message.Content["text"]; ok && json.Unmarshal(raw, &text) == nil && string(raw) != "null" {
+				return &provider.StreamChunk{Type: provider.ChunkTypeText, ID: providerutils.JSNumberString(index), Text: text}, nil
+			}
+			var thinking string
+			if raw, ok := delta.Message.Content["thinking"]; ok && json.Unmarshal(raw, &thinking) == nil && string(raw) != "null" {
+				return &provider.StreamChunk{
+					Type:      provider.ChunkTypeReasoning,
+					Reasoning: thinking,
+					ID:        providerutils.JSNumberString(index),
+				}, nil
 			}
 			continue
 
 		case "content-end":
-			ctype := s.contentType[ev.Index]
-			if ctype == "thinking" {
+			// TS closes the reasoning block when one is active (flag), not
+			// by looking the index up.
+			if s.isActiveReasoning {
 				s.isActiveReasoning = false
 				return &provider.StreamChunk{
 					Type: provider.ChunkTypeReasoningEnd,
-					ID:   fmt.Sprintf("reasoning-%d", ev.Index),
+					ID:   providerutils.JSNumberString(index),
 				}, nil
 			}
-			continue
+			return &provider.StreamChunk{Type: provider.ChunkTypeTextEnd, ID: providerutils.JSNumberString(index)}, nil
 
 		case "tool-call-start":
 			var delta struct {
@@ -709,12 +907,19 @@ func (s *cohereV2Stream) Next() (*provider.StreamChunk, error) {
 					} `json:"tool_calls"`
 				} `json:"message"`
 			}
-			if err := json.Unmarshal(ev.Delta, &delta); err == nil {
+			if err := jsonexact.Unmarshal(ev.Delta, &delta); err == nil {
 				id := delta.Message.ToolCalls.ID
-				s.pendingTools[id] = &cohereV2PendingTool{
+				s.pendingTool = &cohereV2PendingTool{
 					id:        id,
 					name:      delta.Message.ToolCalls.Function.Name,
 					arguments: delta.Message.ToolCalls.Function.Arguments,
+				}
+				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+					Type:     provider.ChunkTypeToolInputStart,
+					ToolCall: &types.ToolCall{ID: id, ToolName: delta.Message.ToolCalls.Function.Name},
+				})
+				if initial := delta.Message.ToolCalls.Function.Arguments; initial != "" {
+					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: id, Text: initial})
 				}
 			}
 			continue
@@ -729,36 +934,53 @@ func (s *cohereV2Stream) Next() (*provider.StreamChunk, error) {
 					} `json:"tool_calls"`
 				} `json:"message"`
 			}
-			if err := json.Unmarshal(ev.Delta, &delta); err == nil {
-				// Cohere v2 supports only one pending tool call at a time; append to it.
-				for _, tc := range s.pendingTools {
-					if !tc.finished {
-						tc.arguments += delta.Message.ToolCalls.Function.Arguments
-						break
-					}
+			if err := jsonexact.Unmarshal(ev.Delta, &delta); err == nil {
+				// TS keeps a single pendingToolCall (the latest start).
+				if tc := s.pendingTool; tc != nil && !tc.finished {
+					tc.arguments += delta.Message.ToolCalls.Function.Arguments
+					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+						Type: provider.ChunkTypeToolInputDelta, ID: tc.id, Text: delta.Message.ToolCalls.Function.Arguments,
+					})
 				}
 			}
 			continue
 
 		case "tool-call-end":
-			for id, tc := range s.pendingTools {
-				if !tc.finished {
-					tc.finished = true
-					args, err := parseCohereToolArguments(tc.arguments)
-					if err != nil {
-						// Streaming parity: keep the stream alive on malformed incremental
-						// tool JSON and emit an empty-args tool call.
+			if tc := s.pendingTool; tc != nil && !tc.finished {
+				tc.finished = true
+				s.pendingTool = nil
+				text := providerutils.JSTrim(tc.arguments) // TS arguments?.trim()
+				if text == "" {
+					text = "{}"
+				}
+				// TS: JSON.stringify(await parseJSON({text})) -- tool-input-end
+				// is emitted first, then an unparsable input errors the stream.
+				s.flushQueue = append(s.flushQueue,
+					&provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ID: tc.id, ToolCall: &types.ToolCall{ID: tc.id, ToolName: tc.name}})
+				var parsed interface{}
+				if err := securejson.Unmarshal([]byte(text), &parsed); err != nil { // TS parseJSON (secureJsonParse)
+					// One JSONParseError whose cause is the SyntaxError (securejson
+					// already returns a JSONParseError for a prototype key).
+					var parseErr *providererrors.JSONParseError
+					if errors.As(err, &parseErr) {
+						err = parseErr.Cause
+					}
+					s.err = providererrors.NewJSONParseError(text, err)
+				} else {
+					args, _ := parsed.(map[string]interface{})
+					if args == nil {
 						args = map[string]interface{}{}
 					}
-					delete(s.pendingTools, id)
-					return &provider.StreamChunk{
-						Type: provider.ChunkTypeToolCall,
-						ToolCall: &types.ToolCall{
-							ID:        tc.id,
-							ToolName:  tc.name,
-							Arguments: args,
-						},
-					}, nil
+					s.flushQueue = append(s.flushQueue,
+						&provider.StreamChunk{
+							Type: provider.ChunkTypeToolCall,
+							ToolCall: &types.ToolCall{
+								ID:           tc.id,
+								ToolName:     tc.name,
+								Arguments:    args,
+								RawArguments: cohereToolInputText(tc.arguments, args),
+							},
+						})
 				}
 			}
 			continue
@@ -768,22 +990,89 @@ func (s *cohereV2Stream) Next() (*provider.StreamChunk, error) {
 				FinishReason string          `json:"finish_reason"`
 				Usage        json.RawMessage `json:"usage"`
 			}
-			if err := json.Unmarshal(ev.Delta, &delta); err == nil {
-				usage := convertCohereUsage(delta.Usage)
-				return &provider.StreamChunk{
-					Type:            provider.ChunkTypeFinish,
-					FinishReason:    mapCohereV2FinishReason(delta.FinishReason),
-					RawFinishReason: delta.FinishReason,
-					Usage:           &usage,
-				}, nil
+			if err := jsonexact.Unmarshal(ev.Delta, &delta); err == nil {
+				s.finishSeen = true
+				s.finishRaw = delta.FinishReason
+				s.finishUsage = delta.Usage
 			}
-			s.err = io.EOF
-			return nil, io.EOF
+			continue
+
+		case "citation-start":
+			// TS 033a980fee: delta.message.citations is one citation or an
+			// array (validated above); each citation with a document becomes
+			// a source part, tool-only citations are skipped.
+			var delta struct {
+				Message *struct {
+					Citations json.RawMessage `json:"citations"`
+				} `json:"message"`
+			}
+			if jsonexact.Unmarshal(ev.Delta, &delta) != nil || delta.Message == nil {
+				continue
+			}
+			raw := delta.Message.Citations
+			if len(raw) == 0 || string(raw) == "null" {
+				continue
+			}
+			var list []json.RawMessage
+			if json.Unmarshal(raw, &list) != nil {
+				list = []json.RawMessage{raw}
+			}
+			for _, c := range list {
+				if source := mapCohereCitationToSourceID(c, s.generateID); source != nil {
+					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+						Type:          provider.ChunkTypeSource,
+						SourceContent: source,
+					})
+				}
+			}
+			continue
 
 		default:
-			// citation-start, citation-end, tool-plan-delta, etc. — ignore
+			// citation-end, tool-plan-delta, etc. — ignore
 			continue
 		}
 
 	}
+}
+
+// cohereToolInputText is TS JSON.stringify((await parseJSON(arguments?.trim()
+// || '{}')) ?? {}): the arguments text compacted with its wire key order; args (sorted)
+// stands in when the text is not valid JSON.
+func cohereToolInputText(raw string, args map[string]interface{}) string {
+	text := providerutils.JSTrim(raw)
+	if text == "" {
+		text = "{}"
+	}
+	if json.Valid([]byte(text)) {
+		// TS 27c44878c2: JSON.stringify(parsed ?? {}): a `null` argument
+		// text becomes "{}" (other values keep their text).
+		if compact := providerutils.CompactJSON(json.RawMessage(text)); compact != "null" {
+			return compact
+		}
+		return "{}"
+	}
+	b, _ := jsonstr.Marshal(args)
+	return string(b)
+}
+
+// cohereResolveFullMediaType is prompt.ResolveFullMediaType for a part's inline payload: bytes, or
+// a base64 string of which TS detectMediaType decodes only the sniffed prefix
+// (decodePrefix), so a bad tail is still detected and a bad prefix is the
+// decode error (atob throws).
+func cohereResolveFullMediaType(mediaType string, data []byte, dataString string) (string, error) {
+	if dataString == "" {
+		return prompt.ResolveFullMediaType(mediaType, data, true)
+	}
+	if full, err := prompt.ResolveFullMediaType(mediaType, nil, true); err == nil {
+		return full, nil
+	}
+	top, _, _ := strings.Cut(mediaType, "/")
+	detected, ok, err := fileutil.DetectMediaTypeSignatureBase64(dataString, top)
+	if err != nil {
+		return "", err
+	}
+	if ok && detected != "" {
+		return detected, nil
+	}
+	return prompt.ResolveFullMediaType(mediaType, nil, true)
 }

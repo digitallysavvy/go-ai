@@ -8,6 +8,7 @@ package vercel
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"sync"
@@ -27,6 +28,13 @@ func (f *fakeSandbox) CurrentNetworkPolicy() NetworkPolicy {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.policy
+}
+
+// CurrentSessionNetworkPolicyMetadata mirrors the listSessions mock TS
+// 44a4261e52 added to this suite: the session metadata carries no response
+// rules.
+func (f *fakeSandbox) CurrentSessionNetworkPolicyMetadata(context.Context) (json.RawMessage, error) {
+	return json.RawMessage(`{"mode":"custom"}`), nil
 }
 
 func (f *fakeSandbox) UpdateNetworkPolicy(_ context.Context, policy NetworkPolicy) error {

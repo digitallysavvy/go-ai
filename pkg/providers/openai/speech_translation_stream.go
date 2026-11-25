@@ -3,11 +3,15 @@ package openai
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
+	"net"
+	"strconv"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	wsutil "github.com/digitallysavvy/go-ai/pkg/providerutils/websocket"
 	"golang.org/x/net/websocket"
 )
@@ -46,8 +50,16 @@ func (s *openAIRealtimeSpeechTranslationStream) run(cfg openAIRealtimeSpeechTran
 	// that only drains Next() to io.EOF may never make.
 	defer s.CancelContext()
 
-	conn, err := s.dial(cfg.url, cfg.headers)
+	closeInfo := &wsutil.CloseInfo{}
+	conn, err := s.dial(cfg.url, cfg.headers, closeInfo)
 	if err != nil {
+		// TS connectToWebSocket: an abort fails with abortSignal.reason; a
+		// socket that fails to open fires onerror (onSocketError's text).
+		if cause := context.Cause(s.Context()); cause != nil {
+			err = cause
+		} else {
+			err = errors.New("OpenAI realtime translation error")
+		}
 		s.SetErr(err)
 		cfg.audio.Cancel(err)
 		return
@@ -59,13 +71,16 @@ func (s *openAIRealtimeSpeechTranslationStream) run(cfg openAIRealtimeSpeechTran
 	// stream-start: setup must not wait for a consumer to be reading yet
 	// (mirrors TS onOpen, where controller.enqueue does not block on a
 	// reader before the socket send and sendAudio() call that follow it).
-	payload, err := json.Marshal(cfg.sessionUpdate)
+	streamStart := provider.SpeechTranslationStreamPart{Type: provider.SpeechTranslationStreamPartTypeStreamStart, Warnings: cfg.warnings}
+	// TS JSON.stringify(sessionUpdate): the object literal's key order.
+	err = s.send(conn, []byte(providerutils.StringifyOrdered(cfg.sessionUpdate, openAIRealtimeSpeechTranslationSessionOrder)))
 	if err != nil {
-		s.SetErr(err)
-		cfg.audio.Cancel(err)
-		return
-	}
-	if err := s.send(conn, payload); err != nil {
+		// TS onOpen enqueues stream-start before it serializes and sends
+		// the session update, so a failure errors the stream after that
+		// part (connectToWebSocket onProcessingError).
+		if !s.Emit(streamStart) {
+			err = context.Cause(s.Context())
+		}
 		s.SetErr(err)
 		cfg.audio.Cancel(err)
 		return
@@ -74,7 +89,7 @@ func (s *openAIRealtimeSpeechTranslationStream) run(cfg openAIRealtimeSpeechTran
 	audioErrCh := make(chan error, 1)
 	go s.pumpAudio(conn, cfg.audio, audioErrCh)
 
-	if !s.Emit(provider.SpeechTranslationStreamPart{Type: provider.SpeechTranslationStreamPartTypeStreamStart, Warnings: cfg.warnings}) {
+	if !s.Emit(streamStart) {
 		return
 	}
 
@@ -124,12 +139,16 @@ func (s *openAIRealtimeSpeechTranslationStream) run(cfg openAIRealtimeSpeechTran
 				// returns immediately below), so it is always an
 				// unexpected termination — mirroring TS onClose. A clean
 				// close and an abnormal disconnection (TS onSocketError)
-				// both fail the stream; x/net/websocket does not expose
-				// close codes/reasons to thread through the message like
-				// TS does.
+				// both fail the stream. CloseInfo reads the close frame's code
+				// and reason (1006 when the connection ended without one, as
+				// the ws library reports it).
 				var failErr error
 				if wsutil.IsCleanClose(res.Err) {
-					failErr = errors.New("OpenAI realtime translation WebSocket closed unexpectedly before finishing.") //nolint:staticcheck // matches TS SDK's exact error text
+					suffix := " (code " + strconv.Itoa(closeInfo.Code())
+					if reason := closeInfo.Reason(); reason != "" {
+						suffix += ", reason: " + reason
+					}
+					failErr = errors.New("OpenAI realtime translation WebSocket closed unexpectedly before finishing" + suffix + ").") //nolint:staticcheck // TS SDK text
 				} else {
 					failErr = errors.New("OpenAI realtime translation error")
 				}
@@ -138,15 +157,26 @@ func (s *openAIRealtimeSpeechTranslationStream) run(cfg openAIRealtimeSpeechTran
 				return
 			}
 
-			var raw map[string]interface{}
-			if jsonErr := json.Unmarshal([]byte(res.Text), &raw); jsonErr != nil {
+			// TS safeParseJSON: any JSON value (not only an object) is a
+			// message; the raw part carries it as parsed.
+			var rawValue interface{}
+			if jsonErr := jsonexact.Unmarshal([]byte(res.Text), &rawValue); jsonErr != nil {
 				continue
 			}
 			if cfg.includeRawChunks {
-				if !s.Emit(provider.SpeechTranslationStreamPart{Type: provider.SpeechTranslationStreamPartTypeRaw, RawValue: raw}) {
+				if !s.Emit(provider.SpeechTranslationStreamPart{Type: provider.SpeechTranslationStreamPartTypeRaw, RawValue: rawValue}) {
 					return
 				}
 			}
+			if rawValue == nil {
+				// TS reads raw.type of a JSON null: the TypeError fails the
+				// stream through onProcessingError.
+				typeErr := errors.New("Cannot read properties of null (reading 'type')") //nolint:staticcheck // ST1005: TypeError text from TS
+				s.SetErr(typeErr)
+				cfg.audio.Cancel(typeErr)
+				return
+			}
+			raw, _ := rawValue.(map[string]interface{})
 
 			eventType, _ := raw["type"].(string)
 			switch eventType {
@@ -154,7 +184,7 @@ func (s *openAIRealtimeSpeechTranslationStream) run(cfg openAIRealtimeSpeechTran
 				delta, _ := raw["delta"].(string)
 				// skip empty deltas: an empty `audio` part carries no data
 				if delta != "" {
-					if audioBytes, decodeErr := base64.StdEncoding.DecodeString(delta); decodeErr == nil {
+					if audioBytes, decodeErr := fileutil.ConvertBase64ToBytes(delta); decodeErr == nil {
 						if !s.Emit(provider.SpeechTranslationStreamPart{Type: provider.SpeechTranslationStreamPartTypeAudio, AudioData: audioBytes}) {
 							return
 						}
@@ -180,10 +210,13 @@ func (s *openAIRealtimeSpeechTranslationStream) run(cfg openAIRealtimeSpeechTran
 				return
 
 			case "error":
+				// TS `raw.error?.message ?? 'OpenAI realtime error'`: only a
+				// missing (or null) message falls back; an empty one stays.
 				message := "OpenAI realtime error"
 				if errObj, ok := raw["error"].(map[string]interface{}); ok {
-					if m, ok := errObj["message"].(string); ok && m != "" {
-						message = m
+					// new Error(x) takes String() of any non-null message.
+					if m := errObj["message"]; m != nil {
+						message = providerutils.JSString(m)
 					}
 				}
 				// Recoverable server errors are streamed as `error` parts
@@ -197,6 +230,15 @@ func (s *openAIRealtimeSpeechTranslationStream) run(cfg openAIRealtimeSpeechTran
 	}
 }
 
+// openAIRealtimeSpeechTranslationSessionOrder is the key order of TS
+// buildOpenAIRealtimeSpeechTranslationSession's object literal.
+var openAIRealtimeSpeechTranslationSessionOrder = map[string][]string{
+	"":                    {"type", "session"},
+	"session":             {"audio"},
+	"session.audio":       {"input", "output"},
+	"session.audio.input": {"transcription", "noise_reduction"},
+}
+
 // pumpAudio reads chunks from audio and forwards them as
 // session.input_audio_buffer.append messages, sending session.close at EOF.
 // Any other failure — reading from the AudioStream, or writing to the
@@ -205,14 +247,11 @@ func (s *openAIRealtimeSpeechTranslationStream) run(cfg openAIRealtimeSpeechTran
 func (s *openAIRealtimeSpeechTranslationStream) pumpAudio(conn *websocket.Conn, audio provider.AudioStream, errCh chan<- error) {
 	wsutil.PumpAudio(s.Context(), audio,
 		func(chunk []byte) error {
-			msg, marshalErr := json.Marshal(map[string]string{
+			// TS JSON.stringify({type, audio}): literal key order.
+			return s.send(conn, []byte(providerutils.StringifyOrdered(map[string]interface{}{
 				"type":  "session.input_audio_buffer.append",
 				"audio": base64.StdEncoding.EncodeToString(chunk),
-			})
-			if marshalErr != nil {
-				return nil
-			}
-			return s.send(conn, msg)
+			}, openAIRealtimeAppendOrder)))
 		},
 		func() error {
 			return s.send(conn, []byte(`{"type":"session.close"}`))
@@ -221,9 +260,13 @@ func (s *openAIRealtimeSpeechTranslationStream) pumpAudio(conn *websocket.Conn, 
 	)
 }
 
-func (s *openAIRealtimeSpeechTranslationStream) dial(wsURL string, headers map[string]string) (*websocket.Conn, error) {
+func (s *openAIRealtimeSpeechTranslationStream) dial(wsURL string, headers map[string]string, closeInfo *wsutil.CloseInfo) (*websocket.Conn, error) {
 	protocols, filteredHeaders := openAIRealtimeWSAuth(headers)
-	return wsutil.Dial(s.Context(), wsURL, wsutil.DialOptions{Headers: filteredHeaders, Protocols: protocols})
+	wrap := closeInfo.Wrap
+	if hook := openAIRealtimeWrapConn; hook != nil {
+		wrap = func(c net.Conn) net.Conn { return closeInfo.Wrap(hook(c)) }
+	}
+	return wsutil.Dial(s.Context(), wsURL, wsutil.DialOptions{Headers: filteredHeaders, Protocols: protocols, WrapConn: wrap})
 }
 
 func (s *openAIRealtimeSpeechTranslationStream) send(conn *websocket.Conn, message []byte) error {

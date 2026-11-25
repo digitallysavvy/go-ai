@@ -9,6 +9,9 @@ import (
 	"context"
 	"errors"
 	"io"
+	"path"
+	"sort"
+	"strings"
 	"sync"
 
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -242,4 +245,115 @@ func (s *Sandbox) WriteTextFile(_ context.Context, opts providerutils.SandboxWri
 	defer s.mu.Unlock()
 	s.files[opts.Path] = opts.Content
 	return nil
+}
+
+// Compile-time checks: Sandbox implements the optional SandboxSession
+// extensions (TS SandboxSession stat / listDirectory / deleteFile).
+var (
+	_ providerutils.SandboxStatter         = (*Sandbox)(nil)
+	_ providerutils.SandboxDirectoryLister = (*Sandbox)(nil)
+	_ providerutils.SandboxFileDeleter     = (*Sandbox)(nil)
+)
+
+// dirPrefix returns the key prefix of the files under the directory p.
+func dirPrefix(p string) string {
+	if p == "/" {
+		return "/"
+	}
+	return p + "/"
+}
+
+// isDirLocked reports whether p is a directory of the in-memory file map:
+// the root, or a path some file lives under. s.mu must be held.
+func (s *Sandbox) isDirLocked(p string) bool {
+	if p == "/" {
+		return true
+	}
+	prefix := dirPrefix(p)
+	for k := range s.files {
+		if strings.HasPrefix(path.Clean(k), prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// fileLocked returns the map key holding the file at p. s.mu must be held.
+func (s *Sandbox) fileLocked(p string) (string, bool) {
+	if _, ok := s.files[p]; ok {
+		return p, true
+	}
+	for k := range s.files {
+		if path.Clean(k) == p {
+			return k, true
+		}
+	}
+	return "", false
+}
+
+// Stat implements providerutils.SandboxStatter over the in-memory file map:
+// a seeded file is "file" with its byte size, a path some file lives under
+// is "directory", and anything else is (nil, nil).
+func (s *Sandbox) Stat(_ context.Context, p string) (*providerutils.SandboxFileStat, error) {
+	p = path.Clean(p)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if k, ok := s.fileLocked(p); ok {
+		return &providerutils.SandboxFileStat{Type: providerutils.SandboxPathTypeFile, Size: int64(len(s.files[k]))}, nil
+	}
+	if s.isDirLocked(p) {
+		return &providerutils.SandboxFileStat{Type: providerutils.SandboxPathTypeDirectory}, nil
+	}
+	return nil, nil
+}
+
+// ListDirectory implements providerutils.SandboxDirectoryLister over the
+// in-memory file map: the direct children of p, sorted by name; (nil, nil)
+// when p does not exist, an error when p is a file.
+func (s *Sandbox) ListDirectory(_ context.Context, p string) ([]providerutils.SandboxDirectoryEntry, error) {
+	p = path.Clean(p)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.fileLocked(p); ok {
+		return nil, errors.New("bridgetest: ListDirectory: not a directory: " + p)
+	}
+	if !s.isDirLocked(p) {
+		return nil, nil
+	}
+	prefix := dirPrefix(p)
+	types := map[string]string{}
+	for k := range s.files {
+		rest, ok := strings.CutPrefix(path.Clean(k), prefix)
+		if !ok || rest == "" {
+			continue
+		}
+		if name, _, nested := strings.Cut(rest, "/"); nested {
+			types[name] = providerutils.SandboxPathTypeDirectory
+		} else if _, seen := types[name]; !seen {
+			types[name] = providerutils.SandboxPathTypeFile
+		}
+	}
+	entries := make([]providerutils.SandboxDirectoryEntry, 0, len(types))
+	for name, typ := range types {
+		entries = append(entries, providerutils.SandboxDirectoryEntry{Name: name, Type: typ})
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
+	return entries, nil
+}
+
+// DeleteFile implements providerutils.SandboxFileDeleter over the in-memory
+// file map: true when the file was removed, false when it does not exist,
+// an error when p is a directory.
+func (s *Sandbox) DeleteFile(_ context.Context, p string) (bool, error) {
+	p = path.Clean(p)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if k, ok := s.fileLocked(p); ok {
+		delete(s.files, k)
+		return true, nil
+	}
+	if s.isDirLocked(p) {
+		return false, errors.New("bridgetest: DeleteFile: is a directory: " + p)
+	}
+	return false, nil
 }

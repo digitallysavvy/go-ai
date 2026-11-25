@@ -1,8 +1,7 @@
 package streaming
 
 import (
-	"strings"
-	"unicode"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // StartsWithStructuredValue reports whether a streamed tool-call argument
@@ -10,7 +9,7 @@ import (
 // ignored. Ports TS startsWithStructuredValue
 // (provider-utils/src/streaming-tool-call-argument-state.ts).
 func StartsWithStructuredValue(value string) bool {
-	trimmed := strings.TrimLeftFunc(value, unicode.IsSpace)
+	trimmed := providerutils.JSTrimStart(value)
 	if trimmed == "" {
 		return false
 	}
@@ -65,7 +64,7 @@ func (s *StreamingToolCallArgumentState) Append(delta string) {
 	for _, r := range delta {
 		switch s.kind {
 		case argumentStructureUndetermined:
-			if unicode.IsSpace(r) {
+			if providerutils.IsJSWhiteSpace(r) {
 				continue
 			}
 			if r != '{' && r != '[' {

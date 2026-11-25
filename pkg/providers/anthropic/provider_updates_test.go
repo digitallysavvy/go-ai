@@ -250,7 +250,7 @@ func TestAnthropicResponseProviderMetadataStopDetails(t *testing.T) {
 		Role:         "assistant",
 		Model:        ClaudeFable5,
 		StopReason:   "refusal",
-		StopSequence: "END",
+		StopSequence: strPtrR87e("END"),
 		StopDetails: &anthropicStopDetails{
 			Type:             "refusal",
 			Category:         "cyber",
@@ -351,6 +351,9 @@ func TestOutputConfigFormatSanitizesSchema(t *testing.T) {
 			Type:   "json_schema",
 			Schema: schema,
 		},
+		// An open object uses the JSON response tool in auto mode (TS
+		// b0d51fecc0), so request native structured output explicitly.
+		ProviderOptions: map[string]interface{}{"anthropic": map[string]interface{}{"structuredOutputMode": "outputFormat"}},
 	}, false)
 
 	outputConfig := body["output_config"].(map[string]interface{})
@@ -541,8 +544,8 @@ func TestClaudeSonnet4_6ModelID(t *testing.T) {
 		t.Errorf("ModelID() = %q, want %q", model.ModelID(), ClaudeSonnet4_6)
 	}
 
-	if model.Provider() != "anthropic" {
-		t.Errorf("Provider() = %q, want %q", model.Provider(), "anthropic")
+	if model.Provider() != "anthropic.messages" {
+		t.Errorf("Provider() = %q, want %q", model.Provider(), "anthropic.messages")
 	}
 }
 
@@ -649,7 +652,8 @@ func TestTopLevelReasoningXHighUsesAdaptiveEffortForOpus47(t *testing.T) {
 	}
 }
 
-func TestTopLevelReasoningXHighMapsToMaxForOpus46(t *testing.T) {
+// TS 61a315e333: an unsupported xhigh rounds down to high (it was max).
+func TestTopLevelReasoningXHighMapsToHighForOpus46(t *testing.T) {
 	prov := New(Config{APIKey: "test-key"})
 	model := NewLanguageModel(prov, ClaudeOpus4_6, nil)
 	reasoning := types.ReasoningXHigh
@@ -663,8 +667,8 @@ func TestTopLevelReasoningXHighMapsToMaxForOpus46(t *testing.T) {
 	if !ok {
 		t.Fatalf("output_config = %#v, want map", body["output_config"])
 	}
-	if oc["effort"] != "max" {
-		t.Fatalf("output_config.effort = %v, want max", oc["effort"])
+	if oc["effort"] != "high" {
+		t.Fatalf("output_config.effort = %v, want high", oc["effort"])
 	}
 }
 
@@ -697,10 +701,7 @@ func TestCompactionDeltaNullContent(t *testing.T) {
 	}
 
 	// Next call should return EOF
-	_, err = stream.Next()
-	if err != io.EOF {
-		t.Errorf("expected io.EOF after message_stop, got: %v", err)
-	}
+	expectFinishOtherThenEOF(t, stream)
 }
 
 // TestCompactionDeltaWithContent verifies compaction_delta with non-null content is emitted
@@ -724,10 +725,7 @@ func TestCompactionDeltaWithContent(t *testing.T) {
 	}
 
 	// Next → EOF
-	_, err = stream.Next()
-	if err != io.EOF {
-		t.Errorf("expected io.EOF, got: %v", err)
-	}
+	expectFinishOtherThenEOF(t, stream)
 }
 
 // --- compaction_delta content emission tests ---
@@ -877,7 +875,9 @@ func TestInferenceGeoInRequestBody(t *testing.T) {
 
 // TestEffortAndFormatCombined verifies effort and ResponseFormat both appear in output_config.
 func TestEffortAndFormatCombined(t *testing.T) {
-	schema := map[string]interface{}{"type": "object"}
+	// A bare {"type": "object"} is an open object, which auto mode sends
+	// through the JSON response tool (TS b0d51fecc0).
+	schema := map[string]interface{}{"type": "object", "properties": map[string]interface{}{"a": map[string]interface{}{"type": "string"}}, "required": []interface{}{"a"}}
 	prov := New(Config{APIKey: "test-key"})
 	model := NewLanguageModel(prov, ClaudeSonnet4_6, &ModelOptions{Effort: EffortHigh})
 
@@ -1146,6 +1146,7 @@ func TestStreamingUsageCapturedFromMessageStart(t *testing.T) {
 		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
 
 	stream := newAnthropicStream(io.NopCloser(strings.NewReader(sseData)), false)
+	skipMessageStartChunk(t, stream)
 
 	// First chunk: text-start boundary.
 	textStart, err := stream.Next()
@@ -1226,6 +1227,7 @@ func TestStreamingFallbackUsageAndIterationsMatchTypeScript(t *testing.T) {
 		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
 
 	stream := newAnthropicStream(io.NopCloser(strings.NewReader(sseData)), false)
+	skipMessageStartChunk(t, stream)
 
 	fallbackChunk, err := stream.Next()
 	if err != nil {
@@ -1289,6 +1291,7 @@ func TestStreamingStopSequenceAndDetailsMetadataMatchTypeScript(t *testing.T) {
 		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
 
 	stream := newAnthropicStream(io.NopCloser(strings.NewReader(sseData)), false)
+	skipMessageStartChunk(t, stream)
 	if chunk, err := stream.Next(); err != nil || chunk.Type != provider.ChunkTypeText {
 		t.Fatalf("text chunk = %#v err=%v", chunk, err)
 	}

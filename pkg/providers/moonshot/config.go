@@ -3,6 +3,8 @@ package moonshot
 import (
 	"fmt"
 	"os"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // Config contains configuration for the Moonshot AI provider
@@ -11,9 +13,20 @@ type Config struct {
 	// Can be obtained from https://platform.moonshot.cn/
 	APIKey string
 
+	// APIKeyFunc resolves the API key for every request instead of APIKey
+	// (TS `apiKey` as a function, 7716e189ee). Its error fails the request;
+	// its result is sent as is, an empty string included, and the
+	// environment is not read. Setting both APIKey and APIKeyFunc fails
+	// every request with an InvalidArgumentError.
+	APIKeyFunc providerutils.APIKeyFunc `json:"-"`
+
 	// BaseURL is the base URL for the API (optional)
 	// Default: https://api.moonshot.ai/v1
 	BaseURL string
+
+	// Headers are custom HTTP headers sent with every request (TS provider
+	// settings `headers`).
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // NewConfig creates a new Moonshot provider configuration

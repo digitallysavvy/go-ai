@@ -16,17 +16,15 @@ func TestFireworksReasoningAllLevels(t *testing.T) {
 		want   string
 		hasKey bool
 	}{
-		// TS: reasoning_effort is set to the raw reasoning value whenever
-		// isCustomReasoning(reasoning) is true, which excludes only
-		// undefined/'provider-default' — NOT 'none'. Fireworks' own
-		// transformRequestBody only remaps minimal->low and xhigh->high,
-		// passing "none" through unchanged.
+		// TS 61a315e333: Fireworks accepts every reasoning effort for most
+		// models, so each level is sent as is.
 		{types.ReasoningNone, "none", true},
-		{types.ReasoningMinimal, "low", true},
+		{types.ReasoningMinimal, "minimal", true},
 		{types.ReasoningLow, "low", true},
 		{types.ReasoningMedium, "medium", true},
 		{types.ReasoningHigh, "high", true},
-		{types.ReasoningXHigh, "high", true},
+		{types.ReasoningXHigh, "xhigh", true},
+		{types.ReasoningMax, "max", true},
 		{types.ReasoningDefault, "", false},
 	}
 
@@ -96,23 +94,53 @@ func TestFireworksReasoningEffortProviderOptionOverride(t *testing.T) {
 	}
 }
 
-// TestFireworksReasoningEffortProviderOptionOverrideRemapped verifies the
-// override still goes through Fireworks' own minimal->low/xhigh->high remap
-// (fireworks-provider.ts:169-177).
+// TestFireworksReasoningEffortProviderOptionOverrideRemapped: TS 61a315e333
+// no longer rewrites providerOptions.fireworks.reasoningEffort; it is sent
+// unchanged, and an explicit null is sent as null (5006d83c4e).
 func TestFireworksReasoningEffortProviderOptionOverrideRemapped(t *testing.T) {
 	p := New(Config{APIKey: "test-key"})
-	model := NewLanguageModel(p, "accounts/fireworks/models/deepseek-r1")
+	model := NewLanguageModel(p, "accounts/fireworks/models/nemotron-3-ultra-nvfp4")
 
-	opts := &provider.GenerateOptions{
-		ProviderOptions: map[string]interface{}{
-			"fireworks": map[string]interface{}{
-				"reasoningEffort": "minimal",
+	for _, effort := range []interface{}{"minimal", "max", nil} {
+		low := types.ReasoningLow
+		body, warnings := model.buildRequestBodyWithWarnings(&provider.GenerateOptions{
+			Reasoning: &low,
+			ProviderOptions: map[string]interface{}{
+				"fireworks": map[string]interface{}{"reasoningEffort": effort},
 			},
-		},
+		}, false)
+		v, has := body["reasoning_effort"]
+		if !has || v != effort || len(warnings) != 0 {
+			t.Errorf("override %v: reasoning_effort = %#v (present %v), warnings %#v", effort, v, has, warnings)
+		}
 	}
-	body := model.buildRequestBody(opts, false)
+}
 
-	if body["reasoning_effort"] != "low" {
-		t.Errorf("expected 'minimal' override remapped to 'low', got %v", body["reasoning_effort"])
+// TS 61a315e333 getFireworksReasoningEffortMap: "none" rounds up to
+// "minimal" for gpt-oss / glm-5p3 / muse-spark, "minimal" rounds up to
+// "low" for nemotron / inkling, each with a compatibility warning.
+func TestFireworksReasoningCoercionWarnings(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	for _, tt := range []struct {
+		model string
+		level types.ReasoningLevel
+		want  string
+	}{
+		{"accounts/fireworks/models/gpt-oss-120b", types.ReasoningNone, "minimal"},
+		{"accounts/fireworks/models/glm-5p3", types.ReasoningNone, "minimal"},
+		{"accounts/fireworks/models/muse-spark", types.ReasoningNone, "minimal"},
+		{"accounts/fireworks/models/nemotron-3-ultra-nvfp4", types.ReasoningMinimal, "low"},
+		{"inkling-1", types.ReasoningMinimal, "low"},
+	} {
+		l := tt.level
+		body, warnings := NewLanguageModel(p, tt.model).buildRequestBodyWithWarnings(&provider.GenerateOptions{Reasoning: &l}, true)
+		if body["reasoning_effort"] != tt.want || len(warnings) != 1 || warnings[0].Type != "compatibility" || warnings[0].Feature != "reasoning" ||
+			warnings[0].Details != `reasoning "`+string(tt.level)+`" is not directly supported by this model. mapped to effort "`+tt.want+`".` {
+			t.Errorf("%s %s: reasoning_effort %v, warnings = %#v", tt.model, tt.level, body["reasoning_effort"], warnings)
+		}
+	}
+	h := types.ReasoningMax
+	if _, warnings := NewLanguageModel(p, "accounts/fireworks/models/deepseek-r1").buildRequestBodyWithWarnings(&provider.GenerateOptions{Reasoning: &h}, false); len(warnings) != 0 {
+		t.Fatalf("unexpected warnings %#v", warnings)
 	}
 }

@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // ChunkDetector finds the first complete chunk at the start of buffer.
@@ -19,26 +20,26 @@ import (
 // (`(buffer: string) => string | undefined | null`).
 type ChunkDetector func(buffer string) (string, bool)
 
-// smoothStreamWhitespaceClass approximates JavaScript's `\s` character
-// class, which is wider than RE2's `\s` (ASCII-only): it additionally
-// matches NBSP, several Unicode space separators, and U+FEFF (BOM), which
-// ECMAScript treats as whitespace for historical reasons. Written with
-// RE2's `\x{hex}` escapes (plain ASCII in the Go source) rather than Go
-// string Unicode escapes, to avoid embedding literal multi-byte runes
-// (in particular U+FEFF itself, which would otherwise appear as a BOM in
-// the middle of this source file) in the .go file.
-const smoothStreamWhitespaceClass = `\t\n\v\f\r \x{00a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}\x{feff}`
-
 var (
-	smoothStreamWordRegexp = regexp.MustCompile(`[^` + smoothStreamWhitespaceClass + `]+[` + smoothStreamWhitespaceClass + `]+`)
+	smoothStreamWordRegexp = regexp.MustCompile(`[^` + providerutils.JSRegexpSpaceChars + `]+` + providerutils.JSRegexpSpace + `+`) // JS /\S+\s+/m
 	smoothStreamLineRegexp = regexp.MustCompile(`\n+`)
 )
+
+// streamTransformFailure marks an error part with which a built-in transform
+// reports that it failed (TS: the transform throws, so the stream errors).
+// StreamText ends the run with the wrapped error instead of forwarding the
+// part.
+type streamTransformFailure struct{ err error }
+
+func (f *streamTransformFailure) Error() string { return f.err.Error() }
+func (f *streamTransformFailure) Unwrap() error { return f.err }
 
 // SmoothStreamOptions configures SmoothStream.
 //
 // Mirrors the TypeScript SDK's smoothStream options (generate-text/smooth-stream.ts),
-// minus the browser-only Intl.Segmenter and hidden-document handling, which
-// have no Go equivalent.
+// minus Intl.Segmenter chunking (ICU word segmentation, which Go's standard
+// library does not have; pass a ChunkDetector instead) and the browser-only
+// hidden-document handling.
 type SmoothStreamOptions struct {
 	// DelayInMs is the delay between emitted chunks. nil means unset and
 	// defaults to 10ms (TS default); a non-nil pointer to 0 disables the
@@ -87,7 +88,7 @@ func customSmoothStreamDetector(fn ChunkDetector) smoothStreamDetector {
 			return "", fmt.Errorf("Chunking function must return a non-empty string.") //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		if !strings.HasPrefix(buffer, match) {
-			return "", fmt.Errorf("Chunking function must return a match that is a prefix of the buffer. Received: %q expected to start with %q", match, buffer) //nolint:staticcheck // matches TS SDK's exact error text
+			return "", fmt.Errorf("Chunking function must return a match that is a prefix of the buffer. Received: \"%s\" which is not a prefix of buffer \"%s\"", match, buffer) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		return match, nil
 	}
@@ -231,6 +232,12 @@ func SmoothStream(opts SmoothStreamOptions) (StreamTransformFunc, error) {
 			return []provider.StreamChunk{chunk}
 		}
 
+		// A ping passes through without flushing a partial word (TS
+		// smooth-stream.ts 143-146).
+		if chunk.Type == provider.ChunkTypePing {
+			return append(out, chunk)
+		}
+
 		// Handle non-smoothable chunks: flush the buffer and pass through.
 		if chunk.Type != provider.ChunkTypeText && chunk.Type != provider.ChunkTypeReasoning {
 			for _, c := range flush() {
@@ -273,7 +280,10 @@ func SmoothStream(opts SmoothStreamOptions) (StreamTransformFunc, error) {
 			match, derr := detect(buffer.String())
 			if derr != nil {
 				streamEnded = true
-				out = append(out, provider.StreamChunk{Type: provider.ChunkTypeError, Text: derr.Error()})
+				// TS detectChunk throws inside the transform, which errors
+				// the stream; StreamText recognizes the failure and ends the
+				// run with it (a direct caller sees the error part).
+				out = append(out, provider.StreamChunk{Type: provider.ChunkTypeError, Text: derr.Error(), Err: &streamTransformFailure{err: derr}})
 				buffer.Reset()
 				metadata = nil
 				return out

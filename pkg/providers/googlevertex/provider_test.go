@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -54,7 +55,7 @@ func TestNewProvider_ValidationErrors(t *testing.T) {
 				Location:    "us-central1",
 				AccessToken: "test-token",
 			},
-			expectedErr: "project is required for Google Vertex AI",
+			expectedErr: "Google Vertex project setting is missing. Pass it using the 'project' parameter or the GOOGLE_VERTEX_PROJECT environment variable.",
 		},
 		{
 			name: "missing location",
@@ -62,21 +63,17 @@ func TestNewProvider_ValidationErrors(t *testing.T) {
 				Project:     "test-project",
 				AccessToken: "test-token",
 			},
-			expectedErr: "location is required for Google Vertex AI",
-		},
-		{
-			name: "missing access token",
-			config: Config{
-				Project:  "test-project",
-				Location: "us-central1",
-			},
-			expectedErr: "access token is required for Google Vertex AI",
+			expectedErr: "Google Vertex location setting is missing. Pass it using the 'location' parameter or the GOOGLE_VERTEX_LOCATION environment variable.",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := New(tt.config)
+			p, err := New(tt.config)
+			if err != nil {
+				t.Fatalf("New() must not load project/location eagerly, got %v", err)
+			}
+			_, err = p.LanguageModel("gemini-2.5-flash")
 			if err == nil {
 				t.Errorf("Expected error containing '%s', got nil", tt.expectedErr)
 			} else if err.Error() != tt.expectedErr {
@@ -93,7 +90,11 @@ func TestNewProvider_ValidationErrors(t *testing.T) {
 func TestNewProvider_RejectsLocationThatWouldRewriteHost(t *testing.T) {
 	for _, location := range []string{"user@internal:8080/#", "evil.example.com/#", "us central 1"} {
 		t.Run(location, func(t *testing.T) {
-			_, err := New(Config{Project: "test-project", Location: location, AccessToken: "test-token"})
+			p, err := New(Config{Project: "test-project", Location: location, AccessToken: "test-token"})
+			if err != nil {
+				t.Fatalf("New() = %v", err)
+			}
+			_, err = p.LanguageModel("gemini-2.5-flash")
 			var invalid *providererrors.InvalidArgumentError
 			if !errors.As(err, &invalid) {
 				t.Fatalf("New(location=%q) error = %v, want InvalidArgumentError", location, err)
@@ -226,7 +227,7 @@ func TestProvider_LanguageModel(t *testing.T) {
 			if model == nil {
 				t.Errorf("Expected model '%s' to be created", modelID)
 			}
-			if model.Provider() != "google-vertex" {
+			if model.Provider() != "google.vertex.chat" {
 				t.Errorf("Expected provider name 'google-vertex', got '%s'", model.Provider())
 			}
 			if model.ModelID() != modelID {
@@ -410,8 +411,8 @@ func TestLanguageModel_EndpointModelID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	if p.endpointClient != nil {
-		t.Error("expected no endpointClient when BaseURL is explicit")
+	if c, err := p.clients(); err != nil || c.endpointClient != nil {
+		t.Errorf("expected no endpointClient when BaseURL is explicit (err=%v)", err)
 	}
 
 	model, err := p.LanguageModel("endpoints/1234")
@@ -437,8 +438,8 @@ func TestLanguageModel_EndpointModelID_AutoBaseURL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	if p.endpointClient == nil {
-		t.Fatal("expected an endpointClient when BaseURL is auto-derived")
+	if c, err := p.clients(); err != nil || c.endpointClient == nil {
+		t.Fatalf("expected an endpointClient when BaseURL is auto-derived (err=%v)", err)
 	}
 	if p.config.APIKey == "" {
 		if _, err := p.LanguageModel("endpoints/1234"); err != nil {
@@ -457,5 +458,65 @@ func TestLanguageModel_EndpointModelID_RejectsExpressMode(t *testing.T) {
 	}
 	if _, err := p.LanguageModel("endpoints/1234"); err == nil {
 		t.Fatal("expected an error for endpoints/ model ID under Express Mode")
+	}
+}
+
+// TestNewProvider_DefaultsToApplicationDefaultCredentials matches TS
+// createVertex: with no access token, auth token or API key, requests are
+// authenticated with Application Default Credentials.
+func TestNewProvider_DefaultsToApplicationDefaultCredentials(t *testing.T) {
+	orig := defaultADCToken
+	defer func() { defaultADCToken = orig }()
+	calls := 0
+	defaultADCToken = func(ctx context.Context) (string, error) {
+		calls++
+		return "adc-token", nil
+	}
+
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}]}`))
+	}))
+	defer srv.Close()
+
+	p, err := New(Config{Project: "p", Location: "us-central1", BaseURL: srv.URL})
+	if err != nil {
+		t.Fatalf("New without credentials must succeed (ADC default): %v", err)
+	}
+	m, err := p.LanguageModel("gemini-2.0-flash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.DoGenerate(context.Background(), &provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "x"}}}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if gotAuth != "Bearer adc-token" || calls == 0 {
+		t.Fatalf("Authorization = %q, ADC calls = %d", gotAuth, calls)
+	}
+
+	tok, err := p.vertexAuthToken(context.Background())
+	if err != nil || tok != "adc-token" {
+		t.Fatalf("vertexAuthToken = %q, %v", tok, err)
+	}
+}
+
+func TestNewProvider_ADCFailureSurfacesOnRequest(t *testing.T) {
+	orig := defaultADCToken
+	defer func() { defaultADCToken = orig }()
+	defaultADCToken = func(ctx context.Context) (string, error) { return "", errors.New("adc unavailable") }
+	p, err := New(Config{Project: "p", Location: "us-central1", BaseURL: "http://127.0.0.1:1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, _ := p.LanguageModel("gemini-2.0-flash")
+	_, err = m.DoGenerate(context.Background(), &provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "x"}}}}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "adc unavailable") {
+		t.Fatalf("want adc error, got %v", err)
 	}
 }

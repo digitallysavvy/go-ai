@@ -23,6 +23,10 @@ func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateO
 | Prompt | string | No | Simple string prompt (alternative to Messages) |
 | Messages | []types.Message | No | List of conversation messages |
 | System | string | No | System instructions |
+| Instructions | *string | No | TypeScript-compatible alias for System; takes precedence when set |
+| AllowSystemMessages | bool | No | Permit system-role messages in Messages (default false, as TS `allowSystemInMessages`) |
+| AllowSystemInMessages | bool | No | TypeScript-compatible alias for AllowSystemMessages |
+| ExperimentalDownload | DownloadFunction | No | Downloads remote file URLs the model cannot read directly (per its SupportedURLs); defaults to `DefaultDownload`, as in GenerateText. Mirrors TS `experimental_download`. |
 | Schema | schema.Schema | No | Schema for output validation (required for object/array modes) |
 | OutputMode | ObjectOutputMode | No | Output mode: object, array, enum, or no-schema (default: object) |
 | EnumValues | []string | No | Enum values (required for enum mode) |
@@ -237,6 +241,10 @@ This table is generated from the `ai.GenerateObjectOptions` source and lists eve
 | `Prompt` | `string` | Prompt can be a simple string or a list of messages |
 | `Messages` | `[]types.Message` |  |
 | `System` | `string` |  |
+| `Instructions` | `*string` | Instructions is a TypeScript-compatible alias for System. When set, Instructions takes precedence over System. |
+| `AllowSystemMessages` | `bool` | AllowSystemMessages permits system-role messages in Messages. Defaults to false, as in TS (allowSystemInMessages): use System or Instructions for system instructions. |
+| `AllowSystemInMessages` | `bool` | AllowSystemInMessages is a TypeScript-compatible alias for AllowSystemMessages. Either field enables system-role messages. |
+| `ExperimentalDownload` | `DownloadFunction` | ExperimentalDownload downloads remote file URLs the model cannot read directly (per its SupportedURLs). Defaults to DefaultDownload, as in GenerateText. Mirrors TS experimental_download. |
 | `Schema` | `schema.Schema` | Schema for the output object (not required for no-schema mode) |
 | `OutputMode` | `ObjectOutputMode` | Output mode - object, array, enum, or no-schema |
 | `EnumValues` | `[]string` | Enum values (required for enum mode) |
@@ -247,7 +255,7 @@ This table is generated from the `ai.GenerateObjectOptions` source and lists eve
 | `FrequencyPenalty` | `*float64` |  |
 | `PresencePenalty` | `*float64` |  |
 | `Seed` | `*int` |  |
-| `MaxRetries` | `int` |  |
+| `MaxRetries` | `*int` | MaxRetries controls transient provider call retries (HTTP 408, 409, 429 and 5xx, or errors a provider marks retryable). nil uses the TypeScript SDK default of 2 retries with exponential backoff starting at 2s; set to 0 to disable. |
 | `RepairText` | `RepairTextFunc` | RepairText repairs invalid JSON or schema-invalid object output. Return nil when the output cannot be repaired. Takes precedence over ExperimentalRepairText when both are set (audit row 09a52cb). |
 | `ExperimentalRepairText` | `RepairTextFunc` | ExperimentalRepairText repairs invalid JSON or schema-invalid object output. Return nil when the output cannot be repaired. Deprecated: use RepairText. |
 | `Headers` | `map[string]string` | Additional HTTP headers sent with the request. |

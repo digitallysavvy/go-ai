@@ -5,6 +5,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
 func TestMaaSProvider_WrapperMethodsAndUnsupported(t *testing.T) {
@@ -55,5 +58,30 @@ func TestMaaSProvider_WrapperMethodsAndUnsupported(t *testing.T) {
 	}
 	if _, err := p.RerankingModel("x"); err == nil {
 		t.Fatal("RerankingModel expected unsupported error")
+	}
+}
+
+func TestMaaSCompletionModelUsesCompletionsEndpoint(t *testing.T) {
+	var gotPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"c1","model":"m","choices":[{"index":0,"text":"hi","finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	defer server.Close()
+
+	p := NewMaaS(MaaSConfig{
+		BaseURL:   server.URL,
+		AuthToken: func(context.Context) (string, error) { return "token", nil },
+	})
+	model, err := p.CompletionModel("test-model")
+	if err != nil {
+		t.Fatalf("CompletionModel() error = %v", err)
+	}
+	if _, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hello"}}); err != nil {
+		t.Fatalf("DoGenerate() error = %v", err)
+	}
+	if gotPath != "/completions" {
+		t.Errorf("request path = %q, want /completions", gotPath)
 	}
 }

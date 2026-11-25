@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
 // Ported (behaviorally) from ai/packages/deepinfra/src/deepinfra-image-model.test.ts
@@ -208,6 +210,29 @@ func TestDeriveDeepInfraImageBaseURL(t *testing.T) {
 	for in, want := range cases {
 		if got := deriveDeepInfraImageBaseURL(in); got != want {
 			t.Errorf("deriveDeepInfraImageBaseURL(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TS parseProviderOptions(deepInfraImageModelOptionsSchema): wrongly typed
+// declared options fail before any request with an InvalidArgumentError.
+func TestDeepInfraImageModel_InvalidProviderOptions(t *testing.T) {
+	p := New(Config{APIKey: "k", BaseURL: "http://127.0.0.1:1/openai"})
+	model, err := p.ImageModel("black-forest-labs/FLUX-1-dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, opts := range map[string]map[string]interface{}{
+		"steps as string":     {"num_inference_steps": "30"},
+		"bad response_format": {"response_format": "url"},
+	} {
+		_, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
+			Prompt:          "a cat",
+			ProviderOptions: map[string]interface{}{"deepinfra": opts},
+		})
+		var invalid *providererrors.InvalidArgumentError
+		if !errors.As(err, &invalid) {
+			t.Errorf("%s: err = %T %v, want InvalidArgumentError", name, err, err)
 		}
 	}
 }

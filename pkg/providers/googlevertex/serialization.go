@@ -7,9 +7,14 @@ import (
 )
 
 func init() {
+	// "google-vertex" is the pre-TS-parity Provider() value; keep it so models
+	// serialized by earlier versions still deserialize.
 	provider.RegisterModelDeserializer("google-vertex", deserializeModel)
 	provider.RegisterEmbeddingModelDeserializer("google-vertex", deserializeEmbeddingModel)
 	provider.RegisterImageModelDeserializer("google-vertex", deserializeImageModel)
+	provider.RegisterModelDeserializer("google.vertex.chat", deserializeModel)
+	provider.RegisterEmbeddingModelDeserializer("google.vertex.embedding", deserializeEmbeddingModel)
+	provider.RegisterImageModelDeserializer("google.vertex.image", deserializeImageModel)
 	provider.RegisterTranscriptionModelDeserializer("google.vertex.transcription", deserializeTranscriptionModel)
 	provider.RegisterSpeechModelDeserializer("google.vertex.speech", deserializeSpeechModel)
 	provider.RegisterModelDeserializer("google.vertex.interactions", deserializeInteractionsModel)

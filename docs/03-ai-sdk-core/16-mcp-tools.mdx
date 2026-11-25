@@ -161,6 +161,12 @@ transport := mcp.NewStdioTransport(mcp.StdioTransportConfig{
     Env: []string{
         "API_KEY=your-api-key",
     },
+
+    // Optional: run the command through the platform shell (for command
+    // shims such as Windows npx.cmd). Command and Args are joined with spaces
+    // and not escaped, so never build them from untrusted input.
+    // Shell: true,
+    // ShellPath: "/bin/bash", // implies Shell
 })
 
 client := mcp.NewMCPClient(transport, mcp.MCPClientConfig{

@@ -1,0 +1,10 @@
+This package ports host-side logic from libfx (https://github.com/vercel-labs/fx),
+in particular sdk/fx-sdk.js and sdk/core-output.js at tag v0.0.14.
+
+libfx is licensed under the Apache License, Version 2.0:
+https://www.apache.org/licenses/LICENSE-2.0
+
+Copyright Vercel, Inc.
+
+The fx-core.wasm module is downloaded at run time from the npm registry and is
+not included in this repository.

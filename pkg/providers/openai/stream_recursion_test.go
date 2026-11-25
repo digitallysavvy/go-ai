@@ -56,7 +56,7 @@ func runResponsesStreamRecursionChild() {
 		// Unrecognized event type: hits Next()'s `default: continue` branch.
 		sb.WriteString(`data: {"type":"response.unrecognized_event"}` + "\n\n")
 	}
-	sb.WriteString(`data: {"type":"response.output_text.delta","output_index":0,"delta":"hello"}` + "\n\n")
+	sb.WriteString(`data: {"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"delta":"hello"}` + "\n\n")
 
 	s := newResponsesStream(io.NopCloser(strings.NewReader(sb.String())), false)
 	// This call used to recurse once per unrecognized event -- 300,000 deep
@@ -110,15 +110,15 @@ func runOpenAIStreamRecursionChild() {
 	for i := 0; i < n; i++ {
 		// No "choices" field: falls through every branch to the final
 		// `return s.Next()` (now `continue`).
-		sb.WriteString(`data: {}` + "\n\n")
+		sb.WriteString(`data: {"choices":[]}` + "\n\n")
 	}
-	sb.WriteString(`data: {"choices":[{"delta":{"content":"hello"},"finish_reason":null}]}` + "\n\n")
+	sb.WriteString(`data: {"choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}]}` + "\n\n")
 	sb.WriteString("data: [DONE]\n\n")
 
 	s := newOpenAIStream(io.NopCloser(strings.NewReader(sb.String())))
 	// This call used to recurse once per choices-less event -- 300,000 deep
-	// -- before reaching the real text chunk.
-	chunk, err := s.Next()
+	// -- before reaching the real text chunk (after its text-start part).
+	chunk, err := nextAfterTextStart(s)
 	if err != nil {
 		fmt.Println("BF5_CHILD_FAIL: unexpected error:", err)
 		return
@@ -167,9 +167,9 @@ func runCompletionStreamRecursionChild() {
 	for i := 0; i < n; i++ {
 		// No "choices" field: the main body falls through to the trailing
 		// `return s.Next()` (now `continue`).
-		sb.WriteString(`data: {}` + "\n\n")
+		sb.WriteString(`data: {"choices":[]}` + "\n\n")
 	}
-	sb.WriteString(`data: {"choices":[{"text":"hello"}]}` + "\n\n")
+	sb.WriteString(`data: {"choices":[{"index":0,"text":"hello"}]}` + "\n\n")
 	sb.WriteString("data: [DONE]\n\n")
 
 	s := newCompletionStream(io.NopCloser(strings.NewReader(sb.String())), false)

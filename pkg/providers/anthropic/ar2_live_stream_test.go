@@ -2,11 +2,13 @@ package anthropic
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
 // AR2: live-streamed web_fetch_tool_result / web_search_tool_result content
@@ -35,10 +37,9 @@ func TestStream_LiveWebFetchToolResult(t *testing.T) {
 	stream := newAnthropicStream(io.NopCloser(strings.NewReader(sseData)), false)
 	stream.citationDocuments = nil
 
-	// First chunk: tool-input-start is not emitted for provider-executed
-	// server tools (matches TS "tool-input-start" only for the caller-visible
-	// tool_use case); the first real chunk here is the tool-call for
-	// server_tool_use.
+	// TS streams provider-executed tool input too: tool-input-start, then
+	// tool-input-end (no deltas here), then the tool-call.
+	skipToolInputChunks(t, stream)
 	callChunk, err := stream.Next()
 	if err != nil {
 		t.Fatalf("Next() tool-call error: %v", err)
@@ -130,6 +131,7 @@ func TestStream_LiveWebSearchToolResult(t *testing.T) {
 
 	stream := newAnthropicStream(io.NopCloser(strings.NewReader(sseData)), false)
 
+	skipToolInputChunks(t, stream)
 	callChunk, err := stream.Next()
 	if err != nil {
 		t.Fatalf("Next() tool-call error: %v", err)
@@ -207,71 +209,64 @@ func TestStream_LiveWebSearchToolResultError(t *testing.T) {
 	}
 
 	// No source chunks follow an error result.
-	next, err := stream.Next()
-	if err != io.EOF {
-		t.Fatalf("Next() = %+v, %v; want io.EOF", next, err)
-	}
+	expectFinishOtherThenEOF(t, stream)
 }
 
-// AR2 item 2: mcp_tool_use was missing from the message_start pre-population
-// loop, so a deferred MCP tool call arriving in message_start.message.content
-// (e.g. on a resumed/compacted stream) was silently dropped: no tool-call
-// chunk, and s.mcpToolCalls was never populated for a paired mcp_tool_result
-// to resolve against. Mirrors the live content_block_start "mcp_tool_use"
-// case (TestMCPToolUseStreamingEmitsImmediately) but via message_start.
-func TestStream_MessageStartPrePopulatedMCPToolUse(t *testing.T) {
+// TS handles only tool_use blocks in message_start.message.content, so a
+// pre-populated mcp_tool_use is ignored: no tool-call chunk is emitted for it.
+func TestStream_MessageStartIgnoresPrePopulatedMCPToolUse(t *testing.T) {
 	sseData := "" +
 		"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"mcp_tool_use\",\"id\":\"mcp_1\",\"name\":\"lookup\",\"server_name\":\"weather\",\"input\":{\"city\":\"Paris\"}}],\"model\":\"claude-3-haiku-20240307\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":17,\"output_tokens\":1}}}\n\n" +
-		"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"mcp_tool_result\",\"tool_use_id\":\"mcp_1\",\"is_error\":false,\"content\":\"sunny\"}}\n\n" +
-		"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n" +
+		"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":3}}\n\n" +
 		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
 
 	stream := newAnthropicStream(io.NopCloser(strings.NewReader(sseData)), false)
+	for {
+		c, err := stream.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Next() error: %v", err)
+		}
+		if c.Type == provider.ChunkTypeToolCall || c.Type == provider.ChunkTypeToolResult {
+			t.Fatalf("message_start mcp_tool_use produced %v; TS ignores it", c.Type)
+		}
+	}
+}
 
-	callChunk, err := stream.Next()
-	if err != nil {
-		t.Fatalf("Next() tool-call error: %v", err)
+// skipToolInputChunks consumes the tool-input-start / tool-input-end pair TS
+// emits around a provider-executed tool call whose input arrives complete in
+// content_block_start.
+func skipToolInputChunks(t *testing.T, stream *anthropicStream) {
+	t.Helper()
+	start, err := stream.Next()
+	if err != nil || start.Type != provider.ChunkTypeToolInputStart || start.ToolCall == nil || !start.ToolCall.ProviderExecuted {
+		t.Fatalf("want provider-executed tool-input-start, got %#v (err %v)", start, err)
 	}
-	if callChunk.Type != provider.ChunkTypeToolCall {
-		t.Fatalf("chunk.Type = %v, want ChunkTypeToolCall", callChunk.Type)
+	end, err := stream.Next()
+	if err != nil || end.Type != provider.ChunkTypeToolInputEnd {
+		t.Fatalf("want tool-input-end, got %#v (err %v)", end, err)
 	}
-	tc := callChunk.ToolCall
-	if tc == nil || tc.ID != "mcp_1" || tc.ToolName != "lookup" {
-		t.Fatalf("ToolCall = %+v", tc)
-	}
-	if !tc.ProviderExecuted || !tc.Dynamic {
-		t.Errorf("ToolCall providerExecuted/dynamic = %v/%v, want true/true", tc.ProviderExecuted, tc.Dynamic)
-	}
-	if tc.Arguments["city"] != "Paris" {
-		t.Errorf("Arguments = %v", tc.Arguments)
-	}
-	callMeta, _ := tc.ProviderMetadata["anthropic"].(map[string]interface{})
-	if callMeta["type"] != "mcp-tool-use" || callMeta["serverName"] != "weather" {
-		t.Errorf("ToolCall.ProviderMetadata = %+v", tc.ProviderMetadata)
-	}
+}
 
-	resultChunk, err := stream.Next()
-	if err != nil {
-		t.Fatalf("Next() tool-result error: %v", err)
+// TS web_search results emit sources with generateId() ids; the configured
+// generator (TS `generateId` setting) is used for them in both modes.
+func TestWebSearchSourcesGetGeneratedIDs(t *testing.T) {
+	n := 0
+	p := New(Config{APIKey: "k", GenerateID: func() string { n++; return fmt.Sprintf("id-%d", n) }})
+	m := NewLanguageModel(p, "claude-sonnet-4-5", nil)
+	res := m.convertResponse(anthropicResponse{Content: []anthropicContent{{
+		Type: "web_search_tool_result", ToolUseID: "t1",
+		Content: json.RawMessage(`[{"type":"web_search_result","url":"https://a","title":"A","page_age":null,"encrypted_content":"e"},{"type":"web_search_result","url":"https://b","title":"B","encrypted_content":"e"}]`),
+	}}}, false)
+	var ids []string
+	for _, part := range res.Content {
+		if src, ok := part.(types.SourceContent); ok {
+			ids = append(ids, src.ID)
+		}
 	}
-	if resultChunk.Type != provider.ChunkTypeToolResult {
-		t.Fatalf("chunk.Type = %v, want ChunkTypeToolResult", resultChunk.Type)
-	}
-	tr := resultChunk.ToolResult
-	if tr.ToolCallID != "mcp_1" {
-		t.Errorf("ToolCallID = %q, want mcp_1", tr.ToolCallID)
-	}
-	if tr.ToolName != "lookup" {
-		t.Errorf("ToolName = %q, want lookup (resolved from the pre-populated mcp_tool_use)", tr.ToolName)
-	}
-	if !tr.Dynamic {
-		t.Error("ToolResult.Dynamic should be true")
-	}
-	resultMeta, _ := tr.ProviderMetadata["anthropic"].(map[string]interface{})
-	if resultMeta["type"] != "mcp-tool-use" || resultMeta["serverName"] != "weather" {
-		t.Errorf("ToolResult.ProviderMetadata = %+v, want same as the pre-populated call's", tr.ProviderMetadata)
-	}
-	if tr.Result != "sunny" {
-		t.Errorf("Result = %v, want sunny", tr.Result)
+	if len(ids) != 2 || ids[0] != "id-1" || ids[1] != "id-2" {
+		t.Fatalf("source ids = %v", ids)
 	}
 }

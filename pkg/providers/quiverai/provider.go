@@ -1,7 +1,9 @@
 package quiverai
 
 import (
-	"fmt"
+	"context"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"os"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -21,6 +23,23 @@ type Config struct {
 	APIKey  string            `json:"apiKey,omitempty"`
 	BaseURL string            `json:"baseURL,omitempty"`
 	Headers map[string]string `json:"headers,omitempty"`
+
+	// APIKeyFunc resolves the key per request instead of APIKey (TS
+	// `apiKey: Resolvable<string>`, 7716e189ee). The environment is not
+	// read when it is set; setting both is an InvalidArgumentError. The func
+	// gets the request's context.
+	APIKeyFunc providerutils.APIKeyFunc `json:"-"`
+}
+
+// quiverAIAuthHeader is the per-request Authorization header: from
+// APIKeyFunc when set, else APIKey or QUIVERAI_API_KEY.
+func quiverAIAuthHeader(ctx context.Context, cfg Config) (map[string]string, error) {
+	if cfg.APIKeyFunc != nil {
+		return providerutils.RequestAuthHeaderFunc(ctx, cfg.Headers, providerutils.ResolveAPIKeyOptions{
+			APIKey: cfg.APIKey, APIKeyFunc: cfg.APIKeyFunc, EnvVar: "QUIVERAI_API_KEY", Description: "QuiverAI",
+		}, "Authorization", "Bearer ")
+	}
+	return providerutils.RequestAuthHeader(cfg.Headers, cfg.APIKey, "QUIVERAI_API_KEY", "QuiverAI", "Authorization", "Bearer ")
 }
 
 // Provider implements SVG generation and vectorization for QuiverAI.
@@ -35,13 +54,15 @@ type Provider struct {
 // transport) so both use identical credentials/endpoint resolution.
 func resolveQuiverAIConfig(cfg Config) (apiKey, baseURL string) {
 	apiKey = cfg.APIKey
-	if apiKey == "" {
+	if apiKey == "" && cfg.APIKeyFunc == nil {
 		apiKey = os.Getenv("QUIVERAI_API_KEY")
 	}
 	baseURL = cfg.BaseURL
 	if baseURL == "" {
 		baseURL = os.Getenv("QUIVERAI_BASE_URL")
 	}
+	// TS withoutTrailingSlash(loadOptionalSetting(...)) ?? defaultBaseURL.
+	baseURL = providerutils.WithoutTrailingSlash(baseURL)
 	if baseURL == "" {
 		baseURL = defaultBaseURL
 	}
@@ -61,6 +82,10 @@ func New(cfg Config) *Provider {
 		client: internalhttp.NewClient(internalhttp.Config{
 			BaseURL: baseURL,
 			Headers: headers,
+			// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
+			HeadersFuncCtx: func(ctx context.Context) (map[string]string, error) {
+				return quiverAIAuthHeader(ctx, cfg)
+			},
 		}),
 	}
 }
@@ -82,10 +107,20 @@ func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error)
 	}
 	apiKey, baseURL := resolveQuiverAIConfig(p.config)
 	structuredOutputsDisabled := false
+	var headersFunc func() (map[string]string, error)
+	if p.config.APIKeyFunc == nil {
+		headersFunc = func() (map[string]string, error) {
+			return quiverAIAuthHeader(context.Background(), p.config)
+		}
+	}
 	orProvider := openresponses.New(openresponses.Config{
-		BaseURL:                  baseURL + "/responses",
-		APIKey:                   apiKey,
+		BaseURL: baseURL + "/responses",
+		APIKey:  apiKey,
+		// An APIKeyFunc is resolved by the Open Responses client with the
+		// request's context (both set fails the request, as in New).
+		APIKeyFunc:               p.config.APIKeyFunc,
 		Headers:                  p.config.Headers,
+		HeadersFunc:              headersFunc,
 		Name:                     "quiverai",
 		StrictResponseInput:      true,
 		CustomToolID:             customToolID,
@@ -102,7 +137,7 @@ func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error)
 }
 
 func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
-	return nil, fmt.Errorf("quiverai does not support embeddings")
+	return nil, providererrors.NewNoSuchModelError(modelID, "embeddingModel")
 }
 
 func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
@@ -113,15 +148,15 @@ func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
 }
 
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return nil, fmt.Errorf("quiverai does not support speech synthesis")
+	return nil, providererrors.NewNoSuchModelError(modelID, "speechModel")
 }
 
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("quiverai does not support transcription")
+	return nil, providererrors.NewNoSuchModelError(modelID, "transcriptionModel")
 }
 
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("quiverai does not support reranking")
+	return nil, providererrors.NewNoSuchModelError(modelID, "rerankingModel")
 }
 
 func (p *Provider) Client() *internalhttp.Client { return p.client }

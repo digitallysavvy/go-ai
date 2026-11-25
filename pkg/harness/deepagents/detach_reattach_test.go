@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"io"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -13,14 +12,15 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge/bridgetest"
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/bridgeauthkeys"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
-// Full port of TS "reuses a caller-minted token and passes endpoint headers
-// when attaching" (deepagents-harness.test.ts:526): DoDetach returns bridge
-// coordinates carrying the caller-minted token, and reattaching (a second
-// DoStart with that ResumeSessionState) must reuse the same token — no
-// second MintBridgeToken call — and must not respawn a fresh bridge process,
+// Full port of TS "reuses the bridge private key and passes endpoint headers
+// when attaching" (deepagents-harness.test.ts, c849d37dac): DoDetach returns
+// bridge coordinates carrying the session's private key, and reattaching (a
+// second DoStart with that ResumeSessionState) must reuse the same key and
+// must not respawn a fresh bridge process,
 // since live coordinates route it through the attach rung instead. It also
 // asserts the TS test's other two legs: a custom PortEndpoint's headers
 // travel to both the initial and the reattach WebSocket handshake (via
@@ -33,23 +33,14 @@ func TestDoDetach_ReattachReusesTokenAndReconnect(t *testing.T) {
 	srv := newServer(t, token, func(*bridgetest.Turn, map[string]any) {})
 	sandbox := newFakeSandbox(srv)
 
-	var mintMu sync.Mutex
-	var mintCalls []string
 	reconnect := bridge.ReconnectOptions{MaxElapsed: 120 * time.Second, InitialDelay: 100 * time.Millisecond, MaxDelay: 5 * time.Second}
 	traceHeaders := map[string]string{"E2B-Traffic-Access-Token": "traffic-token"}
 	h := CreateDeepAgents(Settings{
-		MintBridgeToken: func(sandboxID string) string {
-			mintMu.Lock()
-			mintCalls = append(mintCalls, sandboxID)
-			mintMu.Unlock()
-			return token
-		},
 		Reconnect: reconnect,
 		// A custom PortEndpoint (in place of the sandbox's own
 		// GetPortEndpoint) carrying extra query params and headers, mirroring
 		// the TS test's `portEndpoint: { url: 'wss://sandbox.example/bridge?
-		// existing=value', headers: {...} }`. WithBridgeToken appends the
-		// real bridge token as a further query param, same as TS.
+		// existing=value', headers: {...} }`. No token is added to the URL.
 		PortEndpoint: &harness.PortEndpoint{URL: "ws://" + srv.Addr() + "/?existing=value", Headers: traceHeaders},
 	})
 
@@ -59,12 +50,6 @@ func TestDoDetach_ReattachReusesTokenAndReconnect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoStart (initial): %v", err)
 	}
-
-	mintMu.Lock()
-	if len(mintCalls) != 1 || mintCalls[0] != "test-sandbox" {
-		t.Fatalf("mintCalls after initial start = %v, want exactly [test-sandbox]", mintCalls)
-	}
-	mintMu.Unlock()
 
 	initialChannel := sess.(*session).p.channel
 	if got := initialChannel.ReconnectOptions(); got != reconnect {
@@ -79,8 +64,8 @@ func TestDoDetach_ReattachReusesTokenAndReconnect(t *testing.T) {
 	if err := json.Unmarshal(resumeFrom.Data, &resumeData); err != nil {
 		t.Fatalf("unmarshal resumeFrom.Data: %v", err)
 	}
-	if resumeData.Bridge == nil || resumeData.Bridge.Token != token {
-		t.Fatalf("resumeFrom bridge coords = %+v, want token %q", resumeData.Bridge, token)
+	if resumeData.Bridge == nil || resumeData.Bridge.PrivateKey != bridgeauthkeys.Testing().PrivateKey {
+		t.Fatalf("resumeFrom bridge coords = %+v, want the session private key", resumeData.Bridge)
 	}
 
 	attachedSess, err := h.DoStart(context.Background(), harness.StartOptions{
@@ -91,12 +76,6 @@ func TestDoDetach_ReattachReusesTokenAndReconnect(t *testing.T) {
 		t.Fatalf("DoStart (reattach): %v", err)
 	}
 	t.Cleanup(func() { _ = attachedSess.DoDestroy(context.Background()) })
-
-	mintMu.Lock()
-	defer mintMu.Unlock()
-	if len(mintCalls) != 1 {
-		t.Fatalf("mintCalls after reattach = %v, want still exactly 1 (the token must be reused, not re-minted)", mintCalls)
-	}
 
 	attachedChannel := attachedSess.(*session).p.channel
 	if got := attachedChannel.ReconnectOptions(); got != reconnect {
@@ -206,7 +185,6 @@ func TestDoStart_WarnsWhenCredentialBrokeringUnavailable(t *testing.T) {
 	t.Cleanup(func() { harnessutil.Warn = orig })
 
 	h := CreateDeepAgents(Settings{
-		MintBridgeToken: func(string) string { return token },
 		Auth: harness.AuthEnvironment(map[string]string{
 			"ANTHROPIC_API_KEY": "anthropic-secret",
 		}),
@@ -255,7 +233,6 @@ func TestDoStart_CustomForwardingSuppressesBrokeringWarning(t *testing.T) {
 
 	var forwarded []harness.CredentialForwardingOptions
 	h := CreateDeepAgents(Settings{
-		MintBridgeToken: func(string) string { return token },
 		Auth: harness.AuthEnvironment(map[string]string{
 			"ANTHROPIC_API_KEY": "anthropic-secret",
 		}),
@@ -307,11 +284,12 @@ func TestValidateLifecycleStateData(t *testing.T) {
 	}{
 		{"empty", "", false},
 		{"empty object", "{}", false},
-		{"well-formed bridge coords", `{"bridge":{"port":4319,"token":"tok","lastSeenEventId":3}}`, false},
+		{"well-formed bridge coords", `{"bridge":{"port":4319,"privateKey":"k","lastSeenEventId":3}}`, false},
 		{"well-formed with sandboxCredentialEnvironment", `{"sandboxCredentialEnvironment":{"ANTHROPIC_API_KEY":"placeholder"}}`, false},
 		{"malformed json", `{not json`, true},
-		{"bridge.port wrong type", `{"bridge":{"port":"not-a-number","token":"tok","lastSeenEventId":3}}`, true},
-		{"bridge.token wrong type", `{"bridge":{"port":4319,"token":123,"lastSeenEventId":3}}`, true},
+		{"bridge.port wrong type", `{"bridge":{"port":"not-a-number","privateKey":"k","lastSeenEventId":3}}`, true},
+		{"bridge.privateKey wrong type", `{"bridge":{"port":4319,"privateKey":123,"lastSeenEventId":3}}`, true},
+		{"legacy bridge.token", `{"bridge":{"port":4319,"token":"tok","lastSeenEventId":3}}`, true},
 		{"top-level array instead of object", `[1,2,3]`, true},
 	}
 	for _, tc := range cases {

@@ -21,18 +21,12 @@ func TestSupportsNativeStructuredOutput_DisabledModels(t *testing.T) {
 		"anthropic.claude-opus-4-8",
 		"us.anthropic.claude-opus-4-8",
 		"eu.anthropic.claude-opus-4-8",
-		"anthropic.claude-opus-5",
-		"us.anthropic.claude-opus-5",
-		"eu.anthropic.claude-opus-5",
 		"anthropic.claude-fable-5",
 		"us.anthropic.claude-fable-5",
 		"eu.anthropic.claude-fable-5",
 		"anthropic.claude-fable-5-1",
 		"us.anthropic.claude-fable-5-1",
 		"global.anthropic.claude-fable-5-1",
-		"anthropic.claude-sonnet-5",
-		"us.anthropic.claude-sonnet-5",
-		"eu.anthropic.claude-sonnet-5",
 	}
 	for _, modelID := range models {
 		t.Run(modelID, func(t *testing.T) {
@@ -51,18 +45,12 @@ func TestSupportsStrictTools_DisabledModels(t *testing.T) {
 		"anthropic.claude-opus-4-8",
 		"us.anthropic.claude-opus-4-8",
 		"eu.anthropic.claude-opus-4-8",
-		"anthropic.claude-opus-5",
-		"us.anthropic.claude-opus-5",
-		"eu.anthropic.claude-opus-5",
 		"anthropic.claude-fable-5",
 		"us.anthropic.claude-fable-5",
 		"eu.anthropic.claude-fable-5",
 		"anthropic.claude-fable-5-1",
 		"us.anthropic.claude-fable-5-1",
 		"global.anthropic.claude-fable-5-1",
-		"anthropic.claude-sonnet-5",
-		"us.anthropic.claude-sonnet-5",
-		"eu.anthropic.claude-sonnet-5",
 	}
 	for _, modelID := range models {
 		t.Run(modelID, func(t *testing.T) {

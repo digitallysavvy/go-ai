@@ -358,8 +358,8 @@ func TestSmoothStream_ChunkDetectorNonPrefixMatchIsError(t *testing.T) {
 	if len(out) == 0 || out[0].Type != provider.ChunkTypeError {
 		t.Fatalf("expected a ChunkTypeError chunk, got %+v", out)
 	}
-	if !strings.Contains(out[0].Text, "must be a prefix") && !strings.Contains(out[0].Text, "expected to start with") {
-		t.Errorf("error text = %q", out[0].Text)
+	if want := "Chunking function must return a match that is a prefix of the buffer. Received: \"world\" which is not a prefix of buffer \"Hello, world!\""; out[0].Text != want {
+		t.Errorf("error text = %q, want %q", out[0].Text, want)
 	}
 }
 

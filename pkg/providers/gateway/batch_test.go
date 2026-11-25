@@ -3,10 +3,12 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -191,8 +193,8 @@ func TestGatewayBatch_DoStartBatch_RequestBodyShape(t *testing.T) {
 	}
 	second, _ := requests[1].(map[string]interface{})
 	secondOptions, _ := second["options"].(map[string]interface{})
-	if secondOptions["maxTokens"] != float64(32) {
-		t.Fatalf("second request maxTokens = %v, want 32", secondOptions["maxTokens"])
+	if secondOptions["maxOutputTokens"] != float64(32) {
+		t.Fatalf("second request maxOutputTokens = %v, want 32", secondOptions["maxOutputTokens"])
 	}
 	if secondOptions["temperature"] != float64(0) {
 		t.Fatalf("second request temperature = %v, want 0", secondOptions["temperature"])
@@ -508,5 +510,91 @@ func TestGatewayBatch_ImplementsBatchV4Capabilities(t *testing.T) {
 	}
 	if _, ok := batch.(provider.BatchV4Lister); ok {
 		t.Fatalf("gateway batch does not (yet) implement BatchV4Lister")
+	}
+}
+
+// TS isAbortOrTimeoutError: cancellation and timeouts are not wrapped into
+// Gateway errors on the batch surface.
+func TestGatewayBatchKeepsCancellationAndTimeoutErrors(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	defer srv.Close()
+	defer close(release)
+	p, err := New(Config{APIKey: "k", BaseURL: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := p.ExperimentalBatch()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = b.DoGetBatchStatus(ctx, provider.BatchV4OperationOptions{BatchID: "x"})
+	var gwErr *gatewayerrors.GatewayResponseError
+	if !errors.Is(err, context.Canceled) || errors.As(err, &gwErr) {
+		t.Fatalf("cancel: want the raw context error, got %T %v", err, err)
+	}
+
+	tctx, tcancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer tcancel()
+	_, err = b.DoStartBatch(tctx, provider.BatchV4StartOptions{Requests: []provider.BatchV4Request{testBatchTextRequest("a", "openai/gpt-5")}})
+	var timeoutErr *gatewayerrors.GatewayTimeoutError
+	if !errors.Is(err, context.DeadlineExceeded) || errors.As(err, &timeoutErr) {
+		t.Fatalf("timeout: want the raw deadline error, got %T %v", err, err)
+	}
+}
+
+func TestGatewayBatchRejectsUnsupportedTypeBeforeModelMismatch(t *testing.T) {
+	_, err := validateGatewayTextBatchRequests([]provider.BatchV4Request{
+		testBatchTextRequest("a", "openai/a"),
+		testBatchTextRequest("b", "openai/b"),
+		{Type: provider.BatchRequestTypeImage},
+	})
+	var unsupported *providererrors.UnsupportedFunctionalityError
+	if !errors.As(err, &unsupported) {
+		t.Fatalf("want UnsupportedFunctionalityError (all requests are checked as text first), got %T %v", err, err)
+	}
+}
+
+// TS validates each /batch/results line against
+// {type:'text', id:string, status:enum}; an invalid line fails the stream
+// with a JSONParseError / TypeValidationError instead of yielding a bogus item.
+func TestGatewayBatch_DoGetBatchResults_ValidatesLines(t *testing.T) {
+	cases := map[string]string{
+		"wrong type":     `{"type":"image","id":"r","status":"succeeded"}`,
+		"missing id":     `{"type":"text","status":"succeeded"}`,
+		"unknown status": `{"type":"text","id":"r","status":"pending"}`,
+		"not json":       `{"type":"text"`,
+	}
+	for name, line := range cases {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/x-ndjson")
+				_, _ = w.Write([]byte(line + "\n"))
+			}))
+			defer server.Close()
+			p, err := New(Config{APIKey: "test-key", BaseURL: server.URL})
+			if err != nil {
+				t.Fatal(err)
+			}
+			stream, err := p.ExperimentalBatch().DoGetBatchResults(context.Background(), provider.BatchV4OperationOptions{BatchID: "job"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = stream.Close() }()
+			item, err := stream.Next()
+			if err == nil || item != nil {
+				t.Fatalf("want validation error, got item=%+v err=%v", item, err)
+			}
+			var jp *providererrors.JSONParseError
+			var tv *providererrors.TypeValidationError
+			if !errors.As(err, &jp) && !errors.As(err, &tv) {
+				t.Fatalf("err = %T %v, want JSONParseError or TypeValidationError", err, err)
+			}
+		})
 	}
 }

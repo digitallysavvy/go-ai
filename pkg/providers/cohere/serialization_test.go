@@ -13,7 +13,7 @@ func TestCohereSerializeAndDeserializeLanguageModel(t *testing.T) {
 		t.Fatalf("LanguageModel error = %v", err)
 	}
 	serialized := modelAny.(*LanguageModel).Serialize()
-	if serialized.Provider != "cohere" || serialized.ModelID != "command-r-plus" || serialized.Config == nil {
+	if serialized.Provider != "cohere.chat" || serialized.ModelID != "command-r-plus" || serialized.Config == nil {
 		t.Fatalf("serialize mismatch: %#v", serialized)
 	}
 
@@ -21,7 +21,7 @@ func TestCohereSerializeAndDeserializeLanguageModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("deserializeModel error = %v", err)
 	}
-	if restored.Provider() != "cohere" || restored.ModelID() != "command-r-plus" {
+	if restored.Provider() != "cohere.chat" || restored.ModelID() != "command-r-plus" {
 		t.Fatalf("restored mismatch: provider=%s model=%s", restored.Provider(), restored.ModelID())
 	}
 }
@@ -33,7 +33,7 @@ func TestCohereSerializeAndDeserializeEmbeddingModel(t *testing.T) {
 		t.Fatalf("EmbeddingModel error = %v", err)
 	}
 	serialized := modelAny.(*EmbeddingModel).Serialize()
-	if serialized.Provider != "cohere" || serialized.ModelID != "embed-english-v3.0" || serialized.Config == nil {
+	if serialized.Provider != "cohere.textEmbedding" || serialized.ModelID != "embed-english-v3.0" || serialized.Config == nil {
 		t.Fatalf("serialize mismatch: %#v", serialized)
 	}
 	if _, ok := serialized.Config["APIKey"]; ok {
@@ -44,7 +44,7 @@ func TestCohereSerializeAndDeserializeEmbeddingModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("deserializeEmbeddingModel error = %v", err)
 	}
-	if restored.Provider() != "cohere" || restored.ModelID() != "embed-english-v3.0" {
+	if restored.Provider() != "cohere.textEmbedding" || restored.ModelID() != "embed-english-v3.0" {
 		t.Fatalf("restored mismatch: provider=%s model=%s", restored.Provider(), restored.ModelID())
 	}
 

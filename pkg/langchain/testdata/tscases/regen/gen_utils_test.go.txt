@@ -1,0 +1,132 @@
+package langchain
+
+import (
+	"encoding/json"
+	"os"
+	"sort"
+	"strings"
+	"testing"
+)
+
+func TestZZUGen(t *testing.T) {
+	in := os.Getenv("LC_UIN")
+	if in == "" {
+		t.Skip()
+	}
+	data, _ := os.ReadFile(in)
+	var cases map[string]struct {
+		Events []interface{}          `json:"events"`
+		State  int                    `json:"state"`
+		Seed   map[string]interface{} `json:"seed"`
+		Kind   string                 `json:"kind"`
+		State0 map[string]interface{} `json:"state0"`
+	}
+	if err := json.Unmarshal(data, &cases); err != nil {
+		t.Fatal(err)
+	}
+	keys := make([]string, 0, len(cases))
+	for k := range cases {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys) // calls #L0,#L1.. in order (single digit assumption checked below)
+	states := map[string]*eventState{}
+	out := map[string]interface{}{}
+	for _, k := range keys {
+		c := cases[k]
+		if c.Kind == "model" {
+			test := k[:strings.LastIndex(k, "#")]
+			st := states["M:"+test]
+			fresh := st == nil
+			if fresh {
+				st = newEventState()
+				states["M:"+test] = st
+			}
+			s0 := c.State0
+			mid, _ := s0["messageId"].(string)
+			if !fresh {
+				s0 = map[string]interface{}{}
+			} else {
+				st.streamStarted, _ = s0["started"].(bool)
+				st.streamMessageID = mid
+			}
+			if v, _ := s0["reasoningStarted"].(bool); v {
+				st.streamReasoningStarted = true
+				st.streamReasoningID = mid
+				if r, ok := s0["reasoningMessageId"].(string); ok {
+					st.streamReasoningID = r
+				}
+			}
+			if v, _ := s0["textStarted"].(bool); v {
+				st.streamTextStarted = true
+				st.streamTextID = mid
+				if r, ok := s0["textMessageId"].(string); ok {
+					st.streamTextID = r
+				}
+			}
+			chunks := processModelChunk(st, c.Events[0])
+			b, _ := json.Marshal(chunks)
+			var norm interface{}
+			_ = json.Unmarshal(b, &norm)
+			if norm == nil {
+				norm = []interface{}{}
+			}
+			out[k] = norm
+			continue
+		}
+		if c.Kind != "lang" {
+			continue
+		}
+		test := k[:strings.LastIndex(k, "#")]
+		skey := test
+		_ = c.State
+		st := states[skey]
+		if st == nil {
+			st = newEventState()
+			states[skey] = st
+			for name, v := range c.Seed {
+				arr, _ := v.([]interface{})
+				for _, it := range arr {
+					switch name {
+					case "emittedToolCalls":
+						st.emittedToolCalls[it.(string)] = true
+					case "emittedImages":
+						st.emittedImages[it.(string)] = true
+					case "emittedReasoningIds":
+						st.emittedReasoningIDs[it.(string)] = true
+					case "messageSeen":
+						p := it.([]interface{})
+						ms := &messageSeenState{}
+						m := p[1].(map[string]interface{})
+						ms.text, _ = m["text"].(bool)
+						ms.reasoning, _ = m["reasoning"].(bool)
+						st.messageSeen[p[0].(string)] = ms
+						st.messageOrder = append(st.messageOrder, p[0].(string))
+					case "currentStepsByNamespace":
+						p := it.([]interface{})
+						st.currentStepsByNamespace[p[0].(string)] = int(p[1].(float64))
+					case "emittedToolCallsByKey":
+						p := it.([]interface{})
+						key := p[0].(string)
+						i := strings.Index(key, ":")
+						var args interface{}
+						_ = json.Unmarshal([]byte(key[i+1:]), &args)
+						st.emittedToolCallsByKey[toolCallKey(key[:i], args)] = p[1].(string)
+					default:
+						t.Fatalf("unhandled seed %s", name)
+					}
+				}
+			}
+		}
+		tuple := c.Events[0].([]interface{})
+		chunks := processLangGraphEvent(st, ParseLangGraphEvent(tuple))
+		b, _ := json.Marshal(chunks)
+		var norm interface{}
+		_ = json.Unmarshal(b, &norm)
+		if norm == nil {
+			norm = []interface{}{}
+		}
+		out[k] = norm
+	}
+	b, _ := json.Marshal(out)
+	_ = os.WriteFile(os.Getenv("LC_OUT"), b, 0o644)
+}

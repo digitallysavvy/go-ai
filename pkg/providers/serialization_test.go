@@ -82,7 +82,7 @@ func TestAnthropicModelWorkflowSerializationRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SerializeModel() error: %v", err)
 	}
-	if serialized.Provider != "anthropic" || serialized.ModelID != "claude-sonnet-4-20250514" {
+	if serialized.Provider != "anthropic.messages" || serialized.ModelID != "claude-sonnet-4-20250514" {
 		t.Fatalf("unexpected serialized model: %#v", serialized)
 	}
 	if _, ok := serialized.Config["APIKey"]; ok {
@@ -92,7 +92,7 @@ func TestAnthropicModelWorkflowSerializationRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DeserializeModel() error: %v", err)
 	}
-	if restored.Provider() != "anthropic" || restored.ModelID() != "claude-sonnet-4-20250514" {
+	if restored.Provider() != "anthropic.messages" || restored.ModelID() != "claude-sonnet-4-20250514" {
 		t.Fatalf("unexpected restored model provider=%q model=%q", restored.Provider(), restored.ModelID())
 	}
 }

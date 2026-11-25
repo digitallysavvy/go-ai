@@ -173,12 +173,19 @@ func TestNewMultipartStreamBody_CloseWithoutReadingDoesNotLeakGoroutine(t *testi
 	}
 }
 
-// CR/LF in a caller-supplied part name, file name or media type never reach a
-// part header line (TS escapeMultipartHeaderValue drops them).
-func TestNewMultipartStreamBody_HeaderCRLFStripped(t *testing.T) {
+type closeTrackingReader struct {
+	*io.PipeReader
+	closed chan struct{}
+}
+
+func (c *closeTrackingReader) Close() error { close(c.closed); return c.PipeReader.Close() }
+
+// TS: a filename parameter is always emitted (default "blob"), CR/LF never
+// reach a header, and an abandoned upload releases the file content.
+func TestNewMultipartStreamBody_BlobFilenameAndHeaderSanitizing(t *testing.T) {
 	body, ct, err := NewMultipartStreamBody([]MultipartStreamPart{
 		{Name: "a\r\nX-Evil: 1", Value: "v"},
-		{IsFile: true, Name: "file\r\nX-Evil: 2", Filename: "f.txt\"\r\nX-Evil: 3", MediaType: "text/plain\r\nX-Evil: 4", Content: strings.NewReader("data")},
+		{IsFile: true, Name: "file", MediaType: "text/plain\r\nX: y", Content: strings.NewReader("data")},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -189,21 +196,33 @@ func TestNewMultipartStreamBody_HeaderCRLFStripped(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(raw)
-	if strings.Contains(s, "\r\nX-Evil") || strings.Contains(s, "\nX-Evil") {
-		t.Fatalf("header smuggling: %q", s)
-	}
-	if !strings.Contains(s, `name="fileX-Evil: 2"; filename="f.txt\"X-Evil: 3"`) || !strings.Contains(s, "Content-Type: text/plainX-Evil: 4\r\n") {
+	if !strings.Contains(s, `name="aX-Evil: 1"`) || !strings.Contains(s, `filename="blob"`) || !strings.Contains(s, "Content-Type: text/plainX: y\r\n") {
 		t.Fatalf("unexpected body: %q", s)
+	}
+	if strings.Contains(s, "\r\nX-Evil") {
+		t.Fatalf("header smuggling: %q", s)
 	}
 	_, params, _ := mime.ParseMediaType(ct)
 	mr := multipart.NewReader(strings.NewReader(s), params["boundary"])
 	for i := 0; i < 2; i++ {
-		p, err := mr.NextPart()
-		if err != nil {
+		if _, err := mr.NextPart(); err != nil {
 			t.Fatalf("part %d: %v", i, err)
 		}
-		if p.Header.Get("X-Evil") != "" {
-			t.Fatalf("part %d has injected header", i)
-		}
+	}
+}
+
+func TestNewMultipartStreamBody_CloseReleasesUnfinishedContent(t *testing.T) {
+	pr, pw := io.Pipe() // never written: Read blocks until closed
+	defer func() { _ = pw.Close() }()
+	c := &closeTrackingReader{PipeReader: pr, closed: make(chan struct{})}
+	body, _, err := NewMultipartStreamBody([]MultipartStreamPart{{IsFile: true, Name: "f", Content: c}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = body.Close()
+	select {
+	case <-c.closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("content was not released on Close")
 	}
 }

@@ -62,6 +62,7 @@ func TestSetMaxWorkers_RejectsNegativeValues(t *testing.T) {
 func TestSetMaxWorkers_AcceptsZeroAsUnlimited(t *testing.T) {
 	// Unlike TypeScript's setMaxWorkers, 0 is Go's "unlimited" sentinel
 	// here, not a rejected value -- see SetMaxWorkers's doc comment.
+	t.Cleanup(ResetMaxWorkers)
 	if err := SetMaxWorkers(0); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

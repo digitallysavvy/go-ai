@@ -40,7 +40,7 @@ func WithUserAgentSuffix(headers map[string]string, suffixParts ...string) map[s
 
 	normalized := make(map[string]string, intsafe.AddCap(len(headers), 1))
 	for _, k := range keys {
-		normalized[strings.ToLower(k)] = headers[k]
+		normalized[JSToLower(k)] = headers[k]
 	}
 
 	parts := make([]string, 0, intsafe.AddCap(len(suffixParts), 1))

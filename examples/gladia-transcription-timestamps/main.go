@@ -23,7 +23,7 @@ func main() {
 	})
 
 	// Get transcription model
-	model, err := p.TranscriptionModel("whisper-v3")
+	model, err := p.TranscriptionModel(gladia.ModelSolaria1)
 	if err != nil {
 		log.Fatalf("Failed to create transcription model: %v", err)
 	}

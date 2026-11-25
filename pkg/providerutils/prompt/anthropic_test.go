@@ -2,6 +2,7 @@ package prompt
 
 import (
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -450,6 +451,23 @@ func TestConvertToAnthropicPrompt_Golden(t *testing.T) {
 			wantMessages: `[{"role":"user","content":[{"type":"tool_result","tool_use_id":"pdf-1","content":[{"type":"document","source":{"type":"url","url":"https://example.com/doc.pdf"}}]}]}]`,
 		},
 		{
+			name: "tool result with provider-referenced file",
+			messages: []types.Message{{Role: types.RoleTool, Content: []types.ContentPart{
+				types.ToolResultContent{ToolName: "get-file", ToolCallID: "get-file-1", Output: &types.ToolResultOutput{
+					Type: types.ToolResultOutputContent,
+					Content: []types.ToolResultContentBlock{
+						types.FileContentBlock{FileData: types.FileData{Type: types.FileDataTypeReference, Reference: types.ProviderReference{"anthropic": "file-txt-12345"}}, MediaType: "text/plain"},
+						types.FileContentBlock{FileData: types.FileData{Type: types.FileDataTypeReference, Reference: types.ProviderReference{"anthropic": "file-img-1"}}, MediaType: "image/png"},
+					},
+				}},
+			}}},
+			wantMessages: `[{"role":"user","content":[{"type":"tool_result","tool_use_id":"get-file-1","content":[
+				{"type":"document","source":{"type":"file","file_id":"file-txt-12345"}},
+				{"type":"image","source":{"type":"file","file_id":"file-img-1"}}
+			]}]}]`,
+			wantBetas: []string{AnthropicBetaFilesAPI},
+		},
+		{
 			name: "error-text and execution-denied tool results",
 			messages: []types.Message{{Role: types.RoleTool, Content: []types.ContentPart{
 				types.ToolResultContent{ToolName: "t", ToolCallID: "c1", Output: &types.ToolResultOutput{Type: types.ToolResultOutputErrorText, Value: "boom"}},
@@ -653,6 +671,50 @@ func TestConvertToAnthropicPrompt_Golden(t *testing.T) {
 			]}]`,
 		},
 		{
+			name: "tool_search_tool_regex error-json error result round-trips (TS #22438)",
+			messages: []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{
+				types.ToolCallContent{ToolCallID: "srvtoolu_x", ToolName: "tool_search_tool_regex", ProviderExecuted: true, Arguments: map[string]interface{}{"pattern": "["}},
+				types.ToolResultContent{ToolCallID: "srvtoolu_x", ToolName: "tool_search_tool_regex", Output: &types.ToolResultOutput{Type: types.ToolResultOutputErrorJSON, Value: `{"type":"tool_search_tool_result_error","errorCode":"invalid_tool_input"}`}},
+			}}},
+			wantMessages: `[{"role":"assistant","content":[
+				{"type":"server_tool_use","id":"srvtoolu_x","name":"tool_search_tool_regex","input":{"pattern":"["}},
+				{"type":"tool_search_tool_result","tool_use_id":"srvtoolu_x","content":{"type":"tool_search_tool_result_error","error_code":"invalid_tool_input"}}
+			]}]`,
+		},
+		{
+			name: "tool_search_tool_regex json error result round-trips (TS #22438)",
+			messages: []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{
+				types.ToolCallContent{ToolCallID: "srvtoolu_x", ToolName: "tool_search_tool_regex", ProviderExecuted: true, Arguments: map[string]interface{}{"pattern": "["}},
+				types.ToolResultContent{ToolCallID: "srvtoolu_x", ToolName: "tool_search_tool_regex", Output: &types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: map[string]interface{}{"type": "tool_search_tool_result_error", "errorCode": "invalid_tool_input"}}},
+			}}},
+			wantMessages: `[{"role":"assistant","content":[
+				{"type":"server_tool_use","id":"srvtoolu_x","name":"tool_search_tool_regex","input":{"pattern":"["}},
+				{"type":"tool_search_tool_result","tool_use_id":"srvtoolu_x","content":{"type":"tool_search_tool_result_error","error_code":"invalid_tool_input"}}
+			]}]`,
+		},
+		{
+			name: "tool_search_tool_bm25 error-json error result round-trips (TS #22438)",
+			messages: []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{
+				types.ToolCallContent{ToolCallID: "srvtoolu_x", ToolName: "tool_search_tool_bm25", ProviderExecuted: true, Arguments: map[string]interface{}{"query": "weather"}},
+				types.ToolResultContent{ToolCallID: "srvtoolu_x", ToolName: "tool_search_tool_bm25", Output: &types.ToolResultOutput{Type: types.ToolResultOutputErrorJSON, Value: `{"type":"tool_search_tool_result_error","errorCode":"invalid_tool_input"}`}},
+			}}},
+			wantMessages: `[{"role":"assistant","content":[
+				{"type":"server_tool_use","id":"srvtoolu_x","name":"tool_search_tool_bm25","input":{"query":"weather"}},
+				{"type":"tool_search_tool_result","tool_use_id":"srvtoolu_x","content":{"type":"tool_search_tool_result_error","error_code":"invalid_tool_input"}}
+			]}]`,
+		},
+		{
+			name: "tool_search_tool_bm25 json error result round-trips (TS #22438)",
+			messages: []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{
+				types.ToolCallContent{ToolCallID: "srvtoolu_x", ToolName: "tool_search_tool_bm25", ProviderExecuted: true, Arguments: map[string]interface{}{"query": "weather"}},
+				types.ToolResultContent{ToolCallID: "srvtoolu_x", ToolName: "tool_search_tool_bm25", Output: &types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: map[string]interface{}{"type": "tool_search_tool_result_error", "errorCode": "invalid_tool_input"}}},
+			}}},
+			wantMessages: `[{"role":"assistant","content":[
+				{"type":"server_tool_use","id":"srvtoolu_x","name":"tool_search_tool_bm25","input":{"query":"weather"}},
+				{"type":"tool_search_tool_result","tool_use_id":"srvtoolu_x","content":{"type":"tool_search_tool_result_error","error_code":"invalid_tool_input"}}
+			]}]`,
+		},
+		{
 			name: "web_fetch tool call and result",
 			messages: []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{
 				types.ToolCallContent{ToolCallID: "f", ToolName: "anthropic.web_fetch_20250910", ProviderExecuted: true, Arguments: map[string]interface{}{"url": "https://example.com"}},
@@ -800,7 +862,7 @@ func TestConvertToAnthropicPrompt_Golden(t *testing.T) {
 			name: "preserve fallback boundaries between reasoning blocks",
 			messages: []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{
 				types.ReasoningContent{Text: "Primary model thinking", ProviderOptions: anthropicOpt("signature", "primary-signature")},
-				types.CustomContent{Kind: "anthropic.fallback", ProviderOptions: anthropicOpt("from", map[string]interface{}{"model": "claude-opus-5-5"}, "to", map[string]interface{}{"model": "claude-opus-4-8"})},
+				types.CustomContent{Kind: "anthropic.fallback", ProviderOptions: anthropicOpt("type", "fallback", "from", map[string]interface{}{"model": "claude-opus-5-5"}, "to", map[string]interface{}{"model": "claude-opus-4-8"})},
 				types.ReasoningContent{Text: "Fallback model thinking", ProviderOptions: anthropicOpt("signature", "fallback-signature")},
 			}}},
 			wantMessages: `[{"role":"assistant","content":[
@@ -808,14 +870,57 @@ func TestConvertToAnthropicPrompt_Golden(t *testing.T) {
 				{"type":"fallback","from":{"model":"claude-opus-5-5"},"to":{"model":"claude-opus-4-8"}},
 				{"type":"thinking","thinking":"Fallback model thinking","signature":"fallback-signature"}
 			]}]`,
+			wantBetas: []string{AnthropicBetaServerSideFallback},
+		},
+		// TS #21979: message-start accounting parts are never replayed.
+		{
+			name: "ignore message-start accounting parts when replaying assistant content",
+			messages: []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{
+				types.CustomContent{Kind: "anthropic.message_start", ProviderOptions: anthropicOpt("id", "msg_usage", "model", "claude-haiku-4-5", "usage", map[string]interface{}{"input_tokens": 13, "output_tokens": 1})},
+				types.TextContent{Text: "Hi!"},
+			}}},
+			wantMessages: `[{"role":"assistant","content":[{"type":"text","text":"Hi!"}]}]`,
+		},
+		// TS anthropicFallbackContentSchema requires type: 'fallback'.
+		{
+			name: "warn and omit fallback boundaries without the fallback type",
+			messages: []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{
+				types.CustomContent{Kind: "anthropic.fallback", ProviderOptions: anthropicOpt("from", map[string]interface{}{"model": "claude-opus-5-5"}, "to", map[string]interface{}{"model": "claude-opus-4-8"})},
+			}}},
+			wantMessages: `[]`,
+			wantWarnings: []string{"anthropic fallback metadata must include from.model and to.model"},
+		},
+		// TS only replays anthropic.fallback custom parts: other kinds, such as
+		// the container_upload a code execution response returns, are dropped.
+		{
+			name: "drop non-fallback custom parts when replaying assistant content",
+			messages: []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{
+				types.CustomContent{Kind: "anthropic.container_upload", ProviderOptions: anthropicOpt("fileId", "file_1")},
+				types.TextContent{Text: "Hi!"},
+			}}},
+			wantMessages: `[{"role":"assistant","content":[{"type":"text","text":"Hi!"}]}]`,
 		},
 		{
 			name: "warn and omit fallback boundaries with invalid metadata",
 			messages: []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{
-				types.CustomContent{Kind: "anthropic.fallback", ProviderOptions: anthropicOpt("from", map[string]interface{}{"model": "claude-opus-5-5"})},
+				types.CustomContent{Kind: "anthropic.fallback", ProviderOptions: anthropicOpt("type", "fallback", "from", map[string]interface{}{"model": "claude-opus-5-5"})},
 			}}},
 			wantMessages: `[]`,
 			wantWarnings: []string{"anthropic fallback metadata must include from.model and to.model"},
+		},
+		{
+			name: "fallback metadata without type fallback and non-fallback custom kinds",
+			messages: []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{
+				types.CustomContent{Kind: "anthropic.fallback", ProviderOptions: anthropicOpt("from", map[string]interface{}{"model": "a"}, "to", map[string]interface{}{"model": "b"})},
+				types.CustomContent{Kind: "anthropic.container_upload", ProviderOptions: anthropicOpt("type", "container_upload", "file_id", "f1")},
+				types.CustomContent{Kind: "anthropic.fallback"},
+				types.TextContent{Text: "Hi!"},
+			}}},
+			wantMessages: `[{"role":"assistant","content":[{"type":"text","text":"Hi!"}]}]`,
+			wantWarnings: []string{
+				"anthropic fallback metadata must include from.model and to.model",
+				"anthropic fallback metadata must include from.model and to.model",
+			},
 		},
 		{
 			name: "mcp tool use parts",
@@ -1141,4 +1246,152 @@ func TestConvertToAnthropicPrompt_LegacyToolResultFields(t *testing.T) {
 		{"type":"tool_result","tool_use_id":"b","content":"{\"ok\":true}"},
 		{"type":"tool_result","tool_use_id":"c","content":"failed","is_error":true}
 	]}]`)
+}
+
+func TestAnthropicLastAssistantTextTrimIsJSTrim(t *testing.T) {
+	msgs := []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{types.TextContent{Text: "hi\xef\xbb\xbf "}}}}
+	got, err := ConvertToAnthropicPrompt(msgs, AnthropicPromptOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := got.Messages[0]["content"].([]map[string]interface{})
+	if content[0]["text"] != "hi" {
+		t.Fatalf("text = %q", content[0]["text"])
+	}
+}
+
+// TS tool_search_tool_result error blocks carry no `caller`.
+func TestAnthropicToolSearchErrorResultHasNoCaller(t *testing.T) {
+	opts := map[string]interface{}{"anthropic": map[string]interface{}{"caller": map[string]interface{}{"type": "direct"}}}
+	msgs := []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{
+		types.ToolResultContent{ToolCallID: "s", ToolName: "tool_search_tool_regex", ProviderOptions: opts,
+			Output: &types.ToolResultOutput{Type: types.ToolResultOutputErrorJSON, Value: map[string]interface{}{"errorCode": "too_many_requests"}}},
+	}}}
+	got, err := ConvertToAnthropicPrompt(msgs, AnthropicPromptOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	part := got.Messages[0]["content"].([]map[string]interface{})[0]
+	if _, has := part["caller"]; has {
+		t.Fatalf("unexpected caller: %v", part)
+	}
+}
+
+// TS: `title: metadata.title ?? part.filename` -- an explicit empty title
+// stays empty; only an absent one falls back to the filename.
+func TestConvertToAnthropicPrompt_EmptyDocumentTitleStaysEmpty(t *testing.T) {
+	p, err := ConvertToAnthropicPrompt([]types.Message{{Role: types.RoleUser, Content: []types.ContentPart{
+		types.FileContent{Data: []byte("text"), MediaType: "text/plain", Filename: "a.txt", ProviderOptions: anthropicOpt("title", "")},
+	}}}, AnthropicPromptOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertJSONEqual(t, "messages", p.Messages, `[{"role":"user","content":[{"type":"document","source":{"type":"text","media_type":"text/plain","data":"text"},"title":""}]}]`)
+}
+
+// TS toAnthropicToolInput: JSON null input becomes {rawInvalidInput: null}.
+func TestConvertToAnthropicPrompt_NullToolInputRecordedAsRawInvalid(t *testing.T) {
+	p, err := ConvertToAnthropicPrompt([]types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{
+		types.ToolCallContent{ToolCallID: "t1", ToolName: "x", Input: "null"},
+	}}}, AnthropicPromptOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertJSONEqual(t, "messages", p.Messages, `[{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"x","input":{"rawInvalidInput":null}}]}]`)
+}
+
+// TestAnthropicSystemMessageOptionsValidation: TS parseProviderOptions with
+// anthropicSystemMessageProviderOptions rejects a bad clearAt, effort or
+// toolChanges entry with an InvalidArgumentError.
+func TestAnthropicSystemMessageOptionsValidation(t *testing.T) {
+	cases := map[string]map[string]interface{}{
+		"clearAt":         {"clearAt": "always"},
+		"effort":          {"effort": "ultra"},
+		"effortType":      {"effort": 3},
+		"toolChangesType": {"toolChanges": "weather"},
+		"toolChangeType":  {"toolChanges": []interface{}{map[string]interface{}{"type": "tool_swap", "toolName": "w"}}},
+		"toolChangeName":  {"toolChanges": []interface{}{map[string]interface{}{"type": "tool_addition"}}},
+	}
+	for name, opts := range cases {
+		anthropicOptions := map[string]interface{}{"anthropic": opts}
+		_, err := ConvertToAnthropicPrompt([]types.Message{
+			systemText("initial", nil),
+			userText("hi"),
+			systemText("", anthropicOptions),
+		}, AnthropicPromptOptions{})
+		var invalid *providererrors.InvalidArgumentError
+		if !errors.As(err, &invalid) {
+			t.Errorf("%s: want InvalidArgumentError, got %v", name, err)
+		}
+	}
+}
+
+// TestAnthropicFilePartOptionsValidation: TS parseProviderOptions with
+// anthropicFilePartProviderOptions rejects wrongly typed options.
+func TestAnthropicFilePartOptionsValidation(t *testing.T) {
+	cases := map[string]map[string]interface{}{
+		"title":           {"title": 5},
+		"context":         {"context": true},
+		"citations":       {"citations": "yes"},
+		"citationEnabled": {"citations": map[string]interface{}{"enabled": "yes"}},
+		"citationMissing": {"citations": map[string]interface{}{}},
+	}
+	for name, opts := range cases {
+		_, err := ConvertToAnthropicPrompt([]types.Message{{
+			Role: types.RoleUser,
+			Content: []types.ContentPart{types.FileContent{
+				Data:            []byte("%PDF-1.4"),
+				MediaType:       "application/pdf",
+				ProviderOptions: map[string]interface{}{"anthropic": opts},
+			}},
+		}}, AnthropicPromptOptions{})
+		var invalid *providererrors.InvalidArgumentError
+		if !errors.As(err, &invalid) {
+			t.Errorf("%s: want InvalidArgumentError, got %v", name, err)
+		}
+	}
+}
+
+// TS validates provider tool outputs with the tool's output schema
+// (validateTypes) and throws the TypeValidationError on a mismatch.
+func TestConvertToAnthropicPrompt_ProviderToolOutputValidation(t *testing.T) {
+	json := func(v interface{}) *types.ToolResultOutput {
+		return &types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: v}
+	}
+	cases := []struct {
+		name, tool string
+		value      interface{}
+		wantErr    string
+	}{
+		{"web_search not array", "web_search", map[string]interface{}{"url": "x"}, "expected array"},
+		{"web_search missing encryptedContent", "web_search", []interface{}{map[string]interface{}{"url": "u", "title": nil, "pageAge": nil, "type": "web_search_result"}}, "encryptedContent"},
+		{"web_fetch missing url", "web_fetch", map[string]interface{}{"type": "web_fetch_result"}, "url"},
+		{"tool_search bad ref", "tool_search_tool_regex", []interface{}{map[string]interface{}{"type": "tool_reference"}}, "toolName"},
+		{"advisor unknown type", "advisor", map[string]interface{}{"type": "nope"}, "No matching discriminator"},
+		{"code_execution bad stdout", "code_execution", map[string]interface{}{"type": "code_execution_result", "stdout": 1, "stderr": "", "return_code": 0}, "stdout"},
+		{"code_execution unknown type", "code_execution", map[string]interface{}{"type": "mystery"}, "No matching discriminator"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ConvertToAnthropicPrompt([]types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{
+				types.ToolResultContent{ToolCallID: "s", ToolName: tc.tool, Output: json(tc.value)},
+			}}}, AnthropicPromptOptions{})
+			if !providererrors.IsValidationError(err) || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("err = %v, want TypeValidationError containing %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// zod objects drop keys the schema does not list.
+func TestConvertToAnthropicPrompt_CodeExecutionOutputStripsUnknownKeys(t *testing.T) {
+	got, err := ConvertToAnthropicPrompt([]types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{
+		types.ToolResultContent{ToolCallID: "s", ToolName: "code_execution", Output: &types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: map[string]interface{}{
+			"type": "text_editor_code_execution_create_result", "is_file_update": true, "extra": "drop",
+		}}},
+	}}}, AnthropicPromptOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertJSONEqual(t, "content", got.Messages[0]["content"], `[{"type":"text_editor_code_execution_tool_result","tool_use_id":"s","content":{"type":"text_editor_code_execution_create_result","is_file_update":true}}]`)
 }

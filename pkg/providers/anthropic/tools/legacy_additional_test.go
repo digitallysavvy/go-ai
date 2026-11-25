@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -11,12 +12,6 @@ func TestLegacyTools_ConstructorsAndExecutionGuards(t *testing.T) {
 
 	tools := []types.Tool{
 		CodeExecution20250522(),
-		Memory20250818(),
-		TextEditor20241022(),
-		TextEditor20250124(),
-		TextEditor20250429(),
-		Computer20241022(Computer20241022Args{DisplayWidthPx: 1280, DisplayHeightPx: 720}),
-		Computer20250124(Computer20241022Args{DisplayWidthPx: 1280, DisplayHeightPx: 720}),
 	}
 
 	for _, tool := range tools {
@@ -31,6 +26,47 @@ func TestLegacyTools_ConstructorsAndExecutionGuards(t *testing.T) {
 			_, err := tool.Execute(t.Context(), map[string]interface{}{}, types.ToolExecutionOptions{})
 			if err == nil {
 				t.Fatalf("%s execute must return provider-executed error", tool.Name)
+			}
+		})
+	}
+}
+
+// The computer, computer toolset, text editor and memory tools are executed by
+// the caller in TS (provider tools with a caller-supplied execute): not
+// provider-executed, no built-in Execute, WithExecute installs one.
+func TestClientExecutedTools_NotProviderExecuted(t *testing.T) {
+	t.Parallel()
+
+	dims := Computer20241022Args{DisplayWidthPx: 1280, DisplayHeightPx: 720}
+	tools := []types.Tool{
+		Memory20250818(),
+		TextEditor20241022(),
+		TextEditor20250124(),
+		TextEditor20250429(),
+		TextEditor20250728(TextEditor20250728Args{}),
+		Computer20241022(dims),
+		Computer20250124(dims),
+		Computer20251124(Computer20251124Args{DisplayWidthPx: 1, DisplayHeightPx: 1}),
+		ComputerToolset20260801(ComputerToolset20260801Config{}),
+	}
+	for _, tool := range tools {
+		tool := tool
+		t.Run(tool.Name, func(t *testing.T) {
+			if tool.ProviderExecuted {
+				t.Fatalf("%s must not be provider-executed", tool.Name)
+			}
+			if tool.Execute != nil {
+				t.Fatalf("%s must have no built-in Execute", tool.Name)
+			}
+			with := WithExecute(tool, func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+				return "ok", nil
+			})
+			out, err := with.Execute(t.Context(), nil, types.ToolExecutionOptions{})
+			if err != nil || out != "ok" {
+				t.Fatalf("WithExecute: %v, %v", out, err)
+			}
+			if tool.Execute != nil {
+				t.Fatal("WithExecute mutated the original tool")
 			}
 		})
 	}
@@ -160,5 +196,17 @@ func TestCurrentToolOptionMappers(t *testing.T) {
 	cMap := cMapper.ToAnthropicAPIMap()
 	if cMap["type"] != "computer_20251124" || cMap["enable_zoom"] != true {
 		t.Fatalf("computer API map mismatch: %#v", cMap)
+	}
+}
+
+// TS leaves enable_zoom out unless enableZoom is set.
+func TestComputer20251124EnableZoomOmittedWhenUnset(t *testing.T) {
+	off := (&computer20251124Opts{Args: Computer20251124Args{DisplayWidthPx: 1, DisplayHeightPx: 2}}).ToAnthropicAPIMap()
+	if _, ok := off["enable_zoom"]; ok {
+		t.Fatalf("enable_zoom sent when unset: %v", off)
+	}
+	on := (&computer20251124Opts{Args: Computer20251124Args{DisplayWidthPx: 1, DisplayHeightPx: 2, EnableZoom: true}}).ToAnthropicAPIMap()
+	if on["enable_zoom"] != true {
+		t.Fatalf("enable_zoom = %v, want true", on["enable_zoom"])
 	}
 }

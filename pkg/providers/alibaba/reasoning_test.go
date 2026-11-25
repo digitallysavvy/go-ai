@@ -42,6 +42,7 @@ func TestAlibabaReasoningEnablesThinkingWithBudget(t *testing.T) {
 		{types.ReasoningMedium, 4915},
 		{types.ReasoningHigh, 9830},
 		{types.ReasoningXHigh, 14746},
+		{types.ReasoningMax, 15565},
 	}
 
 	for _, tt := range tests {
@@ -131,6 +132,8 @@ func TestAlibabaCamelCaseProviderOptions(t *testing.T) {
 	model := NewLanguageModel(prov, "qwen-plus")
 
 	opts := &provider.GenerateOptions{
+		// TS sends parallel_tool_calls only when the request carries tools.
+		Tools: []types.Tool{{Name: "t", Parameters: map[string]interface{}{"type": "object"}}},
 		ProviderOptions: map[string]interface{}{
 			"alibaba": map[string]interface{}{
 				"enableThinking":    true,

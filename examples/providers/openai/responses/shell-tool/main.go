@@ -6,6 +6,8 @@
 //   - Building a shell tool with a managed container environment
 //   - Building a shell tool with a referenced container
 //   - Building an apply_patch tool for filesystem operations
+//   - Attaching a local implementation with responses.WithExecute (these tools are
+//     client-executed, as in the TypeScript SDK)
 //   - Serializing all tool types to the wire format expected by the Responses API
 //
 // Run with:
@@ -14,6 +16,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -100,7 +103,11 @@ func shellContainerReferenceExample() {
 // applyPatchExample shows the apply_patch tool for making filesystem changes.
 // The model uses this to create, update, or delete files via unified diffs.
 func applyPatchExample() {
-	tool := responses.NewApplyPatchTool()
+	// Client-executed: attach the implementation that applies the diff.
+	tool := responses.WithExecute(responses.NewApplyPatchTool(),
+		func(ctx context.Context, input map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+			return map[string]interface{}{"status": "completed"}, nil
+		})
 	printToolWireFormat("apply_patch", tool)
 }
 

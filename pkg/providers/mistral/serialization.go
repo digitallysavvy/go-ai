@@ -8,9 +8,13 @@ import (
 
 func init() {
 	provider.RegisterModelDeserializer("mistral", deserializeModel)
+	provider.RegisterModelDeserializer("mistral.chat", deserializeModel)
 	provider.RegisterEmbeddingModelDeserializer("mistral", deserializeEmbeddingModel)
+	provider.RegisterEmbeddingModelDeserializer("mistral.embedding", deserializeEmbeddingModel)
 	provider.RegisterSpeechModelDeserializer("mistral", deserializeSpeechModel)
+	provider.RegisterSpeechModelDeserializer("mistral.speech", deserializeSpeechModel)
 	provider.RegisterTranscriptionModelDeserializer("mistral", deserializeTranscriptionModel)
+	provider.RegisterTranscriptionModelDeserializer("mistral.transcription", deserializeTranscriptionModel)
 }
 
 func (m *LanguageModel) Serialize() provider.SerializedModel {

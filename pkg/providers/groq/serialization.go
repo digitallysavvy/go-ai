@@ -8,7 +8,9 @@ import (
 
 func init() {
 	provider.RegisterModelDeserializer("groq", deserializeModel)
+	provider.RegisterModelDeserializer("groq.chat", deserializeModel)
 	provider.RegisterTranscriptionModelDeserializer("groq", deserializeTranscriptionModel)
+	provider.RegisterTranscriptionModelDeserializer("groq.transcription", deserializeTranscriptionModel)
 }
 
 func (m *LanguageModel) Serialize() provider.SerializedModel {

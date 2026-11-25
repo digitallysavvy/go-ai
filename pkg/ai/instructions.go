@@ -3,6 +3,7 @@ package ai
 import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	promptutils "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
 
 // validateInstructionMessages checks that instructions given as messages are
@@ -11,13 +12,38 @@ import (
 func validateInstructionMessages(messages []types.Message) error {
 	for _, message := range messages {
 		if message.Role != types.RoleSystem {
-			return &providererrors.InvalidArgumentError{
-				Field:   "instructions",
-				Message: "instructions must be a string, SystemModelMessage, or array of SystemModelMessage",
-			}
+			return invalidInstructionsError()
 		}
 	}
 	return nil
+}
+
+// invalidInstructionsError is the error for instructions that are not all
+// system messages. TS standardizePrompt throws an InvalidPromptError ("Invalid
+// prompt: instructions must be a string, SystemModelMessage, or array of
+// SystemModelMessage"). Its Cause is the *InvalidArgumentError (field
+// "instructions") that v0.5 returned, so errors.As matches either type.
+func invalidInstructionsError() error {
+	const message = "instructions must be a string, SystemModelMessage, or array of SystemModelMessage"
+	return &providererrors.InvalidPromptError{
+		Message: message,
+		Cause:   &providererrors.InvalidArgumentError{Field: "instructions", Message: message},
+	}
+}
+
+// validateStandardizedPromptInput runs the input checks of TS standardizePrompt
+// in its order: a prompt or messages must be given, not both; the
+// instructions must be system messages; the messages must not be empty.
+func validateStandardizedPromptInput(prompt string, messages []types.Message, instructionMessages []types.Message) error {
+	err := promptutils.ValidatePromptInput(prompt, messages)
+	emptyMessages := err != nil && prompt == "" && messages != nil && len(messages) == 0
+	if err != nil && !emptyMessages {
+		return err
+	}
+	if instructionsErr := validateInstructionMessages(instructionMessages); instructionsErr != nil {
+		return instructionsErr
+	}
+	return err
 }
 
 // instructionMessagesText concatenates the text parts of system-message

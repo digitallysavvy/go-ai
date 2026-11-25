@@ -459,8 +459,8 @@ func TestSpeechModel_ResponseMetadata(t *testing.T) {
 	if result.Response.Headers["X-Request-Id"] != "test-request-id" {
 		t.Fatalf("headers = %#v", result.Response.Headers)
 	}
-	if result.Request.Body != `{"format":"mp3","text":"Hello, world!"}` {
-		// map key order from json.Marshal is alphabetical for map[string]interface{}.
+	if result.Request.Body != `{"text":"Hello, world!","format":"mp3"}` {
+		// JSON.stringify keeps the TS object-literal key order.
 		t.Fatalf("request body = %q", result.Request.Body)
 	}
 }

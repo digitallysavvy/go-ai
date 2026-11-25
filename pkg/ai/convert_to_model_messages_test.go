@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -708,4 +709,61 @@ func TestConvertToModelMessages_DataPartConversion(t *testing.T) {
 		require.Len(t, result, 1)
 		assert.Equal(t, []types.ContentPart{types.TextContent{Text: "weather for Kyoto"}}, result[0].Content)
 	})
+}
+
+// ports convert-to-model-messages.test.ts > 'should omit persisted output when a static tool is no longer available' (TS #21796)
+func TestConvertToModelMessages_OmitsOutputOfUnavailableStaticTool(t *testing.T) {
+	ctx := context.Background()
+	historicalTool := types.Tool{
+		Name:       "search",
+		Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{"query": map[string]interface{}{"type": "string"}}},
+		ToModelOutput: func(ctx context.Context, opts types.ToModelOutputOptions) (*types.ToolResultOutput, error) {
+			out := opts.Output.(map[string]interface{})
+			return &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: out["summary"].(string)}, nil
+		},
+	}
+	history := []UIMessage{{
+		ID: "assistant-1", Role: UIMessageRoleAssistant,
+		Parts: []UIMessagePart{&ToolUIPart{
+			Type: "tool-search", ToolCallID: "call-1", State: ToolStateOutputAvailable,
+			Input:  map[string]interface{}{"query": "weather"},
+			Output: map[string]interface{}{"summary": "sunny", "privateMetadata": "must-not-reach-the-model"},
+		}},
+	}}
+
+	validated, err := ValidateUIMessages(ctx, ValidateUIMessagesOptions{Messages: history, Tools: []types.Tool{}})
+	require.NoError(t, err)
+	part, ok := validated[0].Parts[0].(*ToolUIPart)
+	require.True(t, ok)
+	assert.Equal(t, "dynamic-tool", part.Type)
+	require.NotNil(t, part.Dynamic)
+	assert.False(t, *part.Dynamic)
+
+	// Survives a JSON persistence round-trip and revalidation.
+	data, err := json.Marshal(validated)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `"dynamic":false`)
+	revalidated, err := ValidateUIMessages(ctx, ValidateUIMessagesOptions{Messages: string(data), Tools: []types.Tool{}})
+	require.NoError(t, err)
+
+	msgs, err := ConvertToModelMessages(ctx, revalidated, ConvertToModelMessagesOptions{Tools: []types.Tool{}})
+	require.NoError(t, err)
+	require.Len(t, msgs, 2)
+	result := msgs[1].Content[0].(types.ToolResultContent)
+	assert.Equal(t, &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: "Tool output omitted because the tool is no longer available."}, result.Output)
+
+	// Supplying the historical tool restores its toModelOutput.
+	msgs, err = ConvertToModelMessages(ctx, revalidated, ConvertToModelMessagesOptions{Tools: []types.Tool{historicalTool}})
+	require.NoError(t, err)
+	result = msgs[1].Content[0].(types.ToolResultContent)
+	assert.Equal(t, &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: "sunny"}, result.Output)
+
+	// A genuine dynamic tool (no provenance) keeps the raw-output fallback.
+	genuine := []UIMessage{{ID: "a", Role: UIMessageRoleAssistant, Parts: []UIMessagePart{&ToolUIPart{
+		Type: "dynamic-tool", ToolName: "search", ToolCallID: "c", State: ToolStateOutputAvailable,
+		Input: map[string]interface{}{}, Output: "raw",
+	}}}}
+	msgs, err = ConvertToModelMessages(ctx, genuine)
+	require.NoError(t, err)
+	assert.Equal(t, &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: "raw"}, msgs[1].Content[0].(types.ToolResultContent).Output)
 }

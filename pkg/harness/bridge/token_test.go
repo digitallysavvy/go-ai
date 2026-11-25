@@ -66,3 +66,31 @@ func TestWithBridgeTokenReplacesExisting(t *testing.T) {
 		t.Fatalf("expected no headers, got %+v", out.Headers)
 	}
 }
+
+// WHATWG URL#toString gives a special-scheme URL an explicit "/" path.
+func TestWithBridgeToken_EmptyPathGetsSlash(t *testing.T) {
+	endpoint, err := WithBridgeToken(harness.PortEndpoint{URL: "ws://Host.Example:1234"}, "tok")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "ws://host.example:1234/?agent_bridge_token=tok"; endpoint.URL != want {
+		t.Fatalf("got %q want %q", endpoint.URL, want)
+	}
+}
+
+func TestWithBridgeToken_WHATWGDefaultPortAndLenientQuery(t *testing.T) {
+	cases := map[string]string{
+		"ws://Host:80/a?x=a+b%zz": "ws://host/a?x=a+b%25zz&agent_bridge_token=tok",
+		"wss://h:443":             "wss://h/?agent_bridge_token=tok",
+		"wss://h:80":              "wss://h:80/?agent_bridge_token=tok",
+	}
+	for in, want := range cases {
+		endpoint, err := WithBridgeToken(harness.PortEndpoint{URL: in}, "tok")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if endpoint.URL != want {
+			t.Errorf("%s: got %q want %q", in, endpoint.URL, want)
+		}
+	}
+}

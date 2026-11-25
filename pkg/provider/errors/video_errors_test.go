@@ -27,13 +27,15 @@ func TestVideoGenerationErrorFormattingAndUnwrap(t *testing.T) {
 	if err.Unwrap() != cause {
 		t.Fatal("Unwrap() should return cause")
 	}
+	// TS provider video models throw AISDKError({message}): the text is the
+	// provider message alone (r89 integrator, BFL failure text).
 	msg := err.Error()
-	if !strings.Contains(msg, "provider=klingai") || !strings.Contains(msg, "model=kling-v1") || !strings.Contains(msg, "request failed") || !strings.Contains(msg, "upstream timeout") {
+	if msg != "request failed: upstream timeout" || err.Provider != "klingai" || err.ModelID != "kling-v1" {
 		t.Fatalf("Error() = %q", msg)
 	}
 
 	noCause := NewVideoGenerationError("xai", "grok-video", "request failed", nil)
-	if strings.Contains(noCause.Error(), "upstream timeout") {
+	if noCause.Error() != "request failed" {
 		t.Fatalf("Error() should not contain cause when nil: %q", noCause.Error())
 	}
 }

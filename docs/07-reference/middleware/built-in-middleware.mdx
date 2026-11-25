@@ -95,6 +95,11 @@ type ExtractReasoningOptions struct {
     // (e.g., "think" for Anthropic, "reasoning" for OpenAI)
     TagName string
 
+    // Delimiters, when set, replaces TagName with literal opening and closing
+    // delimiters (regex metacharacters match literally). Both must be non-empty;
+    // otherwise the constructor panics with *errors.InvalidArgumentError.
+    Delimiters *ReasoningDelimiters
+
     // Separator is the separator to use between reasoning and text sections
     // Default: "\n"
     Separator string
@@ -112,6 +117,20 @@ reasoningMw := middleware.ExtractReasoningMiddleware(&middleware.ExtractReasonin
     TagName: "think",
 })
 wrapped := middleware.WrapLanguageModel(baseModel, []*middleware.LanguageModelMiddleware{reasoningMw}, nil, nil)
+```
+
+### Custom delimiters
+
+Some models (for example Gemma 4) use asymmetric, non-XML markers. Pass
+`Delimiters` instead of `TagName`:
+
+```go
+reasoningMw := middleware.ExtractReasoningMiddleware(&middleware.ExtractReasoningOptions{
+    Delimiters: &middleware.ReasoningDelimiters{
+        Opening: "<|channel>thought\n",
+        Closing: "<channel|>",
+    },
+})
 ```
 
 ## SimulateStreamingMiddleware

@@ -56,6 +56,10 @@ func ExperimentalGetVideoStatus(ctx context.Context, model provider.VideoModelV3
 		return nil, fmt.Errorf("Video model %s does not implement doStatus.", model.ModelID()) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 
+	if err := validateMaxRetries(opts.MaxRetries); err != nil {
+		return nil, err
+	}
+
 	statusOpts := &provider.VideoModelV3StatusOptions{
 		Operation: opts.Operation,
 		Headers:   videoHeadersWithUserAgent(opts.Headers),

@@ -1,0 +1,126 @@
+---
+title: ScaleDown Provider
+description: Setup and usage guide for ScaleDown decision models with Go AI SDK
+---
+
+# ScaleDown Provider
+
+ScaleDown provides decision models for the experimental `ai.ExperimentalDecide`
+API (choice, boolean and score questions about a state, through the ScaleDown
+Decisions API, `POST {baseURL}/v1/scaledown`) and extraction models for
+`ai.ExperimentalExtract`. These are the only capabilities: `LanguageModel`,
+`EmbeddingModel`, `ImageModel`, `SpeechModel`, `TranscriptionModel` and
+`RerankingModel` return `NoSuchModelError`.
+
+## Setup
+
+```go
+import (
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    goprovider "github.com/digitallysavvy/go-ai/pkg/provider"
+    "github.com/digitallysavvy/go-ai/pkg/providers/scaledown"
+)
+
+provider := scaledown.New(scaledown.Config{
+    APIKey: os.Getenv("SCALEDOWN_API_KEY"),
+})
+```
+
+`scaledown.Config` also accepts `BaseURL` (default
+`https://api.scaledown.xyz`, a trailing slash is removed), `Headers` (added to
+every request; they override `x-api-key`) and `HTTPClient`. When `APIKey` is
+empty, `SCALEDOWN_API_KEY` is read on each request. `scaledown.CreateScaleDown`
+is an alias of `scaledown.New`.
+
+## Decision
+
+```go
+model, err := provider.DecisionModel(scaledown.DecisionModelClassify1)
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := ai.ExperimentalDecide(ctx, ai.DecideOptions{
+    Model: model,
+    State: "Refund request for order 1234: the parcel arrived damaged.",
+    Questions: map[string]goprovider.DecisionQuestion{
+        "topic": {
+            Type:         "choice",
+            Instructions: "What is the request about?",
+            Criteria:     []interface{}{"billing", "shipping", "account"},
+        },
+    },
+})
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Println(result.Answers["topic"])
+```
+
+### Model IDs
+
+`scaledown.DecisionModelClassify` (`classify`) and
+`scaledown.DecisionModelClassify1` (`classify-1`); any other ID is sent
+unchanged.
+
+### Questions and state
+
+- Boolean questions are sent as the native `noul` type with their criteria
+  folded into the instructions; structured instructions and criteria are sent
+  as JSON text. Box questions are not supported.
+- The state may hold one JPEG, PNG, TIFF or PDF document (inline data); other
+  files fail with `*errors.UnsupportedFunctionalityError` before any request.
+- Per-question confidence, score legends and the request cost are in
+  `ProviderMetadata["scaledown"]`.
+- ScaleDown has no provider options: every `ProviderOptions["scaledown"]` key,
+  and `MaxOutputTokens` or `Reasoning`, produce `unsupported` warnings.
+
+## Extraction
+
+```go
+model, err := provider.ExtractionModel(scaledown.ExtractionModelExtract1)
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := ai.ExperimentalExtract(ctx, ai.ExtractOptions{
+    Model: model,
+    State: "Invoice INV-2041 from Acme, total due $1,250.00.",
+    Fields: map[string]goprovider.ExtractionField{
+        "vendor": {Type: goprovider.ExtractionFieldText, Instructions: "Vendor name"},
+    },
+})
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Println(result.Answers["vendor"].Value)
+```
+
+- Model IDs: `scaledown.ExtractionModelExtract` (`extract`) and
+  `scaledown.ExtractionModelExtract1` (`extract-1`), listed by
+  `scaledown.ExtractionModelIDs()`; any other ID is sent unchanged.
+- `text` fields and `list` fields of `text` items are supported; other field
+  types fail with `*errors.ExtractionUnsupportedFieldTypeError` before any
+  request. A text answer keeps the highest-confidence match (the first of
+  equal ones) with its confidence and source; a list answer has every match
+  with per-item confidence and source; a missing value is `nil`.
+- Text sources are converted from ScaleDown's UTF-8 byte offsets to UTF-16
+  offsets into the state part. The state may hold one JPEG, PNG, TIFF or PDF
+  document (inline data, sent base64); a value read from it gets a file
+  source when the OCR text contains it.
+- Provider options (`ProviderOptions["scaledown"]`, `scaledown.ExtractionModelOptions`):
+  `threshold`, the minimum confidence from 0 to 1; other keys are ignored.
+  `MaxOutputTokens`, `Reasoning` and `ReferenceDate` produce `unsupported`
+  warnings. OCR text of a document is in `ProviderMetadata["scaledown"]["ocrText"]`.
+
+## Workflow serialization
+
+The decision model serializes as `scaledown.decision` and the extraction model
+as `scaledown.extraction`. The base URL and static
+headers are kept; the API key is never serialized, so the restored model reads
+`SCALEDOWN_API_KEY`. See
+[Provider Serialization](../03-agents/07-workflow-agent.mdx#provider-serialization).
+
+## See Also
+
+- [TS ScaleDown provider documentation](https://ai-sdk.dev/providers/ai-sdk-providers/scaledown)

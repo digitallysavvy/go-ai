@@ -45,6 +45,14 @@ func TestDetectAlibabaVideoProtocol(t *testing.T) {
 		{"wan2.7-t2v", alibabaProtocolWan27},
 		{"wan2.7-r2v-2026-06-12", alibabaProtocolWan27},
 		{"wan3.0-video", alibabaProtocolWan3},
+		{"wan2.8-r2v", alibabaProtocolWan27},
+		{"wan2.10-r2v", alibabaProtocolWan27},
+		{"wan2.2-t2v-plus", alibabaProtocolLegacy},
+		{"wanx2.1-t2v-turbo", alibabaProtocolLegacy},
+		{"wan1.0-t2v", alibabaProtocolLegacy},
+		{"wan4.0-video", alibabaProtocolWan3},
+		{"wan10.0-video", alibabaProtocolWan3},
+		{"wan-next-video", alibabaProtocolWan3},
 	}
 	for _, tt := range tests {
 		if got := detectAlibabaVideoProtocol(tt.modelID); got != tt.want {
@@ -570,5 +578,83 @@ func TestVideoModelAcceptsCustomModelID(t *testing.T) {
 	}
 	if m.ModelID() != "wan3.0-video" {
 		t.Errorf("ModelID() = %q", m.ModelID())
+	}
+}
+
+// TestBuildRequest_FutureWanProtocols mirrors the TS tests "should use the
+// tiered reference protocol / legacy size protocol / latest all-in-one
+// protocol" for models beyond the ones named in the original prefix checks.
+func TestBuildRequest_FutureWanProtocols(t *testing.T) {
+	for _, id := range []string{"wan2.7-r2v", "wan2.8-r2v", "wan2.10-r2v"} {
+		req := buildOpts(id).buildRequest(&provider.VideoModelV3CallOptions{
+			Prompt:          "p",
+			Resolution:      "1280x720",
+			AspectRatio:     "16:9",
+			InputReferences: []provider.VideoModelV3File{{Type: "url", URL: "https://example.com/ref.jpg"}},
+		})
+		if req.Input["reference_urls"] != nil || req.Input["media"] == nil {
+			t.Errorf("%s: input = %#v", id, req.Input)
+		}
+		if req.Parameters["resolution"] != "720P" || req.Parameters["ratio"] != "16:9" || req.Parameters["size"] != nil {
+			t.Errorf("%s: parameters = %#v", id, req.Parameters)
+		}
+	}
+	for _, id := range []string{"wan2.6-t2v", "wan2.2-t2v-plus", "wanx2.1-t2v-turbo"} {
+		req := buildOpts(id).buildRequest(&provider.VideoModelV3CallOptions{Prompt: "p", Resolution: "1280x720"})
+		if req.Parameters["size"] != "1280*720" || req.Parameters["resolution"] != nil {
+			t.Errorf("%s: parameters = %#v", id, req.Parameters)
+		}
+	}
+	for _, id := range []string{"wan4.0-video", "wan10.0-video", "wan-next-video"} {
+		req := buildOpts(id).buildRequest(&provider.VideoModelV3CallOptions{
+			Prompt:          "p",
+			Resolution:      "832x480",
+			AspectRatio:     "16:9",
+			InputReferences: []provider.VideoModelV3File{{Type: "url", URL: "https://example.com/ref.jpg"}},
+		})
+		if req.Input["img_url"] != nil || req.Input["reference_urls"] != nil || req.Input["media"] == nil {
+			t.Errorf("%s: input = %#v", id, req.Input)
+		}
+		if req.Parameters["resolution"] != "480P" || req.Parameters["size"] != nil {
+			t.Errorf("%s: parameters = %#v", id, req.Parameters)
+		}
+	}
+}
+
+// TS parseProviderOptions(alibabaVideoModelOptionsSchema) rejects mistyped
+// options instead of ignoring them, and the X-DashScope-Async flag cannot be
+// overridden by caller headers.
+func TestVideoModelDoStartValidatesOptionsAndPinsAsyncHeader(t *testing.T) {
+	var asyncHeader string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asyncHeader = r.Header.Get("X-DashScope-Async")
+		_, _ = w.Write([]byte(`{"output":{"task_id":"t1","task_status":"PENDING"}}`))
+	}))
+	defer server.Close()
+	model := NewVideoModel(New(Config{APIKey: "k", VideoBaseURL: server.URL}), "wan2.6-t2v")
+
+	for name, opts := range map[string]map[string]interface{}{
+		"shotType enum":   {"shotType": "triple"},
+		"promptExtend":    {"promptExtend": "yes"},
+		"media item type": {"media": []interface{}{map[string]interface{}{"type": "bogus", "url": "u"}}},
+		"ratio enum":      {"ratio": "5:4"},
+		"pollInterval<=0": {"pollIntervalMs": 0},
+	} {
+		_, err := model.DoStart(context.Background(), &provider.VideoModelV3StartOptions{VideoModelV3CallOptions: provider.VideoModelV3CallOptions{
+			Prompt: "x", PromptSet: true, ProviderOptions: map[string]interface{}{"alibaba": opts},
+		}})
+		if err == nil {
+			t.Errorf("%s: expected a validation error", name)
+		}
+	}
+
+	_, err := model.DoStart(context.Background(), &provider.VideoModelV3StartOptions{VideoModelV3CallOptions: provider.VideoModelV3CallOptions{
+		Prompt: "x", PromptSet: true, Headers: map[string]string{"X-DashScope-Async": "disable"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if asyncHeader != "enable" {
+		t.Errorf("X-DashScope-Async = %q, want enable", asyncHeader)
 	}
 }

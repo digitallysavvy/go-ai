@@ -26,11 +26,26 @@ type WebSearchConfig struct {
 //	    AllowedDomains: []string{"example.com"},
 //	})
 func WebSearch(config WebSearchConfig) types.Tool {
-	return types.Tool{
+	args := map[string]interface{}{}
+	if config.AllowedDomains != nil {
+		args["allowedDomains"] = config.AllowedDomains
+	}
+	if config.ExcludedDomains != nil {
+		args["excludedDomains"] = config.ExcludedDomains
+	}
+	if config.EnableImageSearch != nil {
+		args["enableImageSearch"] = *config.EnableImageSearch
+	}
+	if config.EnableImageUnderstanding != nil {
+		args["enableImageUnderstanding"] = *config.EnableImageUnderstanding
+	}
+	return xaiProviderTool(types.Tool{
 		Name:             "xai.web_search",
 		Description:      "Search the web for current information. Returns queries and source results.",
+		Parameters:       xaiSchema(xaiEmptyInputSchemaJSON),
+		OutputSchema:     xaiSchema(xaiWebSearchOutputSchemaJSON),
 		ProviderExecuted: true,
 		ProviderOptions:  config,
 		Execute:          providerExecutedNoop("xai.web_search"),
-	}
+	}, args)
 }

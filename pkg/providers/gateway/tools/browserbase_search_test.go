@@ -14,7 +14,7 @@ func TestNewBrowserbaseSearchSchemaAndProviderExecutedStub(t *testing.T) {
 	if tool.Name != "browserbase_search" {
 		t.Fatalf("name = %q", tool.Name)
 	}
-	if tool.Title != "Browserbase Search" || !tool.ProviderExecuted {
+	if tool.Title != "" || !tool.ProviderExecuted {
 		t.Fatalf("tool metadata = %#v", tool)
 	}
 	if tool.Type != types.ToolTypeProviderDefined || tool.ProviderID != "gateway.browserbase_search" {
@@ -39,17 +39,17 @@ func TestNewBrowserbaseSearchSchemaAndProviderExecutedStub(t *testing.T) {
 	if !ok {
 		t.Fatalf("output schema type = %T", tool.OutputSchema)
 	}
-	variants, ok := output["oneOf"].([]interface{})
+	variants, ok := output["anyOf"].([]interface{})
 	if !ok || len(variants) != 2 {
 		t.Fatalf("output schema should match TS success/error union: %#v", output)
 	}
 	success := variants[0].(map[string]interface{})
-	successRequired := success["required"].([]string)
+	successRequired := r72provStrings(success["required"])
 	if !containsString(successRequired, "requestId") {
 		t.Fatalf("success schema should require requestId: %#v", success)
 	}
 	errorSchema := variants[1].(map[string]interface{})["properties"].(map[string]interface{})
-	errorEnum := errorSchema["error"].(map[string]interface{})["enum"].([]string)
+	errorEnum := r72provStrings(errorSchema["error"].(map[string]interface{})["enum"])
 	if !containsString(errorEnum, "timeout") {
 		t.Fatalf("output error enum missing TS timeout: %#v", errorEnum)
 	}

@@ -83,6 +83,11 @@ documented catalog. An empty model ID defaults to `wan2.6-t2v`.
 replaces separate t2v/i2v/r2v model IDs with one model that branches on
 which inputs (`Prompt` only, `Image`, or `InputReferences`) you pass.
 
+The request protocol is chosen from the Wan version in the model ID. Versions
+before 2.7 (including `wanx` IDs) use the legacy size-based protocol, 2.7 through
+2.x use the tiered resolution protocol, and newer or unrecognized IDs (for example
+`wan4.0-video`) use the latest all-in-one protocol.
+
 ### Embedding Models
 
 Alibaba DashScope text embeddings are exposed through `Provider.EmbeddingModel` and `Provider.Embedding`.

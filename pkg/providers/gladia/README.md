@@ -48,7 +48,7 @@ func main() {
     })
 
     // Get transcription model
-    model, err := p.TranscriptionModel("whisper-v3")
+    model, err := p.TranscriptionModel(gladia.ModelSolaria1) // or "" for the Gladia default
     if err != nil {
         log.Fatal(err)
     }

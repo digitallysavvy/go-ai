@@ -24,15 +24,12 @@ func TestProviderUnsupportedModels(t *testing.T) {
 	if _, err := p.ImageModel("x"); err == nil {
 		t.Fatal("ImageModel should return unsupported error")
 	}
-	if _, err := p.SpeechModel("x"); err == nil {
-		t.Fatal("SpeechModel should return unsupported error")
-	}
 	if _, err := p.RerankingModel("x"); err == nil {
 		t.Fatal("RerankingModel should return unsupported error")
 	}
 }
 
-func TestDoTranscribe_LegacyBestModel(t *testing.T) {
+func TestDoTranscribe_FlagshipModel(t *testing.T) {
 	t.Parallel()
 
 	var (
@@ -74,13 +71,13 @@ func TestDoTranscribe_LegacyBestModel(t *testing.T) {
 	defer srv.Close()
 
 	p := New(Config{APIKey: "asm-key", BaseURL: srv.URL})
-	mAny, err := p.TranscriptionModel("best")
+	mAny, err := p.TranscriptionModel(ModelAssemblyAISTT37)
 	if err != nil {
 		t.Fatalf("TranscriptionModel: %v", err)
 	}
 	m := mAny.(*TranscriptionModel)
-	if m.ModelID() != "best" {
-		t.Fatalf("ModelID = %q, want best", m.ModelID())
+	if m.ModelID() != ModelAssemblyAISTT37 {
+		t.Fatalf("ModelID = %q, want %s", m.ModelID(), ModelAssemblyAISTT37)
 	}
 
 	got, err := m.DoTranscribe(context.Background(), &provider.TranscriptionOptions{
@@ -100,11 +97,11 @@ func TestDoTranscribe_LegacyBestModel(t *testing.T) {
 	if seenTranscriptRaw["language_code"] != "en" {
 		t.Fatalf("language_code = %#v", seenTranscriptRaw["language_code"])
 	}
-	if seenTranscriptRaw["speech_model"] != "best" {
-		t.Fatalf("speech_model = %#v", seenTranscriptRaw["speech_model"])
+	if _, ok := seenTranscriptRaw["speech_model"]; ok {
+		t.Fatalf("speech_model must never be sent: %#v", seenTranscriptRaw["speech_model"])
 	}
-	if _, ok := seenTranscriptRaw["speech_models"]; ok {
-		t.Fatalf("speech_models should not be set for 'best' model")
+	if models, _ := seenTranscriptRaw["speech_models"].([]interface{}); len(models) != 1 || models[0] != ModelAssemblyAISTT37 {
+		t.Fatalf("speech_models = %#v", seenTranscriptRaw["speech_models"])
 	}
 	if got.Text != "hello world" {
 		t.Fatalf("Text = %q", got.Text)
@@ -119,20 +116,8 @@ func TestDoTranscribe_LegacyBestModel(t *testing.T) {
 	if got.Usage.DurationSeconds != 2.3 {
 		t.Fatalf("duration = %v, want 2.3", got.Usage.DurationSeconds)
 	}
-	foundDeprecation := false
-	for _, w := range got.Warnings {
-		if w.Type == "deprecated" {
-			foundDeprecation = true
-			if w.Setting != "model 'best'" {
-				t.Fatalf("deprecated warning setting = %q", w.Setting)
-			}
-			if !strings.Contains(w.Message, "universal-3-5-pro") {
-				t.Fatalf("deprecated warning message = %q", w.Message)
-			}
-		}
-	}
-	if !foundDeprecation {
-		t.Fatal("expected a deprecation warning for the 'best' model")
+	if len(got.Warnings) != 0 {
+		t.Fatalf("warnings = %#v, want none for %s", got.Warnings, ModelAssemblyAISTT37)
 	}
 }
 
@@ -164,9 +149,9 @@ func TestDoTranscribe_NewerModelsUseSpeechModelsArray(t *testing.T) {
 		wantWarnType string
 		wantContains string
 	}{
-		{ModelUniversal35Pro, "", ""},
-		{ModelUniversal3Pro, "other", "replace 'universal-3-pro'"},
-		{ModelUniversal2, "other", "universal-3-5-pro"},
+		{ModelAssemblyAISTT37, "", ""},
+		{ModelUniversal35Pro, "deprecated", "deprecated 'universal-3-5-pro'"},
+		{ModelUniversal2, "other", "'universal-2' remains available"},
 		{"nano", "", ""},
 	}
 
@@ -478,7 +463,7 @@ func TestDoTranscribe_PollError(t *testing.T) {
 	p := New(Config{APIKey: "k", BaseURL: srv.URL})
 	mAny, _ := p.TranscriptionModel("")
 	_, err := mAny.DoTranscribe(context.Background(), &provider.TranscriptionOptions{Audio: []byte("a")})
-	if err == nil || !strings.Contains(err.Error(), "transcription failed: bad audio") {
+	if err == nil || !strings.Contains(err.Error(), "Transcription failed: bad audio") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -493,7 +478,7 @@ func TestDoTranscribe_APIError(t *testing.T) {
 	defer srv.Close()
 
 	p := New(Config{APIKey: "k", BaseURL: srv.URL})
-	mAny, _ := p.TranscriptionModel("best")
+	mAny, _ := p.TranscriptionModel(ModelAssemblyAISTT37)
 	_, err := mAny.DoTranscribe(context.Background(), &provider.TranscriptionOptions{Audio: []byte("a")})
 	if err == nil || !strings.Contains(err.Error(), "bad request") {
 		t.Fatalf("unexpected error: %v", err)

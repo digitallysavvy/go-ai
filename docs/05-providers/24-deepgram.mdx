@@ -137,3 +137,8 @@ for the mechanism.
 - [API Reference: Transcribe](../07-reference/ai/transcribe.mdx)
 - [Transcription Guide](../03-ai-sdk-core/36-transcription.mdx)
 - [Deepgram Documentation](https://developers.deepgram.com)
+
+## November 8 2026 catch-up
+
+- **Live transcription.** `TranscriptionModel.DoStream` streams audio to `/v1/listen` over a WebSocket (subprotocol auth, keep-alive, `CloseStream`), with `deepgram.StreamingOptions` under `providerOptions.deepgram.streaming`; it reports partial and final transcripts. `DoTranscribe` warns when the streaming option is set.
+- **Speech callbacks.** `SpeechModelOptions.Callback` fails with `InvalidArgumentError` (the API would return an acknowledgement, not audio); `CallbackMethod` is ignored with a warning.

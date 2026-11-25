@@ -81,7 +81,7 @@ func TestVoyageHelpersAndRerankingMetadata(t *testing.T) {
 			"voyage": map[string]interface{}{"outputDimension": 256},
 		},
 	})
-	if vo == nil || vo["outputDimension"] != 256 {
+	if vo == nil || vo["outputDimension"] != float64(256) { // JSON form (OVC-01)
 		t.Fatalf("voyageProviderOptions parse failed: %#v", vo)
 	}
 

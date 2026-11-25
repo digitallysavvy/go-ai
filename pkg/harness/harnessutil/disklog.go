@@ -1,8 +1,10 @@
 package harnessutil
 
 import (
-	"encoding/json"
 	"strings"
+
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/securejson"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // Disk-log replay classifications. Mirrors TS `classifyDiskLog`'s return
@@ -24,19 +26,19 @@ func ClassifyDiskLog(raw *string) string {
 	if raw == nil {
 		return DiskLogRerun
 	}
-	text := strings.TrimSpace(*raw)
+	text := providerutils.JSTrim(*raw)
 	if text == "" {
 		return DiskLogRerun
 	}
 	lines := strings.Split(text, "\n")
-	last := strings.TrimSpace(lines[len(lines)-1])
+	last := providerutils.JSTrim(lines[len(lines)-1])
 	if last == "" {
 		return DiskLogRerun
 	}
 	var probe struct {
 		Type string `json:"type"`
 	}
-	if err := json.Unmarshal([]byte(last), &probe); err != nil {
+	if err := securejson.Unmarshal([]byte(last), &probe); err != nil {
 		return DiskLogRerun
 	}
 	if probe.Type == "finish" {

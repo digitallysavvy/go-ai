@@ -55,6 +55,15 @@ deprecation warning; prefer `TOGETHER_API_KEY`.
 | mistralai/Mixtral-8x7B-Instruct-v0.1 | 32K | Balanced |
 | Qwen/Qwen2.5-72B-Instruct-Turbo | 32K | Multilingual |
 
+### Text Completion
+
+`provider.CompletionModel(id)` returns the OpenAI-compatible text completion
+model (`/v1/completions`):
+
+```go
+model, _ := p.CompletionModel("meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo")
+```
+
 ### Image Generation
 
 | Model ID | Quality | Best For |

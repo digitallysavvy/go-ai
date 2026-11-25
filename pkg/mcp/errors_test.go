@@ -11,12 +11,12 @@ func TestMCPClientErrorFormattingAndConstructor(t *testing.T) {
 	if err.Code != 400 || err.Message != "bad request" || err.Data != nil {
 		t.Fatalf("NewMCPClientError mismatch: %#v", err)
 	}
-	if got := err.Error(); got != "MCP error 400: bad request" {
+	if got := err.Error(); got != "bad request" {
 		t.Fatalf("Error() = %q", got)
 	}
 
 	withData := NewMCPClientError(500, "boom", map[string]interface{}{"id": 1})
-	if got := withData.Error(); !strings.Contains(got, "MCP error 500: boom") || !strings.Contains(got, "data: map[id:1]") {
+	if got := withData.Error(); got != "boom" {
 		t.Fatalf("Error() with data = %q", got)
 	}
 }

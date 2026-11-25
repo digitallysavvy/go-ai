@@ -39,6 +39,7 @@ var logWarningsState = struct {
 	disabled        bool
 	custom          LogWarningsFunction
 	hasLoggedBefore bool
+	emittedCodes    map[string]struct{}
 	output          io.Writer
 }{}
 
@@ -74,6 +75,9 @@ func DisableLogWarnings() {
 //   - otherwise each warning is formatted as "AI SDK Warning (provider / model): ..."
 //     and written to os.Stderr (never stdout), preceded once per process by
 //     FirstWarningInfoMessage.
+//   - deprecations carry a stable code (GetDeprecationCode); the default
+//     logger prefixes the line with "[CODE] " and emits each code only once
+//     per process. Custom loggers receive every warning.
 func LogWarnings(options LogWarningsOptions) {
 	if len(options.Warnings) == 0 {
 		return
@@ -100,7 +104,19 @@ func LogWarnings(options LogWarningsOptions) {
 		_, _ = fmt.Fprintln(out, FirstWarningInfoMessage)
 	}
 	for _, warning := range options.Warnings {
-		_, _ = fmt.Fprintln(out, FormatWarning(warning, options.Provider, options.Model))
+		line := FormatWarning(warning, options.Provider, options.Model)
+		if warning.Type == "deprecated" {
+			code := GetDeprecationCode(warning.Setting, options.Provider)
+			if _, seen := logWarningsState.emittedCodes[code]; seen {
+				continue
+			}
+			if logWarningsState.emittedCodes == nil {
+				logWarningsState.emittedCodes = map[string]struct{}{}
+			}
+			logWarningsState.emittedCodes[code] = struct{}{}
+			line = "[" + code + "] " + line
+		}
+		_, _ = fmt.Fprintln(out, line)
 	}
 }
 
@@ -151,6 +167,38 @@ func FormatWarning(warning types.Warning, provider, model string) string {
 	}
 }
 
+// createLogWarnings returns the warning logger of one call (TS
+// createLogWarnings, d834c5bb35): the global logger, or onWarning when the
+// call has one. With onWarning the warnings never reach the global logger
+// (and its deprecation dedup); like the other callbacks, a panic in onWarning
+// does not break the call, and an empty batch is not reported.
+func createLogWarnings(onWarning LogWarningsFunction) LogWarningsFunction {
+	if onWarning == nil {
+		return LogWarnings
+	}
+	return func(options LogWarningsOptions) {
+		if len(options.Warnings) > 0 {
+			safeInvoke(func() { onWarning(options) })
+		}
+	}
+}
+
+// CreateLogWarnings is createLogWarnings for callers outside the package
+// (the ToolLoopAgent default stop condition and the WorkflowAgent).
+func CreateLogWarnings(onWarning LogWarningsFunction) LogWarningsFunction {
+	return createLogWarnings(onWarning)
+}
+
+// flattenWarningBatches joins warning batches into one list (TS collects the
+// prompt warnings of every message into one array).
+func flattenWarningBatches(batches [][]types.Warning) []types.Warning {
+	var out []types.Warning
+	for _, batch := range batches {
+		out = append(out, batch...)
+	}
+	return out
+}
+
 // logModelWarnings is the internal call-site helper.
 func logModelWarnings(warnings []types.Warning, provider, model string) {
 	LogWarnings(LogWarningsOptions{Warnings: warnings, Provider: provider, Model: model})
@@ -163,5 +211,6 @@ func resetLogWarningsState(output io.Writer) {
 	logWarningsState.disabled = false
 	logWarningsState.custom = nil
 	logWarningsState.hasLoggedBefore = false
+	logWarningsState.emittedCodes = nil
 	logWarningsState.output = output
 }

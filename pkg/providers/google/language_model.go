@@ -30,6 +30,7 @@ func NewLanguageModel(p *Provider, modelID string) *LanguageModel {
 			return fmt.Sprintf("/%s:streamGenerateContent?alt=sse", gemini.GetModelPath(id))
 		},
 		Client:             p.client,
+		GenerateID:         p.config.GenerateID,
 		SupportsImageInput: googleSupportsImageInput,
 		SupportedURLs:      func(modelID string) map[string][]string { return googleSupportedURLs(p.config.BaseURL, modelID) },
 	}

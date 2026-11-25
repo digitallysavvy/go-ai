@@ -63,6 +63,9 @@ func BuiltinTools() map[string]harness.BuiltinTool {
 		}),
 	}
 	// No common-name equivalent — keyed by native name.
+	deleteTool := nativeTool("delete", "Delete a file or directory", objectSchema([]string{"file_path"}, map[string]any{"file_path": stringProp("")}))
+	deleteTool.ToolUseKind = harness.BuiltinToolUseKindEdit
+	tools["delete"] = deleteTool
 	tools["ls"] = nativeTool("ls", "List files in a directory", objectSchema(nil, map[string]any{"path": stringProp("")}))
 	tools["task"] = nativeTool("task", "Spawn a subagent to handle a delegated task",
 		objectSchema(nil, map[string]any{"description": stringProp(""), "subagent_type": stringProp("")}))

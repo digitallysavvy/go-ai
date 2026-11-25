@@ -1,0 +1,74 @@
+[
+ {
+  "url": "https://a<b.com/",
+  "error": true
+ },
+ {
+  "url": "https://xy.com/p",
+  "error": true
+ },
+ {
+  "url": "https://a^b.com",
+  "error": true
+ },
+ {
+  "url": "https://a|b.com",
+  "error": true
+ },
+ {
+  "url": "https://exa mple.com",
+  "error": true
+ },
+ {
+  "url": "https://a%3Cb.com/",
+  "error": true
+ },
+ {
+  "url": "https://a­b.com/x",
+  "href": "https://ab.com/x"
+ },
+ {
+  "url": "https://ＥＸＡＭＰＬＥ.com/a/../b",
+  "href": "https://example.com/b"
+ },
+ {
+  "url": "http://0x7f.1/",
+  "href": "http://127.0.0.1/"
+ },
+ {
+  "url": "https://a_b.com/",
+  "href": "https://a_b.com/"
+ },
+ {
+  "url": "https://-a.com/",
+  "href": "https://-a.com/"
+ },
+ {
+  "url": "https://a..b/",
+  "href": "https://a..b/"
+ },
+ {
+  "url": "https://xn--/",
+  "href": "https://xn--/"
+ },
+ {
+  "url": "https://a‍b.com/",
+  "error": true
+ },
+ {
+  "url": "https://١.com/",
+  "error": true
+ },
+ {
+  "url": "https://a.com:99999/",
+  "error": true
+ },
+ {
+  "url": "https://[::1]/",
+  "href": "https://[::1]/"
+ },
+ {
+  "url": "https://a。b.com/",
+  "href": "https://a.b.com/"
+ }
+]

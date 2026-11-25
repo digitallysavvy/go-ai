@@ -64,10 +64,9 @@ func ToolSearchRegex20251119() types.Tool {
 			"pattern": map[string]interface{}{
 				"type":        "string",
 				"description": "A regex pattern to search for tools. Uses Python re.search() syntax. Maximum 200 characters.\n\nExamples:\n- \"weather\" - matches tool names/descriptions containing \"weather\"\n- \"get_.*_data\" - matches tools like get_user_data, get_weather_data\n- \"database.*query|query.*database\" - OR patterns for flexibility\n- \"(?i)slack\" - case-insensitive search",
-				"maxLength":   200,
 			},
 			"limit": map[string]interface{}{
-				"type":        "integer",
+				"type":        "number",
 				"description": "Maximum number of tools to return. Optional.",
 			},
 		},
@@ -75,7 +74,11 @@ func ToolSearchRegex20251119() types.Tool {
 	}
 
 	tool := types.Tool{
-		Name: "anthropic.tool_search_regex_20251119",
+		Name:         "anthropic.tool_search_regex_20251119",
+		Type:         types.ToolTypeProviderDefined,
+		ProviderID:   "anthropic.tool_search_regex_20251119",
+		OutputSchema: toolOutputSchema("anthropic.tool_search_regex_20251119"),
+		ProviderArgs: noProviderArgs(),
 		Description: `Regex tool search for discovering tools using regex patterns.
 
 This tool enables Claude to work with large tool catalogs (hundreds or thousands of tools)

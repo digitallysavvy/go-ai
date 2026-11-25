@@ -1,10 +1,10 @@
 package perplexity
 
 import (
-	"encoding/json"
 	"sort"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -20,26 +20,28 @@ func convertPerplexityUsage(usage *perplexityUsage, rawUsage []byte) types.Usage
 		return types.Usage{}
 	}
 
-	inputTokens := usage.InputTokens
-	outputTokens := usage.OutputTokens
-	totalTokens := usage.TotalTokens
+	inputTokens := int64(usage.InputTokens)
+	outputTokens := int64(usage.OutputTokens)
+	// TS core derives totalTokens as input total + output total; the wire
+	// total_tokens is optional and never used.
+	totalTokens := inputTokens + outputTokens
 
 	var cacheReadTokens int64
 	var cacheWriteTokens int64
 	if usage.InputTokensDetails != nil {
 		if usage.InputTokensDetails.CacheReadInputTokens != nil {
-			cacheReadTokens = *usage.InputTokensDetails.CacheReadInputTokens
+			cacheReadTokens = int64(*usage.InputTokensDetails.CacheReadInputTokens)
 		} else if usage.InputTokensDetails.CachedTokens != nil {
-			cacheReadTokens = *usage.InputTokensDetails.CachedTokens
+			cacheReadTokens = int64(*usage.InputTokensDetails.CachedTokens)
 		}
 		if usage.InputTokensDetails.CacheCreationInputTokens != nil {
-			cacheWriteTokens = *usage.InputTokensDetails.CacheCreationInputTokens
+			cacheWriteTokens = int64(*usage.InputTokensDetails.CacheCreationInputTokens)
 		}
 	}
 
 	var reasoningTokens int64
 	if usage.OutputTokensDetails != nil && usage.OutputTokensDetails.ReasoningTokens != nil {
-		reasoningTokens = *usage.OutputTokensDetails.ReasoningTokens
+		reasoningTokens = int64(*usage.OutputTokensDetails.ReasoningTokens)
 	}
 
 	noCache := inputTokens - cacheReadTokens - cacheWriteTokens
@@ -68,7 +70,7 @@ func convertPerplexityUsage(usage *perplexityUsage, rawUsage []byte) types.Usage
 
 	if len(rawUsage) > 0 {
 		var raw map[string]interface{}
-		if err := json.Unmarshal(rawUsage, &raw); err == nil {
+		if err := jsonexact.Unmarshal(rawUsage, &raw); err == nil {
 			result.Raw = raw
 		}
 	}
@@ -108,15 +110,23 @@ type PerplexityToolCallUsage struct {
 // this SDK version, matching TS which always sets `images: null`), and a new
 // ToolCalls field surfaces per-tool invocation counts from usage.tool_calls_details.
 type PerplexityMetadata struct {
-	Usage     PerplexityUsageMeta                `json:"usage"`
-	Images    interface{}                        `json:"images"`
-	Cost      *PerplexityCost                    `json:"cost"`
-	ToolCalls map[string]PerplexityToolCallUsage `json:"toolCalls"`
+	Usage  PerplexityUsageMeta `json:"usage"`
+	Images interface{}         `json:"images"`
+	// SearchQueries lists the web search queries Perplexity ran, in run order
+	// and without duplicates; nil (JSON null) when there were none (TS
+	// c6bbe485d7 searchQueries).
+	SearchQueries []string                           `json:"searchQueries"`
+	Cost          *PerplexityCost                    `json:"cost"`
+	ToolCalls     map[string]PerplexityToolCallUsage `json:"toolCalls"`
 }
 
-// getPerplexityProviderMetadata mirrors TS getProviderMetadata(usage).
-func getPerplexityProviderMetadata(usage *perplexityUsage) map[string]interface{} {
+// getPerplexityProviderMetadata mirrors TS getProviderMetadata(usage,
+// searchQueries).
+func getPerplexityProviderMetadata(usage *perplexityUsage, searchQueries []string) map[string]interface{} {
 	meta := PerplexityMetadata{Images: nil}
+	if len(searchQueries) > 0 {
+		meta.SearchQueries = searchQueries
+	}
 
 	if usage != nil && usage.ToolCallsDetails != nil {
 		var total int64
@@ -130,14 +140,14 @@ func getPerplexityProviderMetadata(usage *perplexityUsage) map[string]interface{
 				continue
 			}
 			if inv := usage.ToolCallsDetails[name].Invocation; inv != nil {
-				total += *inv
+				total += int64(*inv)
 			}
 		}
 		meta.Usage.NumSearchQueries = &total
 
 		meta.ToolCalls = make(map[string]PerplexityToolCallUsage, len(usage.ToolCallsDetails))
 		for _, name := range names {
-			meta.ToolCalls[name] = PerplexityToolCallUsage{Invocation: usage.ToolCallsDetails[name].Invocation}
+			meta.ToolCalls[name] = PerplexityToolCallUsage{Invocation: toInt64Ptr(usage.ToolCallsDetails[name].Invocation)}
 		}
 	}
 
@@ -156,4 +166,32 @@ func getPerplexityProviderMetadata(usage *perplexityUsage) map[string]interface{
 	}
 
 	return map[string]interface{}{"perplexity": meta}
+}
+
+// toInt64Ptr truncates a nullable TS number() count to the Go integral type.
+func toInt64Ptr(n *pplxNumber) *int64 {
+	if n == nil {
+		return nil
+	}
+	v := int64(*n)
+	return &v
+}
+
+// collectPerplexitySearchQueries mirrors TS collectSearchQueries: it appends
+// the queries not yet in target, in order. The same queries can arrive in
+// reasoning events, output items and the completed response.
+func collectPerplexitySearchQueries(target []string, queries []string) []string {
+	for _, q := range queries {
+		seen := false
+		for _, t := range target {
+			if t == q {
+				seen = true
+				break
+			}
+		}
+		if !seen {
+			target = append(target, q)
+		}
+	}
+	return target
 }

@@ -16,3 +16,18 @@ tools := []types.Tool{
 ```
 
 These tools execute locally through the You.com API, use `YDC_API_KEY` by default, and carry `ProviderName="you.com"` plus provider metadata keyed by `you`.
+
+## Hosted MCP client (plugin 3.x)
+
+`@youdotcom-oss/ai-sdk-plugin` 3.x replaced the three tool factories with `createYouClient`, an MCP client for the hosted You.com server (`https://api.you.com/mcp`). The Go equivalent:
+
+```go
+client, err := youcom.CreateYouClient(ctx, youcom.YouClientConfig{Tools: []string{"you-search", "you-contents"}})
+if err != nil {
+    return err
+}
+defer client.Close()
+tools, err := mcp.GetMCPToolsForAgent(ctx, client)
+```
+
+`APIKey` (a `*string`; nil reads `YDC_API_KEY`) is sent as `Authorization: Bearer <key>`; an empty key, or none at all, sends no `Authorization` header. `Profile` takes precedence over `Tools`. With neither set, the server's default tools apply (`you-search`, `you-contents`, `you-balance`, `you-discover`). A failed handshake closes the client and returns the error. The REST tools above follow the pre-3.0 plugin API the TS tools registry documents; see [Known differences: You.com tools](../08-migration-guides/known-differences.mdx#youcom-tools).

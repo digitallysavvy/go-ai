@@ -247,9 +247,26 @@ type VideoModelV3Response struct {
 	Response VideoModelV3ResponseInfo
 }
 
-// VideoModelV3VideoData represents a generated video
+// Video data types for VideoModelV3VideoData.Type, mirroring the TS
+// VideoModelV4VideoData union discriminators
+// (packages/provider/src/video-model/v4/video-model-v4-result.ts).
+const (
+	VideoDataTypeURL    = "url"
+	VideoDataTypeBase64 = "base64"
+	VideoDataTypeBinary = "binary"
+
+	// VideoDataTypeUploaded reports that the provider completed delivery to
+	// caller-managed storage (TS `{ type: 'uploaded', mediaType }`). Only
+	// MediaType is set: no downloadable URL or video bytes are available,
+	// and a signed upload URL must never be included in the result.
+	VideoDataTypeUploaded = "uploaded"
+)
+
+// VideoModelV3VideoData represents a generated video, or confirmation that
+// a video was delivered to caller-managed storage (TS VideoModelV4VideoData).
 type VideoModelV3VideoData struct {
-	// Type is "url", "base64", or "binary"
+	// Type is VideoDataTypeURL, VideoDataTypeBase64, VideoDataTypeBinary or
+	// VideoDataTypeUploaded.
 	Type string
 
 	// URL for type="url"
@@ -261,7 +278,8 @@ type VideoModelV3VideoData struct {
 	// Binary for type="binary" (raw video data)
 	Binary []byte
 
-	// MediaType (e.g., "video/mp4", "video/webm", "video/quicktime")
+	// MediaType (e.g., "video/mp4", "video/webm", "video/quicktime"). The
+	// only field set for VideoDataTypeUploaded.
 	MediaType string
 }
 

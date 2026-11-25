@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -12,6 +11,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/gemini"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // liveSpeechTranslationWebSocketPath is the Live API bidi service path for
@@ -86,16 +86,31 @@ type speechTranslationModelOptions struct {
 	EchoTargetLanguage *bool
 }
 
-func parseSpeechTranslationModelOptions(providerOptions map[string]interface{}) speechTranslationModelOptions {
+// parseSpeechTranslationModelOptionsChecked mirrors TS parseProviderOptions
+// with googleSpeechTranslationModelOptions: a present value of the wrong type
+// fails with an InvalidArgumentError.
+func parseSpeechTranslationModelOptionsChecked(providerOptions map[string]interface{}) (speechTranslationModelOptions, error) {
+	// Typed-option ruling: Go-typed literals are read in their JSON form.
+	providerOptions = providerutils.NormalizeOptionsJSON(providerOptions)
 	var out speechTranslationModelOptions
-	google, _ := providerOptions["google"].(map[string]interface{})
-	if google == nil {
-		return out
+	raw, ok := providerOptions["google"]
+	if !ok || raw == nil {
+		return out, nil
 	}
-	if v, ok := google["echoTargetLanguage"].(bool); ok {
-		out.EchoTargetLanguage = &v
+	google, isMap := raw.(map[string]interface{})
+	if !isMap {
+		return out, invalidGoogleFilesOptions(fmt.Errorf("google: expected object, received %T", raw))
 	}
-	return out
+	// An explicit null is treated like an absent key, as v0.5.2 did (known
+	// difference "Bedrock and Anthropic null option values", S6).
+	if v, present := google["echoTargetLanguage"]; present && v != nil {
+		b, isBool := v.(bool)
+		if !isBool {
+			return out, invalidGoogleFilesOptions(fmt.Errorf("echoTargetLanguage: expected boolean, received %T", v))
+		}
+		out.EchoTargetLanguage = &b
+	}
+	return out, nil
 }
 
 // validateSpeechTranslationInputAudioFormat mirrors TS
@@ -103,10 +118,7 @@ func parseSpeechTranslationModelOptions(providerOptions map[string]interface{}) 
 // translation API only accepts 16kHz 16-bit PCM input audio.
 func validateSpeechTranslationInputAudioFormat(format provider.AudioFormat) error {
 	if format.Type != "audio/pcm" || (format.Rate != nil && *format.Rate != 16000) {
-		return &providererrors.InvalidArgumentError{
-			Field:   "inputAudioFormat",
-			Message: "The Gemini Live translation API only supports 16kHz 16-bit PCM input audio.",
-		}
+		return providererrors.NewArgumentError("inputAudioFormat", "The Gemini Live translation API only supports 16kHz 16-bit PCM input audio.", nil)
 	}
 	return nil
 }
@@ -135,7 +147,7 @@ func buildSpeechTranslationSetup(modelID, targetLanguage string, opts speechTran
 // per-call options.headers -- the same tagged getHeaders() closure used for
 // REST calls, not a freshly rebuilt untagged header set.
 func (m *SpeechTranslationModel) baseSpeechTranslationHeaders() map[string]string {
-	return m.prov.client.Headers()
+	return m.prov.headersSnapshot()
 }
 
 // getLiveSpeechTranslationWebSocketURL builds the wss:// Live API URL for
@@ -143,14 +155,20 @@ func (m *SpeechTranslationModel) baseSpeechTranslationHeaders() map[string]strin
 // getRealtimeWebSocketURL): the base URL's trailing /v1beta or /v1alpha
 // segment is stripped, the scheme is upgraded to ws(s), and the API key
 // rides the `key` query parameter.
-func getLiveSpeechTranslationWebSocketURL(baseURL, apiKey string) string {
-	u := googleRealtimeBaseURL(baseURL)
-	u.Scheme = strings.Replace(u.Scheme, "http", "ws", 1)
-	u.Path = strings.TrimRight(u.Path, "/") + "/ws/" + liveSpeechTranslationWebSocketPath
-	q := u.Query()
-	q.Set("key", apiKey)
-	u.RawQuery = q.Encode()
-	return u.String()
+func getLiveSpeechTranslationWebSocketURL(baseURL, apiKey string) (string, error) {
+	u, err := googleRealtimeWebSocketURL(baseURL, liveSpeechTranslationWebSocketPath)
+	if err != nil {
+		return "", err
+	}
+	// TS url.searchParams.set('key', apiKey): the base URL's own parameters
+	// keep their order and the whole query uses URLSearchParams escaping.
+	query := ""
+	if u.Query != nil {
+		query = *u.Query
+	}
+	query = internalhttp.SetSearchParam(query, "key", apiKey)
+	u.Query = &query
+	return u.String(), nil
 }
 
 // DoStream streams a speech-to-speech translation over the Gemini Live API
@@ -160,13 +178,13 @@ func (m *SpeechTranslationModel) DoStream(ctx context.Context, opts *provider.Sp
 		opts = &provider.SpeechTranslationStreamOptions{}
 	}
 	if opts.TargetLanguage == "" {
-		return nil, &providererrors.InvalidArgumentError{
-			Field:   "targetLanguage",
-			Message: fmt.Sprintf("targetLanguage is required for translation model '%s'.", m.modelID),
-		}
+		return nil, providererrors.NewArgumentError("targetLanguage", fmt.Sprintf("targetLanguage is required for translation model '%s'.", m.modelID), nil)
 	}
 
-	translationOpts := parseSpeechTranslationModelOptions(opts.ProviderOptions)
+	translationOpts, err := parseSpeechTranslationModelOptionsChecked(opts.ProviderOptions)
+	if err != nil {
+		return nil, err
+	}
 
 	var warnings []types.Warning
 
@@ -192,7 +210,12 @@ func (m *SpeechTranslationModel) DoStream(ctx context.Context, opts *provider.Sp
 	// Resolve the API key from the provider-level and per-call header maps
 	// separately, with the per-call value taking precedence, before merging
 	// them (see the matching comment in transcription_stream.go DoStream).
-	baseAPIKey, filteredBaseHeaders := extractGoogleAPIKeyHeader(m.baseSpeechTranslationHeaders())
+	// TS getHeaders() loads the key first: a missing key is a LoadAPIKeyError.
+	baseHeaders, err := m.prov.requestHeaders(ctx)
+	if err != nil {
+		return nil, err
+	}
+	baseAPIKey, filteredBaseHeaders := extractGoogleAPIKeyHeader(baseHeaders)
 	callAPIKey, filteredCallHeaders := extractGoogleAPIKeyHeader(opts.Headers)
 	apiKey := baseAPIKey
 	if callAPIKey != "" {
@@ -215,7 +238,10 @@ func (m *SpeechTranslationModel) DoStream(ctx context.Context, opts *provider.Sp
 		finishGrace = speechTranslationDefaultFinishGraceDuration
 	}
 
-	wsURL := getLiveSpeechTranslationWebSocketURL(m.prov.config.BaseURL, apiKey)
+	wsURL, err := getLiveSpeechTranslationWebSocketURL(m.prov.config.BaseURL, apiKey)
+	if err != nil {
+		return nil, err
+	}
 
 	abortCtx := opts.AbortSignal
 	if abortCtx == nil {

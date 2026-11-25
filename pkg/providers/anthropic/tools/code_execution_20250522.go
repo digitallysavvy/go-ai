@@ -20,7 +20,11 @@ import (
 //	tool := anthropicTools.CodeExecution20250522()
 func CodeExecution20250522() types.Tool {
 	return types.Tool{
-		Name: "anthropic.code_execution_20250522",
+		Name:         "anthropic.code_execution_20250522",
+		Type:         types.ToolTypeProviderDefined,
+		ProviderID:   "anthropic.code_execution_20250522",
+		OutputSchema: toolOutputSchema("anthropic.code_execution_20250522"),
+		ProviderArgs: noProviderArgs(),
 		Description: `Code execution tool that runs Python code in a secure sandboxed environment.
 
 Claude can use this to:

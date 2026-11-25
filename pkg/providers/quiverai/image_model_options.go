@@ -61,6 +61,11 @@ type QuiverAIImageModelOptions struct {
 	// PresencePenalty is the presence penalty (-2 to 2).
 	PresencePenalty *float64
 
+	// presencePenaltyNull records an explicit JSON null: the TS schema is
+	// .nullable().optional(), so null is sent as `presence_penalty: null` and
+	// still counts as set (`!== undefined`) for animate's unsupported check.
+	presencePenaltyNull bool
+
 	// MaxOutputTokens is the maximum number of output tokens
 	// (1-131072; Arrow 2 models are further limited to 65536, enforced
 	// separately in buildRequestBody).
@@ -87,7 +92,7 @@ var quiverOperations = map[string]bool{"generate": true, "vectorize": true, "ani
 var quiverReasoningEfforts = map[string]bool{"low": true, "medium": true, "high": true, "xhigh": true}
 
 func invalidQuiverArgument(argument, message string) error {
-	return &providererrors.InvalidArgumentError{Field: argument, Message: message}
+	return providererrors.NewArgumentError(argument, message, nil)
 }
 
 // parseQuiverAIImageModelOptions parses+validates
@@ -204,6 +209,9 @@ func parseQuiverAIImageModelOptions(raw map[string]interface{}) (*QuiverAIImageM
 		opts.TopP = &f
 	}
 
+	if v, ok := raw["presencePenalty"]; ok && v == nil {
+		opts.presencePenaltyNull = true
+	}
 	if v, ok := raw["presencePenalty"]; ok && v != nil {
 		f, ok := quiverFloat(v)
 		if !ok || f < -2 || f > 2 {

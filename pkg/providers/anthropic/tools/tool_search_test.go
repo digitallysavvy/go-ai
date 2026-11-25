@@ -40,7 +40,7 @@ func TestToolSearchBm2520251119_Schema(t *testing.T) {
 	// Check limit property
 	limit, ok := properties["limit"].(map[string]interface{})
 	require.True(t, ok)
-	assert.Equal(t, "integer", limit["type"])
+	assert.Equal(t, "number", limit["type"])
 }
 
 func TestToolSearchBm2520251119_Description(t *testing.T) {
@@ -81,23 +81,14 @@ func TestToolSearchRegex20251119_Schema(t *testing.T) {
 	pattern, ok := properties["pattern"].(map[string]interface{})
 	require.True(t, ok)
 	assert.Equal(t, "string", pattern["type"])
-	// maxLength can be either int or float64 depending on how it's serialized
-	maxLength := pattern["maxLength"]
-	assert.NotNil(t, maxLength)
-	// Check the value is 200 regardless of type
-	switch v := maxLength.(type) {
-	case int:
-		assert.Equal(t, 200, v)
-	case float64:
-		assert.Equal(t, float64(200), v)
-	default:
-		t.Errorf("maxLength should be int or float64, got %T", v)
-	}
+	// TS inputSchema pattern: z.string() with no length limit, and provider
+	// tool calls are validated against Parameters.
+	assert.NotContains(t, pattern, "maxLength")
 
 	// Check limit property
 	limit, ok := properties["limit"].(map[string]interface{})
 	require.True(t, ok)
-	assert.Equal(t, "integer", limit["type"])
+	assert.Equal(t, "number", limit["type"])
 }
 
 func TestToolSearchRegex20251119_Description(t *testing.T) {

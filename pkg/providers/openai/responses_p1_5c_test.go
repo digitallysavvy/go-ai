@@ -310,7 +310,7 @@ data: {"type":"response.output_item.done","output_index":0,"item":{"type":"image
 }
 
 func TestResponsesLanguageModel_StreamCodeInterpreterProgressiveInput(t *testing.T) {
-	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"code_interpreter_call","id":"ci_1","container_id":"cntr_1"}}
+	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"code_interpreter_call","id":"ci_1","container_id":"cntr_1","code":null,"outputs":null,"status":"in_progress"}}
 
 data: {"type":"response.code_interpreter_call_code.delta","item_id":"ci_1","output_index":0,"delta":"print(1)"}
 
@@ -351,7 +351,7 @@ data: {"type":"response.output_item.done","output_index":0,"item":{"type":"code_
 }
 
 func TestResponsesLanguageModel_StreamMcpCallToolCallAndResult(t *testing.T) {
-	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"mcp_call","id":"mcp_1"}}
+	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"mcp_call","id":"mcp_1","status":"in_progress"}}
 
 data: {"type":"response.output_item.done","output_index":0,"item":{"type":"mcp_call","id":"mcp_1","status":"completed","arguments":"{}","name":"search","server_label":"docs","output":"found"}}
 
@@ -485,13 +485,13 @@ data: {"type":"response.output_item.done","output_index":0,"item":{"type":"reaso
 // ── P1-5c item 9: progressive tool-input-delta for custom_tool_call ────────
 
 func TestResponsesLanguageModel_StreamCustomToolCallProgressiveInput(t *testing.T) {
-	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"custom_tool_call","id":"ctc_1","call_id":"call_1","name":"format_code"}}
+	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"custom_tool_call","id":"ctc_1","call_id":"call_1","name":"format_code","input":""}}
 
 data: {"type":"response.custom_tool_call_input.delta","item_id":"ctc_1","output_index":0,"delta":"prin"}
 
-data: {"type":"response.custom_tool_call_input.delta","item_id":"ctc_1","output_index":0,"delta":"t(1)"}
+data: {"type":"response.custom_tool_call_input.delta","item_id":"ctc_1","output_index":0,"delta":"t(\"1\")\n"}
 
-data: {"type":"response.output_item.done","output_index":0,"item":{"type":"custom_tool_call","id":"ctc_1","call_id":"call_1","name":"format_code","input":"print(1)"}}
+data: {"type":"response.output_item.done","output_index":0,"item":{"type":"custom_tool_call","id":"ctc_1","call_id":"call_1","name":"format_code","input":"print(\"1\")\n","status":"completed"}}
 
 `)), false)
 	defer stream.Close() //nolint:errcheck
@@ -500,13 +500,18 @@ data: {"type":"response.output_item.done","output_index":0,"item":{"type":"custo
 	if err != nil || start.Type != provider.ChunkTypeToolInputStart || start.ToolCall.ID != "call_1" || start.ToolCall.ToolName != "format_code" {
 		t.Fatalf("chunk = %#v, err = %v, want a format_code tool-input-start", start, err)
 	}
+	// TS #23407: custom tool deltas are raw text (no JSON quotes or escaping);
+	// the tool-input-start declares the "text" encoding instead.
+	if start.ToolCall.InputEncoding != "text" {
+		t.Fatalf("tool-input-start InputEncoding = %q, want text", start.ToolCall.InputEncoding)
+	}
 	delta1, err := stream.Next()
 	if err != nil || delta1.Type != provider.ChunkTypeToolInputDelta || delta1.ID != "call_1" || delta1.Text != "prin" {
 		t.Fatalf("chunk = %#v, err = %v, want tool-input-delta \"prin\"", delta1, err)
 	}
 	delta2, err := stream.Next()
-	if err != nil || delta2.Type != provider.ChunkTypeToolInputDelta || delta2.Text != "t(1)" {
-		t.Fatalf("chunk = %#v, err = %v, want tool-input-delta \"t(1)\"", delta2, err)
+	if err != nil || delta2.Type != provider.ChunkTypeToolInputDelta || delta2.Text != "t(\"1\")\n" {
+		t.Fatalf("chunk = %#v, err = %v, want raw tool-input-delta", delta2, err)
 	}
 	end, err := stream.Next()
 	if err != nil || end.Type != provider.ChunkTypeToolInputEnd || end.ToolCall.ID != "call_1" {
@@ -516,7 +521,7 @@ data: {"type":"response.output_item.done","output_index":0,"item":{"type":"custo
 	if err != nil || call.Type != provider.ChunkTypeToolCall || call.ToolCall.ToolName != "format_code" {
 		t.Fatalf("chunk = %#v, err = %v, want the final tool-call", call, err)
 	}
-	if call.ToolCall.Arguments["input"] != "print(1)" {
+	if call.ToolCall.Arguments["input"] != "print(\"1\")\n" {
 		t.Fatalf("tool call arguments = %#v, want input=print(1)", call.ToolCall.Arguments)
 	}
 }
@@ -618,7 +623,7 @@ func TestResponsesLanguageModel_McpCallWithUnknownApprovalIDFallsBackToItemID(t 
 }
 
 func TestResponsesLanguageModel_StreamMcpCallUsesApprovalIDFromPrompt(t *testing.T) {
-	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"mcp_call","id":"mcp_1"}}
+	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"mcp_call","id":"mcp_1","status":"in_progress"}}
 
 data: {"type":"response.output_item.done","output_index":0,"item":{"type":"mcp_call","id":"mcp_1","status":"completed","arguments":"{}","name":"search","server_label":"docs","output":"found","approval_request_id":"req_1"}}
 
@@ -646,7 +651,7 @@ func TestResponsesLanguageModel_StreamMcpCallStreamAliasTakesPrecedenceOverPromp
 
 data: {"type":"response.output_item.done","output_index":0,"item":{"type":"mcp_approval_request","id":"mar_1","server_label":"docs","name":"search","arguments":"{}","approval_request_id":"req_1"}}
 
-data: {"type":"response.output_item.added","output_index":1,"item":{"type":"mcp_call","id":"mcp_1"}}
+data: {"type":"response.output_item.added","output_index":1,"item":{"type":"mcp_call","id":"mcp_1","status":"in_progress"}}
 
 data: {"type":"response.output_item.done","output_index":1,"item":{"type":"mcp_call","id":"mcp_1","status":"completed","arguments":"{}","name":"search","server_label":"docs","output":"found","approval_request_id":"req_1"}}
 

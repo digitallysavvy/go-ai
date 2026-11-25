@@ -68,6 +68,9 @@ func extractImageProviderOptions(opts map[string]interface{}) (*ImageModelOption
 	if !ok {
 		return &ImageModelOptions{}, nil
 	}
+	if err := validateByteDanceOptions(opts, byteDanceImageOptionsSchema); err != nil {
+		return nil, err
+	}
 
 	jsonData, err := json.Marshal(bdOpts)
 	if err != nil {

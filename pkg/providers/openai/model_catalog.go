@@ -2,10 +2,12 @@ package openai
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/modelcatalog"
 )
 
@@ -38,9 +40,9 @@ func (r ModelCatalogRefresher) Fetch(ctx context.Context) ([]modelcatalog.ModelI
 	}
 	req.Header.Set("Authorization", "Bearer "+r.APIKey)
 
-	resp, err := client.Do(req)
+	resp, err := internalhttp.WithFetchRedirects(client).Do(req)
 	if err != nil {
-		return nil, err
+		return nil, internalhttp.TransportErrorCtx(req.Context(), err) // TS handleFetchError
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -52,7 +54,11 @@ func (r ModelCatalogRefresher) Fetch(ctx context.Context) ([]modelcatalog.ModelI
 			ID string `json:"id"`
 		} `json:"data"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if err := jsonexact.Unmarshal(raw, &body); err != nil {
 		return nil, err
 	}
 	models := make([]modelcatalog.ModelID, 0, len(body.Data))

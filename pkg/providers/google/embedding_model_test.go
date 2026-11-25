@@ -1,7 +1,12 @@
 package google
 
 import (
+	"context"
+	"errors"
 	"testing"
+
+	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
 // TestGeminiEmbedding2PreviewModel verifies the embedding model ID constant exists
@@ -106,5 +111,29 @@ func TestEmbeddingPartFileData(t *testing.T) {
 	}
 	if fileData["fileUri"] != "files/sample" {
 		t.Fatalf("fileData.fileUri = %v", fileData["fileUri"])
+	}
+}
+
+func TestEmbeddingInvalidProviderOptionsIsInvalidArgumentError(t *testing.T) {
+	m := NewEmbeddingModel(New(Config{APIKey: "k"}), "gemini-embedding-001")
+	_, err := m.DoEmbed(t.Context(), "x", &provider.EmbedModelOptions{ProviderOptions: map[string]interface{}{"google": map[string]interface{}{"taskType": "NOPE"}}})
+	var ia *providererrors.InvalidArgumentError
+	if !errors.As(err, &ia) || ia.Message != "invalid google provider options" {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// A direct call whose multimodal content length differs from the values fails
+// with the TS error text before any request is sent.
+func TestEmbeddingContentLengthMismatchErrorText(t *testing.T) {
+	m := NewEmbeddingModel(New(Config{APIKey: "k", BaseURL: "http://127.0.0.1:0"}), "gemini-embedding-2")
+	_, err := m.DoEmbedMany(context.Background(), []string{"a", "b"}, &provider.EmbedModelOptions{
+		ProviderOptions: map[string]interface{}{"google": map[string]interface{}{
+			"content": []interface{}{[]interface{}{map[string]interface{}{"text": "x"}}},
+		}},
+	})
+	want := "The number of multimodal content entries (1) must match the number of values (2)."
+	if err == nil || err.Error() != want {
+		t.Fatalf("err = %v, want %q", err, want)
 	}
 }

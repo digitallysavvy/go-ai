@@ -3,12 +3,14 @@ package xai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
 func TestSpeechModel_Metadata(t *testing.T) {
@@ -220,8 +222,11 @@ func TestSpeechModel_DoGenerate_ErrorShape(t *testing.T) {
 	if !strings.Contains(err.Error(), "speed must be between 0.7 and 1.5") {
 		t.Errorf("error = %q, want to contain the speed message", err.Error())
 	}
-	if !strings.Contains(err.Error(), "trace-123") {
-		t.Errorf("error = %q, want to contain the trace id", err.Error())
+	// TS xaiFailedResponseHandler: the trace id is a response header of the
+	// APICallError, not part of the message.
+	var pe *providererrors.ProviderError
+	if !errors.As(err, &pe) || pe.Message != "speed must be between 0.7 and 1.5" || pe.ResponseHeaders["x-trace-id"] != "trace-123" {
+		t.Errorf("error = %#v, want the speech message and the trace id header", err)
 	}
 }
 
@@ -244,5 +249,26 @@ func TestSpeechModel_DoGenerate_StructuredErrorShape(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "Invalid voice_id") {
 		t.Errorf("error = %q, want to contain Invalid voice_id", err.Error())
+	}
+}
+
+// createBinaryResponseHandler has no raw value: the TS result carries no
+// response.body for raw audio, but always carries providerMetadata.xai.
+func TestSpeechModel_DoGenerate_BinaryHasNoBodyAndAlwaysXAIMetadata(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "audio/mpeg")
+		_, _ = w.Write([]byte("fake-mp3-bytes"))
+	}))
+	defer server.Close()
+	model := NewSpeechModel(New(Config{APIKey: "k", BaseURL: server.URL}), "")
+	result, err := model.DoGenerate(context.Background(), &provider.SpeechGenerateOptions{Text: "hi"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Response.Body != nil {
+		t.Fatalf("response body for binary audio must be nil, got %T", result.Response.Body)
+	}
+	if _, ok := result.ProviderMetadata["xai"]; !ok {
+		t.Fatalf("providerMetadata.xai must always be present: %#v", result.ProviderMetadata)
 	}
 }

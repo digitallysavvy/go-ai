@@ -568,7 +568,7 @@ func TestResponsesReasoningEffortUpdate_RejectsAdjacentUpdates(t *testing.T) {
 				ProviderOptions: map[string]interface{}{"openai": providerOpts},
 			}, false)
 			ufe := asUnsupportedFunctionalityError(t, err)
-			if ufe.Functionality != "Adjacent reasoning effort configuration updates" {
+			if ufe.Functionality != "Adjacent configuration updates" { // TS 5a645e92d2
 				t.Errorf("Functionality = %q", ufe.Functionality)
 			}
 		})
@@ -672,7 +672,7 @@ func TestResponsesReasoningEffortUpdate_ContinuationFiltersStoredReasoning(t *te
 				ProviderOptions: map[string]interface{}{"openai": tc.opts},
 			}, false)
 			ufe := asUnsupportedFunctionalityError(t, err)
-			if ufe.Functionality != "Adjacent reasoning effort configuration updates" {
+			if ufe.Functionality != "Adjacent configuration updates" { // TS 5a645e92d2
 				t.Errorf("Functionality = %q", ufe.Functionality)
 			}
 		})

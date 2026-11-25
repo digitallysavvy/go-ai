@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
+	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
 )
 
 // LegacySettings configures LegacyProvider. Two mutually-exclusive shapes,
@@ -22,6 +23,10 @@ type LegacySettings struct {
 
 	Credentials Credentials
 	BaseURL     string
+	// OIDCRefresh opts in to the @vercel/sandbox OIDC token refresh (see
+	// OIDCRefresh). Nil uses the token as read (VERCEL_OIDC_TOKEN_FILE, else
+	// VERCEL_OIDC_TOKEN).
+	OIDCRefresh *OIDCRefresh
 	// Name overrides the auto-derived template snapshot name
 	// ("ai-sdk-harness-<identity>").
 	Name string
@@ -87,7 +92,12 @@ var (
 
 // NewLegacyProvider constructs a deprecated sandbox provider backed by
 // settings. Mirrors TS `createVercelSandbox`/`VercelSandboxProvider`.
+//
+// Like TS (createVercelSandbox, then the VercelSandboxProvider constructor),
+// it reports both deprecation warnings through harnessutil.Warn.
 func NewLegacyProvider(settings LegacySettings) *LegacyProvider {
+	harnessutil.Warn("createVercelSandbox is deprecated. Use createVercelNetworkSandboxSession and HarnessAgent.createSession({ sandboxSession }) instead.")
+	harnessutil.Warn("VercelSandboxProvider is deprecated. Use createVercelNetworkSandboxSession instead.")
 	return &LegacyProvider{settings: settings}
 }
 
@@ -101,17 +111,25 @@ func (p *LegacyProvider) ProviderID() string { return vercelProviderID }
 // snapshot) a network sandbox session. Mirrors TS
 // `VercelSandboxProvider.createSession`.
 func (p *LegacyProvider) CreateSession(ctx context.Context, opts harness.CreateSandboxSessionOptions) (harness.NetworkSandboxSession, error) {
+	if ctx.Err() != nil { // TS abortSignal?.throwIfAborted(): the abort reason
+		return nil, context.Cause(ctx)
+	}
 	if p.settings.Sandbox != nil {
 		return NewNetworkSession(p.settings.Sandbox, false), nil
 	}
 
 	baseParams := withDefaultSandboxSettings(p.settings.createParams())
+	// 3.9.0 Sandbox.create / getOrCreate throw this TypeError before
+	// getCredentials, so it wins over a missing credential.
+	if err := checkRuntimeOrImage(baseParams); err != nil {
+		return nil, err
+	}
 
-	creds, err := ResolveCredentials(p.settings.Credentials)
+	creds, err := resolveCredentialsWithRefresh(ctx, p.settings.Credentials, p.settings.OIDCRefresh)
 	if err != nil {
 		return nil, withAuthError(err)
 	}
-	client := NewAPIClient(p.settings.BaseURL, creds)
+	client := newAPIClient(p.settings.BaseURL, creds, p.settings.OIDCRefresh)
 
 	var sessionNameOverride string
 	if opts.SessionID != "" {
@@ -151,14 +169,17 @@ func (p *LegacyProvider) CreateSession(ctx context.Context, opts harness.CreateS
 // ResumeSession reattaches to the named session sandbox. Mirrors TS
 // `VercelSandboxProvider.resumeSession`.
 func (p *LegacyProvider) ResumeSession(ctx context.Context, sessionID string) (harness.NetworkSandboxSession, error) {
+	if ctx.Err() != nil { // TS abortSignal?.throwIfAborted(): the abort reason
+		return nil, context.Cause(ctx)
+	}
 	if p.settings.Sandbox != nil {
 		return NewNetworkSession(p.settings.Sandbox, false), nil
 	}
-	creds, err := ResolveCredentials(p.settings.Credentials)
+	creds, err := resolveCredentialsWithRefresh(ctx, p.settings.Credentials, p.settings.OIDCRefresh)
 	if err != nil {
 		return nil, withAuthError(err)
 	}
-	client := NewAPIClient(p.settings.BaseURL, creds)
+	client := newAPIClient(p.settings.BaseURL, creds, p.settings.OIDCRefresh)
 	sbx, err := GetSandbox(ctx, client, legacySessionSandboxName(sessionID), nil)
 	if err != nil {
 		return nil, withAuthError(err)

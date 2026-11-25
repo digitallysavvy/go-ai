@@ -8,6 +8,7 @@ import (
 
 func init() {
 	provider.RegisterModelDeserializer("cerebras", deserializeModel)
+	provider.RegisterModelDeserializer("cerebras.chat", deserializeModel)
 }
 
 // Serialize implements provider.SerializableModel for workflow boundaries.

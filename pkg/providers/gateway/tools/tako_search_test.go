@@ -13,7 +13,7 @@ func TestNewTakoSearchSchemaAndProviderExecutedStub(t *testing.T) {
 	if tool.Name != "tako_search" {
 		t.Fatalf("name = %q", tool.Name)
 	}
-	if tool.Title != "Tako Search" || !tool.ProviderExecuted {
+	if tool.Title != "" || !tool.ProviderExecuted {
 		t.Fatalf("tool metadata = %#v", tool)
 	}
 	if tool.Type != types.ToolTypeProviderDefined || tool.ProviderID != "gateway.tako_search" {
@@ -68,18 +68,17 @@ func TestTakoSearchInputSchemaDescribesDataSurchargeControls(t *testing.T) {
 	}
 }
 
-// TestTakoSearchOutputSchemaOmitsInternalFields mirrors the TS test "does not
-// declare internal response fields in the output schema" (5533946): the
-// internal-only relevance_score and citation_number fields must never appear
-// in the public output schema.
+// TestTakoSearchOutputSchemaOmitsInternalFields mirrors the TS test "declares
+// relevance_score but not citation_number in the output schema" (5533946,
+// 0e869b40fa).
 func TestTakoSearchOutputSchemaOmitsInternalFields(t *testing.T) {
 	tool := NewTakoSearch(TakoSearchConfig{}).ToTool()
 	serialized, err := json.Marshal(tool.OutputSchema)
 	if err != nil {
 		t.Fatalf("marshal output schema: %v", err)
 	}
-	if strings.Contains(string(serialized), "relevance_score") {
-		t.Fatalf("output schema must not contain relevance_score: %s", serialized)
+	if !strings.Contains(string(serialized), "relevance_score") {
+		t.Fatalf("output schema must contain relevance_score: %s", serialized)
 	}
 	if strings.Contains(string(serialized), "citation_number") {
 		t.Fatalf("output schema must not contain citation_number: %s", serialized)
@@ -89,12 +88,12 @@ func TestTakoSearchOutputSchemaOmitsInternalFields(t *testing.T) {
 func TestTakoSearchOutputSchemaErrorEnumIncludesUnknownTool(t *testing.T) {
 	tool := NewTakoSearch(TakoSearchConfig{}).ToTool()
 	output := tool.OutputSchema.(map[string]interface{})
-	variants := output["oneOf"].([]interface{})
+	variants := output["anyOf"].([]interface{})
 	if len(variants) != 2 {
 		t.Fatalf("output schema should match TS success/error union: %#v", output)
 	}
 	errorSchema := variants[1].(map[string]interface{})["properties"].(map[string]interface{})
-	errorEnum := errorSchema["error"].(map[string]interface{})["enum"].([]string)
+	errorEnum := r72provStrings(errorSchema["error"].(map[string]interface{})["enum"])
 	if !containsString(errorEnum, "unknown_tool") {
 		t.Fatalf("output error enum missing unknown_tool: %#v", errorEnum)
 	}

@@ -3,11 +3,13 @@ package ai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 )
@@ -759,4 +761,38 @@ func TestValidateUIMessages_NoWarningWithoutDeprecatedRawInput(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Empty(t, logLines(buf))
+}
+
+// TS text parts validate citations with citationSchema inside
+// uiMessagesSchema, so a malformed citation is a TypeValidationError like
+// any other structural problem, not a decoding error.
+func TestValidateUIMessages_TextCitationsAreValidatedStructurally(t *testing.T) {
+	build := func(citations string) json.RawMessage {
+		return json.RawMessage(`[{"id":"1","role":"assistant","parts":[{"type":"text","text":"hi","citations":` + citations + `}]}]`)
+	}
+	valid := `[{"source":{"type":"source","sourceType":"url","id":"s1","url":"https://example.com"},"startIndex":0,"endIndex":2,"citedText":"hi"},` +
+		`{"source":{"type":"source","sourceType":"document","id":"d1","mediaType":"application/pdf","title":"Doc"}}]`
+	messages, err := ValidateUIMessages(context.Background(), ValidateUIMessagesOptions{Messages: build(valid)})
+	require.NoError(t, err)
+	text, ok := messages[0].Parts[0].(*TextUIPart)
+	require.True(t, ok)
+	require.Len(t, text.Citations, 2)
+
+	for name, citations := range map[string]string{
+		"not an array":          `{}`,
+		"missing source":        `[{}]`,
+		"wrong source type":     `[{"source":{"type":"x","sourceType":"url","id":"s1","url":"u"}}]`,
+		"unknown sourceType":    `[{"source":{"type":"source","sourceType":"file","id":"s1"}}]`,
+		"url without url":       `[{"source":{"type":"source","sourceType":"url","id":"s1"}}]`,
+		"document no title":     `[{"source":{"type":"source","sourceType":"document","id":"d1","mediaType":"text/plain"}}]`,
+		"fractional offset":     `[{"source":{"type":"source","sourceType":"url","id":"s1","url":"u"},"startIndex":1.5}]`,
+		"negative offset":       `[{"source":{"type":"source","sourceType":"url","id":"s1","url":"u"},"endIndex":-1}]`,
+		"cited text not string": `[{"source":{"type":"source","sourceType":"url","id":"s1","url":"u"},"citedText":3}]`,
+	} {
+		_, err := ValidateUIMessages(context.Background(), ValidateUIMessagesOptions{Messages: build(citations)})
+		var validationErr *providererrors.ValidationError
+		if !errors.As(err, &validationErr) {
+			t.Errorf("%s: err = %v (%T), want a ValidationError", name, err, err)
+		}
+	}
 }

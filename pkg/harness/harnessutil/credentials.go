@@ -7,11 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net/url"
 	"regexp"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
+	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 )
 
 // SandboxCredentialPlaceholderPrefix prefixes generated placeholders.
@@ -198,19 +198,22 @@ type CreateCredentialRequestTransformationOptions struct {
 // CreateCredentialRequestTransformation maps a base URL plus the sandbox-side
 // header values to a request transformation injecting the real headers
 // (69bb613). Host excludes the port; a root path is omitted. Header matchers
-// are sorted by header name for deterministic output. Mirrors TS
-// `createCredentialRequestTransformation`.
+// are sorted by header name for deterministic output. The URL is parsed with
+// the WHATWG parser like TS `new URL(matchUrl)`: `hostname` is the
+// serialized host (lowercased, IDNA to ASCII, IPv6 in brackets) and the path
+// is the serialized pathname (dot segments resolved, percent-encoded) with
+// trailing slashes removed. Mirrors TS `createCredentialRequestTransformation`.
 func CreateCredentialRequestTransformation(opts CreateCredentialRequestTransformationOptions) (harness.RequestTransformation, error) {
-	u, err := url.Parse(opts.MatchURL)
-	if err != nil || u.Host == "" {
+	u, err := urlnorm.Parse(opts.MatchURL)
+	if err != nil {
 		// Like TS `new URL(matchUrl)` (Node's TypeError message is just
 		// "Invalid URL"), the input is not echoed: a base URL can carry
 		// credentials such as https://user:token@host.
 		return harness.RequestTransformation{}, errors.New("Invalid URL") //nolint:staticcheck // matches TS SDK's exact error text
 	}
-	pathname := strings.TrimRight(u.EscapedPath(), "/")
+	pathname := strings.TrimRight(u.Pathname(), "/")
 	match := harness.RequestTransformationMatch{
-		Host:    strings.ToLower(u.Hostname()),
+		Host:    u.Host,
 		Headers: []harness.KeyValueMatcher{},
 	}
 	if pathname != "" {

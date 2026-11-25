@@ -12,7 +12,7 @@ import (
 
 func simpleTestImplementation() implementation {
 	return implementation{
-		Source:     Source{Type: SourceNPMSimple, PackageName: "@example/acp-agent", PackageVersion: "1.2.3"},
+		Source:     Source{Type: SourceNPMLocked, PackageJSON: "{}", PnpmLockYAML: "lock"},
 		Executable: "acp-agent",
 		Args:       []string{"stdio"},
 		ForwardEnv: []string{"PROVIDER_API_KEY", "SECOND_PROVIDER_API_KEY"},
@@ -119,7 +119,7 @@ func TestValidateImplementation_EnvNameShapes(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			impl := implementation{
-				Source:     Source{Type: SourceNPMSimple, PackageName: "@example/acp-agent"},
+				Source:     Source{Type: SourceNPMLocked, PackageJSON: "{}", PnpmLockYAML: "lock"},
 				Executable: "acp-agent",
 				ForwardEnv: []string{tc.envName},
 			}

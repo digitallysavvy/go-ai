@@ -36,12 +36,16 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
+	"strings"
+	"sync"
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	vertexinternal "github.com/digitallysavvy/go-ai/pkg/providers/googlevertex/internal"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 	"golang.org/x/oauth2"
 )
 
@@ -86,6 +90,13 @@ type Config struct {
 // Google Vertex AI's MaaS OpenAI-compatible endpoint. Mirrors TS
 // createGoogleVertexXai / GoogleVertexXaiProvider.
 type Provider struct {
+	raw Config
+
+	// The base URL (and so GOOGLE_VERTEX_PROJECT / GOOGLE_VERTEX_LOCATION)
+	// is resolved when the first model is created and cached from then on,
+	// like TS's cachedProvider ??= createOpenAICompatible(...).
+	mu     sync.Mutex
+	ready  bool
 	config Config
 	client *internalhttp.Client
 }
@@ -98,23 +109,46 @@ var _ provider.Provider = (*Provider)(nil)
 //
 //	https://aiplatform.googleapis.com/v1/projects/{project}/locations/{location}/endpoints/openapi
 //
-// with location defaulting to "global" when unset.
+// with location defaulting to "global" when unset. Like TS, the project and
+// location (and their environment variables) are only read when the first
+// model is created, and an explicit BaseURL needs neither.
 func New(cfg Config) (*Provider, error) {
-	if cfg.Project == "" {
-		return nil, fmt.Errorf("project is required for Google Vertex xAI")
-	}
+	return &Provider{raw: cfg}, nil
+}
 
+// resolve builds (once) the request client and the resolved config.
+func (p *Provider) resolve() (Config, *internalhttp.Client, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.ready {
+		return p.config, p.client, nil
+	}
+	cfg := p.raw
+
+	// TS withoutTrailingSlash(options.baseURL).
+	baseURL := strings.TrimSuffix(cfg.BaseURL, "/")
 	location := cfg.Location
-	if location == "" {
-		location = "global"
-	}
-
-	baseURL := cfg.BaseURL
 	if baseURL == "" {
+		// TS loads project/location from GOOGLE_VERTEX_PROJECT /
+		// GOOGLE_VERTEX_LOCATION when the options leave them out.
+		if cfg.Project == "" {
+			cfg.Project = os.Getenv("GOOGLE_VERTEX_PROJECT")
+		}
+		if location == "" {
+			location = os.Getenv("GOOGLE_VERTEX_LOCATION")
+		}
+		if cfg.Project == "" {
+			return Config{}, nil, providererrors.NewLoadSettingError("Google Vertex project", "project", "GOOGLE_VERTEX_PROJECT") // TS loadSetting
+		}
+		if location == "" {
+			location = "global"
+		}
 		baseURL = fmt.Sprintf(
 			"https://aiplatform.googleapis.com/v1/projects/%s/locations/%s/endpoints/openapi",
 			cfg.Project, location,
 		)
+	} else if location == "" {
+		location = "global"
 	}
 
 	baseTransport := http.RoundTripper(http.DefaultTransport)
@@ -126,20 +160,23 @@ func New(cfg Config) (*Provider, error) {
 		timeout = cfg.HTTPClient.Timeout
 	}
 	authedClient := &http.Client{
-		Timeout:   timeout,
-		Transport: &vertexinternal.AuthTransport{Base: baseTransport, TokenFunc: cfg.resolveAuthToken()},
+		Timeout: timeout,
+		Transport: &providerHeadersTransport{
+			headers: cfg.Headers,
+			base:    &vertexinternal.AuthTransport{Base: baseTransport, TokenFunc: cfg.resolveAuthToken(), OverrideAuthorization: true},
+		},
 	}
 
-	client := internalhttp.NewClient(internalhttp.Config{
-		BaseURL:    baseURL,
-		Headers:    internalhttp.MergeHeaders(map[string]string{"Content-Type": "application/json"}, cfg.Headers),
+	p.client = internalhttp.NewClient(internalhttp.Config{
+		BaseURL: baseURL,
+		// TS createOpenAICompatible tags requests with its own
+		// `ai-sdk-openai-compatible/VERSION` user agent suffix.
+		Headers:    version.WithUserAgentSuffix(internalhttp.MergeHeaders(map[string]string{"Content-Type": "application/json"}, cfg.Headers), version.ProviderUserAgent("openai-compatible")),
 		HTTPClient: authedClient,
 	})
-
-	return &Provider{
-		config: Config{Project: cfg.Project, Location: location, BaseURL: baseURL, Headers: cfg.Headers},
-		client: client,
-	}, nil
+	p.config = Config{Project: cfg.Project, Location: location, BaseURL: baseURL, Headers: cfg.Headers}
+	p.ready = true
+	return p.config, p.client, nil
 }
 
 // Name returns the provider name. Matches TS's `name: 'googleVertex.xai'`
@@ -154,6 +191,9 @@ func (p *Provider) Name() string {
 func (p *Provider) newChatModel(modelID string) (*LanguageModel, error) {
 	if modelID == "" {
 		return nil, fmt.Errorf("model ID cannot be empty")
+	}
+	if _, _, err := p.resolve(); err != nil {
+		return nil, err
 	}
 	return &LanguageModel{provider: p, modelID: modelID}, nil
 }
@@ -185,20 +225,53 @@ func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
 // SpeechModel always errors: not exposed by this sub-provider (TS
 // GoogleVertexXaiProvider has no speech factory).
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return nil, fmt.Errorf("google-vertex xai does not support speech synthesis")
+	return nil, providererrors.NewNoSuchModelError(modelID, "speechModel")
 }
 
 // TranscriptionModel always errors: not exposed by this sub-provider.
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("google-vertex xai does not support transcription")
+	return nil, providererrors.NewNoSuchModelError(modelID, "transcriptionModel")
 }
 
 // RerankingModel always errors: not exposed by this sub-provider.
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("google-vertex xai does not support reranking")
+	return nil, providererrors.NewNoSuchModelError(modelID, "rerankingModel")
 }
 
 // VideoModel always errors: not exposed by this sub-provider.
 func (p *Provider) VideoModel(modelID string) (provider.VideoModelV3, error) {
-	return nil, fmt.Errorf("google-vertex xai does not support video generation")
+	return nil, providererrors.NewNoSuchModelError(modelID, "videoModel")
+}
+
+// mustClient returns the client resolved when the model was created.
+func (p *Provider) mustClient() *internalhttp.Client {
+	_, c, _ := p.resolve()
+	return c
+}
+
+// resolvedConfig returns the config resolved when the model was created.
+func (p *Provider) resolvedConfig() Config {
+	c, _, _ := p.resolve()
+	return c
+}
+
+// providerHeadersTransport applies the provider's Config.Headers after the
+// request's own (call) headers, so a provider header wins over a call header
+// of the same name. TS google-vertex-xai-provider-node.ts:40 customFetch
+// spreads the resolved provider headers after init.headers (then the bearer
+// token, which AuthTransport sets last).
+type providerHeadersTransport struct {
+	headers map[string]string
+	base    http.RoundTripper
+}
+
+func (t *providerHeadersTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if len(t.headers) == 0 {
+		return t.base.RoundTrip(req)
+	}
+	clone := req.Clone(req.Context())
+	for k, v := range t.headers {
+		clone.Header.Set(k, v)
+	}
+	return t.base.RoundTrip(clone)
 }

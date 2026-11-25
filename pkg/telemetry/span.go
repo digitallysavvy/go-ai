@@ -2,7 +2,7 @@ package telemetry
 
 import (
 	"context"
-	"errors"
+	"strings"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -53,23 +53,44 @@ func RecordSpan[T any](
 }
 
 // RecordErrorOnSpan records an error on a span and sets the span status to
-// error. When the error (or a *providererrors.RetryError's wrapped last
+// error. When the error itself (or a *providererrors.RetryError's last
 // error) is a *providererrors.ProviderError with an HTTP status code, that
 // status is also recorded as http.response.status_code, mirroring TS's
-// recordErrorOnSpan (otel/src/record-span.ts), which unwraps RetryError to
-// find the underlying APICallError.
+// recordErrorOnSpan (otel/src/record-span.ts 51-58); an error that merely
+// wraps a ProviderError does not set it.
 func RecordErrorOnSpan(span trace.Span, err error) {
 	if err == nil {
 		return
 	}
+	if _, statusOnly := err.(errorEventWithoutError); statusOnly || isHiddenToolError(err) {
+		span.SetStatus(codes.Error, "")
+		return
+	}
 
-	var providerErr *providererrors.ProviderError
-	if errors.As(err, &providerErr) && providerErr.StatusCode != 0 {
+	// TS: `RetryError.isInstance(error) ? error.lastError : error`, then
+	// APICallError.isInstance: the error itself, not anything it wraps.
+	apiCallErr := err
+	if retryErr, ok := err.(*providererrors.RetryError); ok {
+		apiCallErr = retryErr.LastError
+	}
+	if providerErr, ok := apiCallErr.(*providererrors.ProviderError); ok && providerErr != nil && providerErr.StatusCode != 0 {
 		span.SetAttributes(attribute.Int("http.response.status_code", providerErr.StatusCode))
 	}
 
-	span.RecordError(err)
+	recordSpanException(span, err)
 	span.SetStatus(codes.Error, err.Error())
+}
+
+// recordSpanException is TS span.recordException({name, message, stack}):
+// an "exception" event whose exception.type is the TS error name
+// (AI_APICallError, AI_RetryError, AbortError, ...; see inferenceErrorType),
+// not the Go type that trace.Span.RecordError would write. Go errors have
+// no JS stack, so no exception.stacktrace is recorded.
+func recordSpanException(span trace.Span, err error) {
+	span.AddEvent("exception", trace.WithAttributes(
+		attribute.String("exception.type", inferenceErrorType(err)),
+		attribute.String("exception.message", err.Error()),
+	))
 }
 
 // GetBaseAttributes returns common attributes for AI operations.
@@ -94,8 +115,9 @@ func GetBaseAttributes(
 
 	// Add request headers (but avoid sensitive headers)
 	for key, value := range headers {
-		// Skip authorization and api key headers
-		if key == "Authorization" || key == "x-api-key" || key == "api-key" {
+		// Skip authorization and api key headers (header names are
+		// case-insensitive).
+		if strings.EqualFold(key, "Authorization") || strings.EqualFold(key, "x-api-key") || strings.EqualFold(key, "api-key") {
 			continue
 		}
 		attrs = append(attrs, attribute.String("ai.request.headers."+key, value))

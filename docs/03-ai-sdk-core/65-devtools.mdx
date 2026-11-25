@@ -967,10 +967,12 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
             log.Printf("  Args: %+v", call.Arguments)
         }
         for _, res := range step.ToolResults {
-            if res.Error != nil {
-                log.Printf("  Error: %v", res.Error)
-            } else {
-                log.Printf("  Result: %+v", res.Result)
+            log.Printf("  Result: %+v", res.Result)
+        }
+        // Failed tool calls are tool-error content parts, not ToolResults.
+        for _, part := range step.Content {
+            if te, ok := part.(types.ToolErrorContent); ok {
+                log.Printf("  Error: %v", te.Error)
             }
         }
     },

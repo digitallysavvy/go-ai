@@ -665,3 +665,14 @@ func TestGenerateOptions_AllFieldsCoveredByMerge(t *testing.T) {
 		}
 	}
 }
+
+func TestMergeGenerateOptions_ResponseFormatMergesKeysLikeMergeObjects(t *testing.T) {
+	got := mergeGenerateOptions(
+		&provider.GenerateOptions{ResponseFormat: &provider.ResponseFormat{Type: "json", Name: "person", Description: "a person"}},
+		&provider.GenerateOptions{ResponseFormat: &provider.ResponseFormat{Type: "json", Schema: map[string]interface{}{"type": "object"}}},
+	)
+	rf := got.ResponseFormat
+	if rf.Name != "person" || rf.Description != "a person" || rf.Schema == nil {
+		t.Fatalf("response format = %+v", rf)
+	}
+}

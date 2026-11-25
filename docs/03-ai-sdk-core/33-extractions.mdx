@@ -1,0 +1,165 @@
+---
+title: Extractions
+description: "Extract typed field values from shared state with the experimental ai.ExperimentalExtract function: field types, provider extraction models, registries, answers, errors, and telemetry."
+---
+
+# Extractions
+
+`ai.ExperimentalExtract` pulls typed values out of one shared state with an extraction model: an invoice number, a total, a due date, a list of names. Each field is described once and comes back as one typed answer. The state has the same forms as for [decisions](./32-decisions.mdx#state): a string, a JSON object, or an ordered `[]provider.DecisionStatePart` of text, JSON and file parts.
+
+The API and the extraction model interface are experimental and may change in patch releases.
+
+## Basic usage
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    ctx := context.Background()
+    p := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
+    model, err := p.ExtractionModel("gpt-5")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    decimals := 2
+    result, err := ai.ExperimentalExtract(ctx, ai.ExtractOptions{
+        Model:         model,
+        State:         "Invoice INV-2041, total due $1,250.00 by March 3. Contacts: Ana, Bo.",
+        ReferenceDate: "2026-11-11",
+        Fields: map[string]provider.ExtractionField{
+            "invoiceNumber": {Type: provider.ExtractionFieldText, Instructions: "The invoice number"},
+            "total":         {Type: provider.ExtractionFieldNumber, Instructions: "Total amount due", Unit: "USD", Decimals: &decimals},
+            "dueDate":       {Type: provider.ExtractionFieldDate, Instructions: "Payment due date"},
+            "contacts":      {Type: provider.ExtractionFieldList, Items: provider.ExtractionFieldText, Instructions: "Contact names"},
+        },
+        FieldOrder: []string{"invoiceNumber", "total", "dueDate", "contacts"},
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println(result.Answers["total"].Value)    // 1250 (float64), or nil
+    fmt.Println(result.Answers["dueDate"].Value)  // "2027-03-03", or nil
+    fmt.Println(result.Answers["contacts"].Value) // []interface{}{"Ana", "Bo"}, or nil
+}
+```
+
+`ReferenceDate` is an optional `YYYY-MM-DD` date that anchors relative dates and dates without a year. Go maps are unordered, so `FieldOrder` gives the order fields are sent to the model; IDs it leaves out follow in sorted order.
+
+## File URLs
+
+URL-backed file parts in `State` require `ExtractOptions.ExperimentalDownload`. Without it the call fails with a `DownloadError` before any request; it never falls back to the default downloader, and the model's own HTTP client is not used. Inline bytes and data URLs need no download function. For untrusted URLs, build the function with `ai.CreateDownload` and a DNS-protected transport.
+
+## Field types
+
+Every field has a `Type` and optional `Instructions` (a string, or any JSON value).
+
+| Type | Value | Options |
+| --- | --- | --- |
+| `text` | `string` | none |
+| `number` | finite `float64` | `Unit` (for example `"USD"`), `Integer`, `Decimals` (0 to 6) |
+| `date` | `"YYYY-MM-DD"`, a real calendar date | none |
+| `time` | `"HH:MM"` or `"HH:MM:SS"` | none |
+| `datetime` | ISO 8601 date and time, with an offset when available | none |
+| `duration` | nonnegative `float64` in `Unit` | `Unit` (`provider.ExtractionDurationSeconds` ... `ExtractionDurationYears`), `Integer`, `Decimals` |
+| `list` | `[]interface{}` of strings or numbers | required `Items` (`text`, `number` or `date`), `Integer` and `Decimals` for numbers |
+
+## Provider models
+
+| Provider | Factory | Notes |
+| --- | --- | --- |
+| OpenAI | `openai.Provider.ExtractionModel(id)` | Responses model with structured output. Provider name `openai.extraction`. |
+| Anthropic | `anthropic.Provider.ExtractionModel(id)` | Messages model with structured output; more than 16 fields are sent as parallel calls. Provider name `anthropic.extraction`. |
+| Google | `google.Provider.ExtractionModel(id)` | Gemini model with structured output. Provider name `google.extraction`. |
+| ScaleDown | `scaledown.Provider.ExtractionModel(id)` | ScaleDown extraction API, with confidence and sources. See the [ScaleDown provider](../05-providers/53-scaledown.mdx#extraction). |
+| AI Gateway | `gateway.Provider.ExtractionModel(id)` (or `Extraction(id)`) | Calls `POST /extraction-model`, for example `scaledown/extract-1`. |
+
+The OpenAI, Anthropic and Google models wrap a language model with `providerutils.NewExtractionLanguageModel` and extract every field in one prompt. They return `nil` for missing values but no `PNull`, `Confidence`, `Guess` or `Source`. Judge quality against your own labeled examples before choosing a model.
+
+- Empty strings and empty lists are returned as a `nil` `Value`.
+- Numbers, durations and number list items are rounded to `Decimals`.
+- When the provider refuses a request, its fields are reported as refused and `ExperimentalExtract` returns `*errors.ExtractionRefusalError`.
+
+The Gateway serves extraction models from several providers. Supported field types depend on the model, so the Gateway reports an unsupported field after the request is sent.
+
+## Model aliases and registries
+
+Pass a model ID string as `Model` to resolve it through `ExtractionProvider` (a `provider.ExtractionModelProvider`), then the provider set with `ai.SetDefaultProvider`, then the AI Gateway. A configured default provider must implement `ExtractionModel`; otherwise the call fails with a `NoSuchModelError`. `registry.NewCustomProvider` takes `CustomProviderOptions.ExtractionModels` (an alias maps to a model or to a model ID string), and `Registry.ResolveExtractionModel("provider:model")` resolves registered providers. Custom aliases take precedence over a fallback provider. Resolution errors are `NoSuchModelError` and `NoSuchProviderError` with model type `extractionModel`.
+
+```go
+invoices := registry.NewCustomProvider(registry.CustomProviderOptions{
+    ExtractionModels: map[string]interface{}{
+        "fast":    openAIModel,           // a provider.ExtractionModel
+        "careful": "scaledown/extract-1", // resolved through the default provider
+    },
+})
+ai.SetDefaultProvider(invoices)
+
+result, err := ai.ExperimentalExtract(ctx, ai.ExtractOptions{
+    Model:  "careful",
+    State:  "Invoice INV-2041, total due $1,250.00.",
+    Fields: map[string]provider.ExtractionField{"total": {Type: provider.ExtractionFieldNumber}},
+})
+```
+
+## Answers
+
+Every answer has the field's `Type` and a `Value`. `Value` is `nil` when the state does not contain a value for the field. Models can add:
+
+- `PNull`: the probability in [0, 1] that the state has no value.
+- `Confidence`: the confidence in [0, 1] that `Value` is correct.
+- `Guess`: the most likely value, also when `Value` is nil. Not on lists.
+- `Source`: where the value was found. Not on lists.
+  - `{Type: "text", Part, Start, End}`: offsets into the text of `state[Part]`, in UTF-16 code units (as TypeScript slices strings). A string state is part 0.
+  - `{Type: "file", Part}`: the value was read from the file at `state[Part]`.
+
+List answers can carry `Items`, one `{Confidence, Source}` entry per value.
+
+## Errors
+
+Unsupported field types return `*errors.ExtractionUnsupportedFieldTypeError`, before any provider I/O or, for Gateway models, after the Gateway rejects the field. Invalid inputs return `*errors.InvalidArgumentError`; malformed answers return `*errors.InvalidResponseDataError`. Refused fields return `*errors.ExtractionRefusalError`, whose `FieldIDs` lists them sorted:
+
+```go
+var refusal *providererrors.ExtractionRefusalError
+if errors.As(err, &refusal) {
+    fmt.Println("refused:", refusal.FieldIDs)
+}
+```
+
+Invalid answers and refusals are not retried, and partial results are not returned. Transient provider failures are retried up to `MaxRetries` (default 2).
+
+## Callbacks and telemetry
+
+`ExtractOptions.OnStart` and `OnEnd` receive `ai.ExtractOnStartEvent` and `ai.ExtractOnEndEvent` with the caller's original state, headers and provider options.
+
+Telemetry integrations receive `OnExtractStart`, `OnExtractionModelCallStart`, `OnExtractionModelCallEnd` and `OnExtractEnd` (operation IDs `ai.extract` and `ai.extract.doExtract`); failures go to `OnError`. With `RecordInputs` false, integrations get no state, fields or reference date; with `RecordOutputs` false, no answers. Request headers and provider options never reach telemetry, because they can hold credentials, and file URLs and references in the state become `[redacted]`.
+
+## Workflow serialization
+
+The OpenAI, Anthropic, Google and ScaleDown extraction models serialize with `provider.SerializeExtractionModel` and restore with `provider.DeserializeExtractionModel` (provider names `openai.extraction`, `anthropic.extraction`, `google.extraction`, `scaledown.extraction`). The API key is never serialized. The Gateway extraction model is not serializable, as in TypeScript.
+
+## Testing
+
+Use `testutil.MockExtractionModel`:
+
+```go
+model := &testutil.MockExtractionModel{
+    DoExtractFunc: func(ctx context.Context, opts provider.ExtractionCallOptions) (*provider.ExtractionResult, error) {
+        return &provider.ExtractionResult{
+            Answers: map[string]provider.ExtractionAnswer{"total": {Type: "number", Value: 1250.0}},
+        }, nil
+    },
+}
+```

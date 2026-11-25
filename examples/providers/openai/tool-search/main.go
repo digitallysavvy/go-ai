@@ -74,7 +74,10 @@ func clientModeExample() {
 			"required": []string{"query"},
 		},
 		Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
-			query, _ := input["query"].(string)
+			// The call input is {arguments, call_id} (TS toolSearchInputSchema);
+			// the search arguments match Parameters.
+			args, _ := input["arguments"].(map[string]interface{})
+			query, _ := args["query"].(string)
 			fmt.Printf("  Tool search query: %q (call_id: %s)\n", query, opts.ToolCallID)
 			// Return tool names matching the query
 			return []string{"get_weather", "search_web"}, nil
@@ -96,7 +99,8 @@ func clientModeExecuteExample() {
 		Execution:   "client",
 		Description: "Search for tools by capability",
 		Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
-			query, _ := input["query"].(string)
+			args, _ := input["arguments"].(map[string]interface{})
+			query, _ := args["query"].(string)
 			// In a real application, you'd search your registered tools here.
 			if query == "weather" {
 				return []string{"get_weather", "get_forecast"}, nil
@@ -107,7 +111,7 @@ func clientModeExecuteExample() {
 
 	// Simulate the model emitting a tool_search_call event
 	ctx := context.Background()
-	result, err := searchTool.Execute(ctx, map[string]interface{}{"query": "weather"}, types.ToolExecutionOptions{
+	result, err := searchTool.Execute(ctx, map[string]interface{}{"arguments": map[string]interface{}{"query": "weather"}, "call_id": "call_search_001"}, types.ToolExecutionOptions{
 		ToolCallID: "call_search_001",
 	})
 	if err != nil {

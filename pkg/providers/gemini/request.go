@@ -54,18 +54,26 @@ func (m *LanguageModel) providerOptionsNames() []string {
 	return []string{"google"}
 }
 
-// getProviderOpts returns the first matching provider options map from
-// GenerateOptions.ProviderOptions using the configured key precedence order.
-func (m *LanguageModel) getProviderOpts(opts *provider.GenerateOptions) map[string]interface{} {
+// getProviderOptsNamed returns the first matching provider options map from
+// GenerateOptions.ProviderOptions using the configured key precedence order,
+// plus the key it was found under (for error messages).
+func (m *LanguageModel) getProviderOptsNamed(opts *provider.GenerateOptions) (map[string]interface{}, string) {
 	if opts == nil || opts.ProviderOptions == nil {
-		return nil
+		return nil, ""
 	}
+	// Typed-option ruling: read the namespace through its JSON form, so Go-typed
+	// literals (map[string]string, []map[string]string, typed numbers) have the
+	// JSON shape the TS zod schema parses.
 	for _, key := range m.cfg.ProviderOptionsKeys {
-		if v, ok := opts.ProviderOptions[key].(map[string]interface{}); ok {
-			return v
+		raw, present := opts.ProviderOptions[key]
+		if !present || raw == nil {
+			continue
+		}
+		if v, ok := providerutils.NormalizeOptionsJSON(map[string]interface{}{key: raw})[key].(map[string]interface{}); ok {
+			return v, key
 		}
 	}
-	return nil
+	return nil, ""
 }
 
 func otherWarning(message string) types.Warning {
@@ -87,7 +95,12 @@ func (m *LanguageModel) buildRequest(ctx context.Context, opts *provider.Generat
 	headers := map[string]string{}
 	warnings := []types.Warning{}
 	isVertex := m.isVertex()
-	provOpts := m.getProviderOpts(opts)
+	provOpts, optsName := m.getProviderOptsNamed(opts)
+	if provOpts != nil {
+		if err := validateLanguageModelOptions(optsName, provOpts); err != nil {
+			return nil, nil, nil, err
+		}
+	}
 	providerName := m.cfg.ProviderName
 
 	for _, t := range opts.Tools {
@@ -149,16 +162,15 @@ func (m *LanguageModel) buildRequest(ctx context.Context, opts *provider.Generat
 		}
 	}
 
-	gemma := isGemmaModel(m.modelID)
-	isGemini25DeveloperAPI := !isVertex && isGemini25Model(m.modelID)
-	if isGemini25DeveloperAPI && opts.FrequencyPenalty != nil {
+	caps := LanguageModelCapabilitiesFor(m.modelID)
+	systemInstructionAsUser := caps.SystemInstructionAsUser
+	unsupportedPenalties := !isVertex && caps.PenaltiesVertexOnly
+	if unsupportedPenalties && opts.FrequencyPenalty != nil {
 		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "frequencyPenalty", Message: "frequencyPenalty"})
 	}
-	if isGemini25DeveloperAPI && opts.PresencePenalty != nil {
+	if unsupportedPenalties && opts.PresencePenalty != nil {
 		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "presencePenalty", Message: "presencePenalty"})
 	}
-
-	caps := GetModelCapabilities(m.modelID)
 
 	// Prompt conversion.
 	var messages []types.Message
@@ -168,7 +180,7 @@ func (m *LanguageModel) buildRequest(ctx context.Context, opts *provider.Generat
 		messages = prompt.SimpleTextToMessages(opts.Prompt.Text)
 	}
 	var supportedFunctionResponseURLs map[string][]string
-	if caps.UsesGemini3Features && m.cfg.SupportsGoogleCloudStorageUrls {
+	if caps.FunctionResponseParts && m.cfg.SupportsGoogleCloudStorageUrls {
 		supportedFunctionResponseURLs = googleCloudStorageFunctionResponseURLs
 	}
 	if m.cfg.ToolResultDownloadMaxBytes > 0 {
@@ -184,10 +196,10 @@ func (m *LanguageModel) buildRequest(ctx context.Context, opts *provider.Generat
 	}
 	converted, err := prompt.ConvertToGoogleMessages(messages, prompt.GoogleMessagesOptions{
 		System:                        opts.Prompt.System,
-		IsGemmaModel:                  gemma,
-		IsGemini3Model:                caps.UsesGemini3Features,
+		IsGemmaModel:                  systemInstructionAsUser,
+		IsGemini3Model:                caps.ThoughtSignatures,
 		ProviderOptionsNames:          m.providerOptionsNames(),
-		SupportsFunctionResponseParts: caps.UsesGemini3Features,
+		SupportsFunctionResponseParts: caps.FunctionResponseParts,
 		IncludeFunctionCallIDs:        !isVertex,
 		SupportedFunctionResponseURLs: supportedFunctionResponseURLs,
 	})
@@ -196,17 +208,26 @@ func (m *LanguageModel) buildRequest(ctx context.Context, opts *provider.Generat
 	}
 	warnings = append(warnings, converted.Warnings...)
 	body["contents"] = converted.Contents
-	if converted.SystemInstruction != nil && !gemma {
+	if converted.SystemInstruction != nil && !systemInstructionAsUser {
 		body["systemInstruction"] = converted.SystemInstruction
 	}
 
 	prepared := prepareTools(opts.Tools, opts.ToolChoice, m.modelID, isVertex)
+	if prepared.err != nil {
+		return nil, nil, nil, prepared.err
+	}
 
 	// Thinking config: resolved call-level reasoning merged with (and
 	// overridden by) providerOptions.thinkingConfig.
 	var thinkingConfig map[string]interface{}
-	resolvedThinking := resolveThinkingConfig(opts.Reasoning, m.modelID, &warnings)
 	optThinking, _ := provOpts["thinkingConfig"].(map[string]interface{})
+	// An explicit thinkingBudget or thinkingLevel in providerOptions replaces
+	// call-level reasoning entirely, so a resolved thinkingLevel is never
+	// combined with an explicit thinkingBudget (TS #22394).
+	var resolvedThinking map[string]interface{}
+	if optThinking["thinkingBudget"] == nil && optThinking["thinkingLevel"] == nil {
+		resolvedThinking = resolveThinkingConfig(opts.Reasoning, m.modelID, &warnings)
+	}
 	if optThinking != nil || resolvedThinking != nil {
 		thinkingConfig = map[string]interface{}{}
 		for k, v := range resolvedThinking {
@@ -230,13 +251,13 @@ func (m *LanguageModel) buildRequest(ctx context.Context, opts *provider.Generat
 	if opts.TopP != nil {
 		genConfig["topP"] = *opts.TopP
 	}
-	if opts.FrequencyPenalty != nil && !isGemini25DeveloperAPI {
+	if opts.FrequencyPenalty != nil && !unsupportedPenalties {
 		genConfig["frequencyPenalty"] = *opts.FrequencyPenalty
 	}
-	if opts.PresencePenalty != nil && !isGemini25DeveloperAPI {
+	if opts.PresencePenalty != nil && !unsupportedPenalties {
 		genConfig["presencePenalty"] = *opts.PresencePenalty
 	}
-	if len(opts.StopSequences) > 0 {
+	if opts.StopSequences != nil {
 		genConfig["stopSequences"] = opts.StopSequences
 	}
 	if opts.Seed != nil {
@@ -269,9 +290,8 @@ func (m *LanguageModel) buildRequest(ctx context.Context, opts *provider.Generat
 	if imageConfig != nil {
 		genConfig["imageConfig"] = imageConfig
 	}
-	if len(genConfig) > 0 {
-		body["generationConfig"] = genConfig
-	}
+	// TS always sends generationConfig, `{}` when nothing is set.
+	body["generationConfig"] = genConfig
 
 	// Safety settings; a standalone threshold expands to the four configurable categories.
 	if v, ok := provOpts["safetySettings"]; ok && v != nil {
@@ -318,6 +338,10 @@ func (m *LanguageModel) buildRequest(ctx context.Context, opts *provider.Generat
 
 	if v, ok := provOpts["cachedContent"]; ok && v != nil {
 		body["cachedContent"] = v
+	}
+	// TS `continuationToken != null`: an empty string is sent.
+	if v, ok := provOpts["continuationToken"].(string); ok {
+		body["continuationToken"] = v
 	}
 	if v, ok := provOpts["labels"]; ok && v != nil {
 		body["labels"] = v

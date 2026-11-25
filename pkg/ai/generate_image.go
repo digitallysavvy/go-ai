@@ -8,8 +8,10 @@ import (
 	"math/big"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	retryutil "github.com/digitallysavvy/go-ai/pkg/internal/retry"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -119,6 +121,7 @@ func GenerateImage(ctx context.Context, opts GenerateImageOptions) (*GenerateIma
 	// (`headersWithUserAgent = withUserAgentSuffix(headers ?? {}, ai/${VERSION})`).
 	opts.Headers = version.WithUserAgentSuffix(opts.Headers, version.UserAgent())
 
+	imageFiles, imageMask := normalizeImageInputs(opts.Files, opts.Mask)
 	callImageCounts := imageCallCounts(opts.N, resolveMaxImagesPerCall(opts))
 
 	images := make([]types.GeneratedFile, 0, totalImageCount(callImageCounts))
@@ -128,25 +131,53 @@ func GenerateImage(ctx context.Context, opts GenerateImageOptions) (*GenerateIma
 	providerMetadata := map[string]interface{}{}
 	usage := types.ImageUsage{}
 
-	for _, callImageCount := range callImageCounts {
-		callN := callImageCount
-		_, attempts, err := doGenerateImageWithRetry(ctx, opts.Model, &provider.ImageGenerateOptions{
-			Prompt:          opts.Prompt,
-			N:               &callN,
-			Size:            opts.Size,
-			AspectRatio:     opts.AspectRatio,
-			Seed:            opts.Seed,
-			Quality:         opts.Quality,
-			Style:           opts.Style,
-			Files:           opts.Files,
-			Mask:            opts.Mask,
-			ProviderOptions: opts.ProviderOptions,
-			Headers:         opts.Headers,
-		}, opts.MaxRetries)
-		if err != nil {
-			return nil, err
-		}
+	// TS runs the model calls in parallel (Promise.all); results are
+	// aggregated in call order. The first failure cancels the other calls.
+	type callOutcome struct {
+		attempts []*types.ImageResult
+		err      error
+	}
+	outcomes := make([]callOutcome, len(callImageCounts))
+	callCtx, cancelCalls := context.WithCancel(ctx)
+	defer cancelCalls()
+	var (
+		wg       sync.WaitGroup
+		errOnce  sync.Once
+		firstErr error
+	)
+	for i, callImageCount := range callImageCounts {
+		wg.Add(1)
+		go func(i, callN int) {
+			defer wg.Done()
+			_, attempts, err := doGenerateImageWithRetry(callCtx, opts.Model, &provider.ImageGenerateOptions{
+				Prompt:          opts.Prompt,
+				N:               &callN,
+				Size:            opts.Size,
+				AspectRatio:     opts.AspectRatio,
+				Seed:            opts.Seed,
+				Quality:         opts.Quality,
+				Style:           opts.Style,
+				Files:           imageFiles,
+				Mask:            imageMask,
+				ProviderOptions: opts.ProviderOptions,
+				Headers:         opts.Headers,
+			}, opts.MaxRetries)
+			outcomes[i] = callOutcome{attempts: attempts, err: err}
+			if err != nil {
+				errOnce.Do(func() {
+					firstErr = err
+					cancelCalls()
+				})
+			}
+		}(i, callImageCount)
+	}
+	wg.Wait()
+	if firstErr != nil {
+		return nil, firstErr
+	}
 
+	for _, outcome := range outcomes {
+		attempts := outcome.attempts
 		// Every attempt for this call (including empty/exhausted-retry ones)
 		// contributes its own diagnostics entry and its images/warnings/
 		// usage/response to the aggregate, matching TS generate-image.ts's
@@ -160,6 +191,9 @@ func GenerateImage(ctx context.Context, opts GenerateImageOptions) (*GenerateIma
 			images = append(images, callImages...)
 			warnings = append(warnings, raw.Warnings...)
 			usage.ImageCount += raw.Usage.ImageCount
+			usage.InputTokens += raw.Usage.InputTokens
+			usage.OutputTokens += raw.Usage.OutputTokens
+			usage.TotalTokens += raw.Usage.TotalTokens
 			mergeImageProviderMetadata(providerMetadata, raw.ProviderMetadata)
 
 			response := raw.Response
@@ -198,6 +232,55 @@ func GenerateImage(ctx context.Context, opts GenerateImageOptions) (*GenerateIma
 	}, nil
 }
 
+// normalizeImageInputs mirrors TS toImageModelV4File for the Go ImageFile
+// shape: a data: URL becomes an inline file whose media type is the URL's own
+// (when non-empty), else detected from the bytes, else image/png; inline bytes
+// without a media type get the detected one (image/png when unknown).
+func normalizeImageInputs(files []provider.ImageFile, mask *provider.ImageFile) ([]provider.ImageFile, *provider.ImageFile) {
+	if len(files) == 0 && mask == nil {
+		return files, mask
+	}
+	out := make([]provider.ImageFile, len(files))
+	for i, f := range files {
+		out[i] = normalizeImageInput(f)
+	}
+	if mask != nil {
+		m := normalizeImageInput(*mask)
+		mask = &m
+	}
+	return out, mask
+}
+
+func normalizeImageInput(f provider.ImageFile) provider.ImageFile {
+	if f.Type == "url" && strings.HasPrefix(f.URL, "data:") {
+		if header, body, ok := strings.Cut(f.URL, ","); ok {
+			if data, err := types.DecodeFileDataString(body); err == nil {
+				urlType := strings.TrimPrefix(strings.SplitN(header, ";", 2)[0], "data:")
+				return provider.ImageFile{
+					Type:            "file",
+					Data:            data,
+					MediaType:       firstNonEmptyString(urlType, resolveGeneratedImageMediaType(data, "")),
+					ProviderOptions: f.ProviderOptions,
+				}
+			}
+		}
+		return f
+	}
+	if f.Type == "file" && f.MediaType == "" {
+		f.MediaType = resolveGeneratedImageMediaType(f.Data, "")
+	}
+	return f
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 func generatedFilesFromImageResult(raw *types.ImageResult) ([]types.GeneratedFile, error) {
 	images := make([]types.GeneratedFile, 0, max(1, len(raw.Images)))
 	appendImage := func(data []byte, mediaType, url string) {
@@ -233,6 +316,9 @@ func generatedFilesFromImageResult(raw *types.ImageResult) ([]types.GeneratedFil
 		} else {
 			appendImage(raw.Image, raw.MimeType, raw.URL)
 		}
+	}
+	for i := range images {
+		images[i].ProviderMetadata = imageProviderMetadata(raw.ProviderMetadata, i)
 	}
 	// A zero-image result is not an error here: it may be a legitimate
 	// (possibly retryable) empty attempt. doGenerateImageWithRetry/
@@ -274,7 +360,6 @@ func doGenerateImageWithRetry(ctx context.Context, model provider.ImageModel, op
 		err = retryutil.Do(ctx, retryutil.Config{
 			MaxRetries:   retries,
 			InitialDelay: 2 * time.Second,
-			MaxDelay:     60 * time.Second,
 			Multiplier:   2,
 			Jitter:       false,
 			ShouldRetry: func(err error) bool {
@@ -329,30 +414,16 @@ func resolveMaxImagesPerCall(opts GenerateImageOptions) int {
 	return 1
 }
 
+// resolveGeneratedImageMediaType mirrors TS generate-image.ts: the media type
+// is sniffed from the image bytes (image-scoped signature detection, which
+// also knows bmp/tiff/avif/heic), falling back to the provider-reported type
+// (URL-only results carry no bytes) and finally image/png.
 func resolveGeneratedImageMediaType(data []byte, mediaType string) string {
+	if detected, ok := fileutil.DetectMediaTypeSignature(data, "image"); ok {
+		return detected
+	}
 	if mediaType != "" {
 		return mediaType
-	}
-	if len(data) >= 8 &&
-		data[0] == 0x89 && data[1] == 0x50 &&
-		data[2] == 0x4E && data[3] == 0x47 &&
-		data[4] == 0x0D && data[5] == 0x0A &&
-		data[6] == 0x1A && data[7] == 0x0A {
-		return "image/png"
-	}
-	if len(data) >= 4 &&
-		data[0] == 0x47 && data[1] == 0x49 &&
-		data[2] == 0x46 && data[3] == 0x38 {
-		return "image/gif"
-	}
-	if len(data) >= 3 &&
-		data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF {
-		return "image/jpeg"
-	}
-	if len(data) >= 12 &&
-		data[0] == 0x52 && data[1] == 0x49 && data[2] == 0x46 && data[3] == 0x46 &&
-		data[8] == 0x57 && data[9] == 0x45 && data[10] == 0x42 && data[11] == 0x50 {
-		return "image/webp"
 	}
 	return "image/png"
 }
@@ -402,11 +473,8 @@ func mergeImageProviderMetadata(dst map[string]interface{}, src map[string]inter
 			current = map[string]interface{}{"images": []interface{}{}}
 			dst[providerName] = current
 		}
-		for key, value := range metadata {
-			if key != "images" {
-				current[key] = value
-			}
-		}
+		// TS keeps only `images` for non-gateway providers; extra keys are
+		// dropped (generate-image.ts).
 		current["images"] = appendImageMetadata(current["images"], metadata["images"])
 	}
 }
@@ -510,4 +578,36 @@ func toInterfaceSlice(value interface{}) []interface{} {
 	default:
 		return []interface{}{typed}
 	}
+}
+
+// imageProviderMetadata extracts the metadata of one image from the legacy
+// providerMetadata.<provider>.images[] result shape (TS
+// getImageProviderMetadata): only JSON object entries are kept.
+func imageProviderMetadata(providerMetadata map[string]interface{}, index int) map[string]interface{} {
+	var out map[string]interface{}
+	for providerName, raw := range providerMetadata {
+		metadata, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		var entry map[string]interface{}
+		switch images := metadata["images"].(type) {
+		case []interface{}:
+			if index < len(images) {
+				entry, _ = images[index].(map[string]interface{})
+			}
+		case []map[string]interface{}:
+			if index < len(images) {
+				entry = images[index]
+			}
+		}
+		if entry == nil {
+			continue
+		}
+		if out == nil {
+			out = map[string]interface{}{}
+		}
+		out[providerName] = entry
+	}
+	return out
 }

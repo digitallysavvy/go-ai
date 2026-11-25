@@ -44,7 +44,9 @@ data: [DONE]
 			break
 		}
 		require.NoError(t, err)
-		chunks = append(chunks, chunk)
+		if !isAlibabaTextBlockPart(chunk) {
+			chunks = append(chunks, chunk)
+		}
 	}
 
 	// Should have: response metadata + 2 text chunks + 1 finish
@@ -96,8 +98,19 @@ data: [DONE]
 
 	chunk, err = stream.Next()
 	require.NoError(t, err)
+	assert.Equal(t, provider.ChunkTypeTextStart, chunk.Type)
+
+	chunk, err = stream.Next()
+	require.NoError(t, err)
 	assert.Equal(t, provider.ChunkTypeText, chunk.Type)
 	assert.Equal(t, "Hello", chunk.Text)
+}
+
+// isAlibabaTextBlockPart reports a text-start / text-end part; the tests
+// that count deltas skip them (TestR87eintegAlibabaStreamTextBlocks checks
+// the block parts).
+func isAlibabaTextBlockPart(c *provider.StreamChunk) bool {
+	return c != nil && (c.Type == provider.ChunkTypeTextStart || c.Type == provider.ChunkTypeTextEnd)
 }
 
 // TestAlibabaStream_ProcessReasoningChunks tests reasoning content (thinking mode)
@@ -123,10 +136,14 @@ data: [DONE]
 			break
 		}
 		require.NoError(t, err)
-		chunks = append(chunks, chunk)
+		if !isAlibabaTextBlockPart(chunk) {
+			chunks = append(chunks, chunk)
+		}
 	}
 
 	// Should have: reasoning-start + reasoning + reasoning + reasoning-end + text + finish
+	// TS isFirstChunk: the first valid chunk always yields response-metadata.
+	chunks = r78provbDropMetadata(t, chunks)
 	require.Len(t, chunks, 6)
 
 	// Reasoning start
@@ -259,10 +276,14 @@ data: [DONE]
 			break
 		}
 		require.NoError(t, err)
-		chunks = append(chunks, chunk)
+		if !isAlibabaTextBlockPart(chunk) {
+			chunks = append(chunks, chunk)
+		}
 	}
 
 	// Should have: text + finish
+	// TS isFirstChunk: the first valid chunk always yields response-metadata.
+	chunks = r78provbDropMetadata(t, chunks)
 	require.Len(t, chunks, 2)
 
 	// Text chunk
@@ -300,10 +321,14 @@ data: [DONE]
 			break
 		}
 		require.NoError(t, err)
-		chunks = append(chunks, chunk)
+		if !isAlibabaTextBlockPart(chunk) {
+			chunks = append(chunks, chunk)
+		}
 	}
 
 	// Should skip empty chunks and have: text + finish
+	// TS isFirstChunk: the first valid chunk always yields response-metadata.
+	chunks = r78provbDropMetadata(t, chunks)
 	require.Len(t, chunks, 2)
 
 	assert.Equal(t, provider.ChunkTypeText, chunks[0].Type)
@@ -336,14 +361,18 @@ data: [DONE]
 			break
 		}
 		require.NoError(t, err)
-		chunks = append(chunks, chunk)
+		if !isAlibabaTextBlockPart(chunk) {
+			chunks = append(chunks, chunk)
+		}
 	}
 
 	// Should have: error + text + finish
+	// TS isFirstChunk: the first valid chunk always yields response-metadata.
+	chunks = r78provbDropMetadata(t, chunks)
 	require.Len(t, chunks, 3)
 
 	assert.Equal(t, provider.ChunkTypeError, chunks[0].Type)
-	assert.Contains(t, chunks[0].Text, "failed to parse stream chunk")
+	assert.Contains(t, chunks[0].Text, "JSON parsing failed")
 
 	assert.Equal(t, provider.ChunkTypeText, chunks[1].Type)
 	assert.Equal(t, "Hello", chunks[1].Text)
@@ -456,10 +485,14 @@ data: [DONE]
 			break
 		}
 		require.NoError(t, err)
-		chunks = append(chunks, chunk)
+		if !isAlibabaTextBlockPart(chunk) {
+			chunks = append(chunks, chunk)
+		}
 	}
 
 	// Should have: reasoning-start + reasoning + reasoning-end + 2 text + finish
+	// TS isFirstChunk: the first valid chunk always yields response-metadata.
+	chunks = r78provbDropMetadata(t, chunks)
 	require.Len(t, chunks, 6)
 
 	assert.Equal(t, provider.ChunkTypeReasoningStart, chunks[0].Type)
@@ -476,4 +509,51 @@ data: [DONE]
 	assert.Equal(t, "42", chunks[4].Text)
 
 	assert.Equal(t, provider.ChunkTypeFinish, chunks[5].Type)
+}
+
+// TS processDelta throws for a new call without function.name even when a
+// named sibling exists, and ignores a present-but-blank name.
+func TestAlibabaStream_ToolCallNameBlankVersusAbsent(t *testing.T) {
+	run := func(sse string) []*provider.StreamChunk {
+		stream := newAlibabaStream(io.NopCloser(strings.NewReader(sse)))
+		defer stream.Close() //nolint:errcheck
+		var out []*provider.StreamChunk
+		for {
+			c, err := stream.Next()
+			if err == io.EOF {
+				break
+			}
+			require.NoError(t, err)
+			out = append(out, c)
+		}
+		return out
+	}
+	count := func(cs []*provider.StreamChunk, ty provider.ChunkType) (n int) {
+		for _, c := range cs {
+			if c.Type == ty {
+				n++
+			}
+		}
+		return
+	}
+	blank := run(`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":" ","arguments":"{}"}}]},"finish_reason":""}]}
+
+data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+
+`)
+	require.Equal(t, 0, count(blank, provider.ChunkTypeError), "%#v", blank)
+	require.Equal(t, 0, count(blank, provider.ChunkTypeToolCall))
+
+	absent := run(`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"ok","arguments":"{}"}}]},"finish_reason":""}]}
+
+data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"id":"c2","type":"function","function":{"arguments":"{}"}}]},"finish_reason":""}]}
+
+data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+
+`)
+	require.Equal(t, 1, count(absent, provider.ChunkTypeError), "%#v", absent)
 }

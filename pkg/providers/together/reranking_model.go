@@ -2,14 +2,15 @@ package together
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // RerankingModel implements the provider.RerankingModel interface for
@@ -30,7 +31,7 @@ func NewRerankingModel(provider *Provider, modelID string) *RerankingModel {
 func (m *RerankingModel) SpecificationVersion() string { return "v4" }
 
 // Provider returns the provider name.
-func (m *RerankingModel) Provider() string { return "together" }
+func (m *RerankingModel) Provider() string { return "togetherai.reranking" }
 
 // ModelID returns the model ID.
 func (m *RerankingModel) ModelID() string { return m.modelID }
@@ -41,14 +42,17 @@ type togetherRerankingOptions struct {
 	// RankFields lists keys in the JSON object document to rank by.
 	// Defaults to using all supplied keys for ranking.
 	RankFields []string `json:"rankFields,omitempty"`
+	// rankFieldsSet: rankFields was given as an array (an empty one is sent
+	// as rank_fields: [] like TS).
+	rankFieldsSet bool
 }
 
 func extractTogetherRerankingOptions(providerOptions map[string]interface{}) togetherRerankingOptions {
 	// TS parses providerOptions under the "togetherai" key (as does this
 	// package's image model); "together" is accepted as a fallback.
-	po, ok := providerOptions["togetherai"].(map[string]interface{})
+	po, ok := providerutils.NormalizeProviderOptionsObject(providerOptions["togetherai"])
 	if !ok {
-		po, ok = providerOptions["together"].(map[string]interface{})
+		po, ok = providerutils.NormalizeProviderOptionsObject(providerOptions["together"])
 	}
 	if !ok {
 		return togetherRerankingOptions{}
@@ -56,6 +60,8 @@ func extractTogetherRerankingOptions(providerOptions map[string]interface{}) tog
 	var opts togetherRerankingOptions
 	if raw, ok := po["rankFields"]; ok {
 		if slice, ok := raw.([]interface{}); ok {
+			opts.rankFieldsSet = true
+			opts.RankFields = []string{}
 			for _, v := range slice {
 				if s, ok := v.(string); ok {
 					opts.RankFields = append(opts.RankFields, s)
@@ -63,6 +69,7 @@ func extractTogetherRerankingOptions(providerOptions map[string]interface{}) tog
 			}
 		} else if strs, ok := raw.([]string); ok {
 			opts.RankFields = strs
+			opts.rankFieldsSet = strs != nil
 		}
 	}
 	return opts
@@ -74,6 +81,9 @@ func (m *RerankingModel) DoRerank(ctx context.Context, opts *provider.RerankOpti
 		return nil, providererrors.NewProviderError("together", 0, "", "rerank options cannot be nil", nil)
 	}
 
+	if err := validateRerankingOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	rerankOpts := extractTogetherRerankingOptions(opts.ProviderOptions)
 
 	reqBody := map[string]interface{}{
@@ -85,19 +95,29 @@ func (m *RerankingModel) DoRerank(ctx context.Context, opts *provider.RerankOpti
 	if opts.TopN != nil {
 		reqBody["top_n"] = *opts.TopN
 	}
-	if len(rerankOpts.RankFields) > 0 {
+	if rerankOpts.rankFieldsSet || len(rerankOpts.RankFields) > 0 {
 		reqBody["rank_fields"] = rerankOpts.RankFields
 	}
 
 	var response togetherRerankingResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/v1/rerank",
-		Body:    reqBody,
-		Headers: opts.Headers,
+		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaTogetherRerank),
+		Method:           http.MethodPost,
+		Path:             "/v1/rerank",
+		Body:             reqBody,
+		Headers:          opts.Headers,
 	}, &response)
 	if err != nil {
-		return nil, providererrors.NewProviderError("together", 0, "", err.Error(), err)
+		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+			return nil, cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
+		}
+		if noResp, ok := internalhttp.NoResponseError(err); ok {
+			return nil, noResp // TS handleFetchError: an abort or timeout is returned unchanged
+		}
+		if providererrors.IsLoadAPIKeyError(err) {
+			return nil, err // TS throws LoadAPIKeyError unwrapped
+		}
+		return nil, providererrors.NewSchemaProviderError("together", err, togetherErrorSchema)
 	}
 
 	ranking := make([]types.RerankItem, 0, len(response.Results))
@@ -145,7 +165,7 @@ func togetherRerankDocuments(docs interface{}) interface{} {
 // response, not the fields captured by togetherRerankingResponse).
 func rawTogetherJSONBody(body []byte) interface{} {
 	var raw interface{}
-	if err := json.Unmarshal(body, &raw); err != nil {
+	if err := jsonexact.Unmarshal(body, &raw); err != nil {
 		return nil
 	}
 	return raw
@@ -163,4 +183,23 @@ type togetherRerankingResponse struct {
 		CompletionTokens int `json:"completion_tokens"`
 		TotalTokens      int `json:"total_tokens"`
 	} `json:"usage,omitempty"`
+}
+
+// togetherErrorSchema is the TS togetheraiErrorSchema of the image and
+// reranking models: z.object({error: z.object({message: z.string()})}),
+// errorToMessage data.error.message.
+func togetherErrorSchema(body interface{}) (string, interface{}, bool) {
+	obj, ok := body.(map[string]interface{})
+	if !ok {
+		return "", nil, false
+	}
+	inner, ok := obj["error"].(map[string]interface{})
+	if !ok {
+		return "", nil, false
+	}
+	msg, ok := inner["message"].(string)
+	if !ok {
+		return "", nil, false
+	}
+	return msg, map[string]interface{}{"error": map[string]interface{}{"message": msg}}, true
 }

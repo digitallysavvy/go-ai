@@ -29,7 +29,7 @@ func TestElevenLabsSpeechModelMetadataAndGenerate(t *testing.T) {
 		}, nil
 	})
 	m := NewSpeechModel(p, "eleven_multilingual_v2")
-	if m.SpecificationVersion() != "v4" || m.Provider() != "elevenlabs" || m.ModelID() != "eleven_multilingual_v2" {
+	if m.SpecificationVersion() != "v4" || m.Provider() != "elevenlabs.speech" || m.ModelID() != "eleven_multilingual_v2" {
 		t.Fatalf("metadata mismatch: spec=%s provider=%s model=%s", m.SpecificationVersion(), m.Provider(), m.ModelID())
 	}
 
@@ -178,7 +178,7 @@ func TestElevenLabsSpeechModelErrorPaths(t *testing.T) {
 			Body:       io.NopCloser(strings.NewReader(`{"error":"unauthorized"}`)),
 		}, nil
 	})
-	if _, err := NewSpeechModel(pStatus, "m").DoGenerate(context.Background(), &provider.SpeechGenerateOptions{Text: "x"}); err == nil || !strings.Contains(err.Error(), "status 401") {
+	if _, err := NewSpeechModel(pStatus, "m").DoGenerate(context.Background(), &provider.SpeechGenerateOptions{Text: "x"}); err == nil || !strings.Contains(err.Error(), "provider error (401)") {
 		t.Fatalf("expected status error, got %v", err)
 	}
 }

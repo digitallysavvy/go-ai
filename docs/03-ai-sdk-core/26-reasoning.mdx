@@ -123,7 +123,8 @@ The stream also emits `ChunkTypeReasoningStart` and `ChunkTypeReasoningEnd` to m
 | `types.ReasoningLow` | `"low"` | Fast, concise reasoning |
 | `types.ReasoningMedium` | `"medium"` | Balanced reasoning |
 | `types.ReasoningHigh` | `"high"` | Thorough reasoning |
-| `types.ReasoningXHigh` | `"xhigh"` | Maximum reasoning |
+| `types.ReasoningXHigh` | `"xhigh"` | Extra-high reasoning |
+| `types.ReasoningMax` | `"max"` | Portable maximum reasoning. Providers with a native maximum tier (OpenAI, Anthropic, DeepSeek, Moonshot AI, Bedrock) send it as-is; others coerce it to their highest supported tier with a `compatibility` warning |
 
 ## Provider support
 
@@ -138,7 +139,8 @@ Each provider translates the level to its native reasoning API. Some providers s
 | `low` | 10% | `low` | 10% | `low` | 10% |
 | `medium` | 30% | `medium` | 30% | `medium` | 30% |
 | `high` | 60% | `high` | 60% | `high` | 60% |
-| `xhigh` | 90% | `high` | 90% | `high` | 90% |
+| `xhigh` | 90% | `xhigh` | 90% | `high` | 90% |
+| `max` | 95% (adaptive models: `max` effort) | `max` | 95% (adaptive models: `max` effort) | `high` | 95% (Gemini 3: `high`) |
 | `provider-default` | omitted | omitted | omitted | omitted | omitted |
 
 **Anthropic dynamic budgets:** Budget tokens are calculated dynamically per model using the formula `percentage * maxOutputTokens`, with a floor of 1,024 tokens. For example, `claude-sonnet-4-6` has a 128,000 max output token limit, so `medium` (30%) maps to 38,400 tokens. Model-specific limits: 128,000 for claude-4-6, 64,000 for claude-4-5, 32,000 for claude-4-1, 4,096 default.
@@ -151,8 +153,9 @@ Each provider translates the level to its native reasoning API. Some providers s
 | --- | --- | --- |
 | **DeepSeek** | Provider-specific | Enables reasoning for DeepSeek-R1 and similar models. |
 | **Alibaba** | Provider-specific | Enables reasoning for Qwen models with thinking support. |
-| **Fireworks** | Provider-specific | Forwards reasoning configuration to supported models. |
-| **Groq** | Provider-specific | Supports reasoning on compatible models. |
+| **Fireworks** | `reasoning_effort` | Supports `low`, `medium` and `high`; `minimal` maps to `low` and `xhigh`/`max` map to `high`, each with a `compatibility` warning. |
+| **Groq** | Provider-specific | Supports reasoning on compatible models; `xhigh` and `max` map to `high`. |
+| **Perplexity** | `reasoning.effort` | `max` maps to `xhigh` with a `compatibility` warning. |
 | **XAI** | `reasoning_effort` | OpenAI-compatible mapping. Reasoning deltas emitted via `OnReasoningDelta`. |
 | **Open Responses** | `reasoning.effort` | OpenAI-compatible Responses object mapping; `ProviderOptions["open-responses"].reasoningSummary` maps to `reasoning.summary`. |
 

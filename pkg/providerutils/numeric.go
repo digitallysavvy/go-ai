@@ -100,3 +100,23 @@ func floatToInt(f float64) (int, bool) {
 	}
 	return int(f), true
 }
+
+// ResolveEmbeddingDimensions picks the embedding output dimensions to send:
+// an explicit provider option value wins over the top-level dimensions
+// setting (TS `providerOptions.dimensions ?? dimensions`). ok is false when
+// neither is set.
+func ResolveEmbeddingDimensions(providerValue interface{}, top *int) (dimensions int, ok bool) {
+	if n, found := CoerceInt(providerValue); found {
+		return n, true
+	}
+	if top != nil {
+		return *top, true
+	}
+	return 0, false
+}
+
+// EmbedProviderOption returns providerOptions[namespace][key], or nil.
+func EmbedProviderOption(providerOptions map[string]interface{}, namespace, key string) interface{} {
+	ns, _ := providerOptions[namespace].(map[string]interface{})
+	return ns[key]
+}

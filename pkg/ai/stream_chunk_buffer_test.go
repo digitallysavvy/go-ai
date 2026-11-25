@@ -210,3 +210,15 @@ func TestChunkBufferReader_CloseDetachesWithoutAffectingOthers(t *testing.T) {
 		t.Fatalf("r2.Next() = %+v, %v, want {a}, nil", c, err)
 	}
 }
+
+// A closed reader must not hand out chunks pushed after it was closed.
+func TestChunkBufferReader_ClosedReaderIgnoresLaterChunks(t *testing.T) {
+	buf := newChunkBuffer()
+	r := buf.reader()
+	_ = r.Close()
+	buf.push(provider.StreamChunk{Type: provider.ChunkTypeText, Text: "late"})
+	buf.close(nil)
+	if c, err := r.Next(); err != io.EOF {
+		t.Fatalf("Next after Close = %v, %v; want io.EOF", c, err)
+	}
+}

@@ -3,13 +3,19 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
+	"strconv"
+	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
+	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 type OpenAIRealtimeModel struct {
@@ -47,7 +53,7 @@ func resolveRealtimeAPI(modelID string, opts OpenAIRealtimeModelOptions) (string
 	case "live", "realtime":
 		return *opts.API, nil
 	default:
-		return "", &providererrors.InvalidArgumentError{Field: "api", Message: `OpenAI realtime api must be "live" or "realtime".`}
+		return "", providererrors.NewArgumentError("api", `OpenAI realtime api must be "live" or "realtime".`, nil)
 	}
 }
 
@@ -110,54 +116,194 @@ func (m *OpenAIRealtimeModel) ModelID() string              { return m.modelID }
 // UnsupportedFunctionalityError matching the Live-model rejection path,
 // which would be wrong for the GA model.
 var (
-	_ provider.Experimental_RealtimeModelV4    = (*OpenAIRealtimeModel)(nil)
-	_ provider.RealtimeClientSecretCreator     = (*OpenAIRealtimeModel)(nil)
-	_ provider.RealtimeWebSocketConfigProvider = (*OpenAIRealtimeModel)(nil)
+	_ provider.Experimental_RealtimeModelV4     = (*OpenAIRealtimeModel)(nil)
+	_ provider.RealtimeClientSecretCreator      = (*OpenAIRealtimeModel)(nil)
+	_ provider.RealtimeWebSocketConfigProvider  = (*OpenAIRealtimeModel)(nil)
+	_ provider.RealtimeServerConnectionProvider = (*OpenAIRealtimeModel)(nil)
+	_ provider.RealtimeIntentCodec              = (*OpenAIRealtimeModel)(nil)
 )
 
-func (m *OpenAIRealtimeModel) DoCreateClientSecret(ctx context.Context, opts provider.ClientSecretOptions) (provider.ClientSecretResult, error) {
-	if m.provider.config.APIKey == "" {
-		return provider.ClientSecretResult{}, fmt.Errorf("OpenAI API key is missing. Pass it using the 'apiKey' parameter or the OPENAI_API_KEY environment variable.") //nolint:staticcheck // matches TS SDK's exact error text
+// openAIRealtimeIntent resolves an intent (empty = conversation) and rejects
+// unknown ones (TS assertSupportedOpenAIIntent, 892af4dab7).
+func openAIRealtimeIntent(intent provider.RealtimeSessionIntent) (provider.RealtimeSessionIntent, error) {
+	switch intent {
+	case "":
+		return provider.RealtimeSessionIntentConversation, nil
+	case provider.RealtimeSessionIntentConversation, provider.RealtimeSessionIntentTranscription:
+		return intent, nil
 	}
+	return "", errors.New("OpenAI realtime session intent '" + string(intent) + "' is not supported.")
+}
+
+// GetServerConnection returns the upstream WebSocket for a trusted server
+// (TS getServerWebSocketConfig({intent}), 892af4dab7): the provider headers
+// with the long-lived API key, and <ws base>/realtime?model=<id> for a
+// conversation or ?intent=transcription for transcription (the model then
+// goes in session.update). ConnectRealtime keeps the client-secret flow
+// unless the caller asks for an intent.
+func (m *OpenAIRealtimeModel) GetServerConnection(ctx context.Context, opts provider.RealtimeServerConnectionOptions) (provider.WebSocketConfig, error) {
+	headers, err := m.provider.client.RequestHeadersCtx(ctx)
+	if err != nil {
+		return provider.WebSocketConfig{}, err
+	}
+	base := m.provider.config.BaseURL
+	if base == "" {
+		base = DefaultBaseURL
+	}
+	// TS buildServerUrl: new URL(baseURL), its WHATWG protocol, host (default
+	// port left out) and pathname, before the intent switch rejects an
+	// unknown intent.
+	scheme, host, pathname, err := jsURLParts(base)
+	if err != nil {
+		return provider.WebSocketConfig{}, err
+	}
+	intent, err := openAIRealtimeIntent(opts.Intent)
+	if err != nil {
+		return provider.WebSocketConfig{}, err
+	}
+	wsScheme := "wss"
+	if scheme == "http" {
+		wsScheme = "ws"
+	}
+	wsBase := wsScheme + "://" + host + strings.TrimSuffix(pathname, "/")
+	wsURL := wsBase + "/realtime?model=" + providerutils.EncodeURIComponent(m.modelID)
+	if intent == provider.RealtimeSessionIntentTranscription {
+		wsURL = wsBase + "/realtime?intent=transcription"
+	}
+	return provider.WebSocketConfig{URL: wsURL, Headers: headers}, nil
+}
+
+// BuildSessionConfigForIntent is BuildSessionConfig for an intent (TS
+// buildSessionConfig(config, {intent})).
+func (m *OpenAIRealtimeModel) BuildSessionConfigForIntent(config provider.RealtimeSessionConfig, intent provider.RealtimeSessionIntent) (any, error) {
+	intent, err := openAIRealtimeIntent(intent)
+	if err != nil {
+		return nil, err
+	}
+	return buildOpenAIRealtimeSession(config, m.modelID, intent)
+}
+
+// SerializeClientEventForIntent is SerializeClientEvent for an intent (TS
+// serializeClientEvent(event, {intent})).
+func (m *OpenAIRealtimeModel) SerializeClientEventForIntent(event provider.RealtimeClientEvent, intent provider.RealtimeSessionIntent) (json.RawMessage, error) {
+	intent, err := openAIRealtimeIntent(intent)
+	if err != nil {
+		return nil, err
+	}
+	var buildErr error
+	out, err := serializeOpenAICompatibleRealtimeClientEvent(event, func(cfg provider.RealtimeSessionConfig) any {
+		session, err := buildOpenAIRealtimeSession(cfg, m.modelID, intent)
+		buildErr = err
+		return session
+	}, true)
+	if buildErr != nil {
+		return nil, buildErr
+	}
+	return out, err
+}
+
+// buildOpenAIRealtimeSession is TS buildOpenAISessionConfig with an intent:
+// a transcription session has type "transcription", no model, always an
+// audio.input.transcription (model defaulting to the model ID), and rejects
+// the conversation-only settings.
+func buildOpenAIRealtimeSession(config provider.RealtimeSessionConfig, modelID string, intent provider.RealtimeSessionIntent) (map[string]interface{}, error) {
+	if intent == provider.RealtimeSessionIntentTranscription {
+		for _, c := range []struct {
+			key string
+			set bool
+		}{
+			{"instructions", config.Instructions != nil},
+			{"voice", config.Voice != nil},
+			{"outputModalities", config.OutputModalities != nil},
+			{"outputAudioFormat", config.OutputAudioFormat != nil},
+			{"outputAudioTranscription", config.OutputAudioTranscription != nil},
+			{"tools", config.Tools != nil},
+		} {
+			if c.set {
+				return nil, errors.New("OpenAI realtime transcription sessions do not support '" + c.key + "'.")
+			}
+		}
+		session := map[string]interface{}{"type": "transcription"}
+		addOpenAIRealtimeSessionFields(session, config, modelID, true)
+		return session, nil
+	}
+	session := map[string]interface{}{"type": "realtime", "model": modelID}
+	addOpenAIRealtimeSessionFields(session, config, modelID, false)
+	return session, nil
+}
+
+func (m *OpenAIRealtimeModel) DoCreateClientSecret(ctx context.Context, opts provider.ClientSecretOptions) (provider.ClientSecretResult, error) {
 	session := map[string]interface{}{"type": "realtime", "model": m.modelID}
 	if opts.SessionConfig != nil {
 		if built, ok := m.BuildSessionConfig(*opts.SessionConfig).(map[string]interface{}); ok {
 			session = built
 		}
 	}
-	body := map[string]interface{}{"session": session}
+	bodyMap := map[string]interface{}{"session": session}
 	if opts.ExpiresAfterSeconds != nil {
-		body["expires_after"] = map[string]interface{}{"anchor": "created_at", "seconds": *opts.ExpiresAfterSeconds}
+		bodyMap["expires_after"] = map[string]interface{}{"anchor": "created_at", "seconds": *opts.ExpiresAfterSeconds}
 	}
+	// TS JSON.stringify({session, expires_after: {anchor, seconds}}).
+	body := []byte(providerutils.StringifyOrdered(bodyMap, withOrderPrefix(map[string][]string{
+		"":              {"session", "expires_after"},
+		"expires_after": {"anchor", "seconds"},
+	}, "session", openAIRealtimeSessionOrder)))
 	resp, err := m.provider.client.Do(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
 		Path:    "/realtime/client_secrets",
 		Headers: map[string]string{"Content-Type": "application/json"},
-		Body:    body,
+		// TS calls fetchFn directly with {...config headers, Content-Type}:
+		// no runtime user-agent tag, and a fetch rejection as is.
+		RawFetch: true,
+		Body:     body,
 	})
 	if err != nil {
-		return provider.ClientSecretResult{}, err
+		return provider.ClientSecretResult{}, internalhttp.UnwrapFetchRejection(err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return provider.ClientSecretResult{}, fmt.Errorf("OpenAI realtime client secret request failed: %d %s", resp.StatusCode, string(resp.Body))
+		// TS: `OpenAI realtime client secret request failed: ${status} ${text}`.
+		cause := resp.StatusError(resp.Body)
+		return provider.ClientSecretResult{}, providererrors.NewProviderError("openai", 0, "",
+			fmt.Sprintf("OpenAI realtime client secret request failed: %d %s", resp.StatusCode, textdecode.UTF8(resp.Body)), cause) // TS response.text()
 	}
+	resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS response.text(): BOM dropped, invalid UTF-8 replaced
 	var data struct {
 		Value     string `json:"value"`
 		ExpiresAt *int64 `json:"expires_at"`
 	}
-	if err := json.Unmarshal(resp.Body, &data); err != nil {
+	// TS (await response.json()): plain JSON.parse keeps a __proto__ key.
+	if err := providerutils.UnmarshalChunkPlain(resp.Body, &data); err != nil {
 		return provider.ClientSecretResult{}, err
 	}
 	base := m.provider.config.BaseURL
 	if base == "" {
 		base = DefaultBaseURL
 	}
-	u, _ := url.Parse(base)
+	// TS `wss://${new URL(baseURL).host}/v1/realtime?model=...`.
+	_, host, _, err := jsURLParts(base)
+	if err != nil {
+		return provider.ClientSecretResult{}, err
+	}
 	return provider.ClientSecretResult{
 		Token:     data.Value,
-		URL:       fmt.Sprintf("wss://%s/v1/realtime?model=%s", u.Host, url.QueryEscape(m.modelID)),
+		URL:       fmt.Sprintf("wss://%s/v1/realtime?model=%s", host, providerutils.EncodeURIComponent(m.modelID)), // TS encodeURIComponent
 		ExpiresAt: data.ExpiresAt,
 	}, nil
+}
+
+// jsURLParts is TS new URL(raw): the scheme, url.host (with the port unless
+// it is the scheme's default) and url.pathname, or the TypeError "Invalid
+// URL" for input the WHATWG parser rejects.
+func jsURLParts(raw string) (scheme, host, pathname string, err error) {
+	u, err := urlnorm.Parse(raw)
+	if err != nil {
+		return "", "", "", err
+	}
+	host = u.Host
+	if u.Port >= 0 {
+		host += ":" + strconv.Itoa(u.Port)
+	}
+	return u.Scheme, host, u.Pathname(), nil
 }
 
 func (m *OpenAIRealtimeModel) GetWebSocketConfig(token, wsURL string) provider.WebSocketConfig {
@@ -166,11 +312,16 @@ func (m *OpenAIRealtimeModel) GetWebSocketConfig(token, wsURL string) provider.W
 
 func (m *OpenAIRealtimeModel) BuildSessionConfig(config provider.RealtimeSessionConfig) any {
 	session := map[string]interface{}{"type": "realtime", "model": m.modelID}
-	addOpenAIRealtimeSessionFields(session, config)
+	addOpenAIRealtimeSessionFields(session, config, m.modelID, false)
 	return session
 }
 
 func (m *OpenAIRealtimeModel) ParseServerEvent(raw json.RawMessage) ([]provider.RealtimeServerEvent, error) {
+	// TS parseOpenAIRealtimeServerEvent reads event.type of the parsed
+	// value: a JSON null throws (the realtime event channel's fatal error).
+	if strings.TrimSpace(string(raw)) == "null" {
+		return nil, errors.New("Cannot read properties of null (reading 'type')") //nolint:staticcheck // ST1005: TypeError text from TS
+	}
 	return []provider.RealtimeServerEvent{parseOpenAICompatibleRealtimeServerEvent(raw, false)}, nil
 }
 
@@ -180,15 +331,15 @@ func (m *OpenAIRealtimeModel) SerializeClientEvent(event provider.RealtimeClient
 	}, true)
 }
 
-func addOpenAIRealtimeSessionFields(session map[string]interface{}, config provider.RealtimeSessionConfig) {
-	if config.Instructions != nil {
+func addOpenAIRealtimeSessionFields(session map[string]interface{}, config provider.RealtimeSessionConfig, modelID string, transcription bool) {
+	if config.Instructions != nil && !transcription {
 		session["instructions"] = *config.Instructions
 	}
-	if config.OutputModalities != nil {
+	if config.OutputModalities != nil && !transcription {
 		session["output_modalities"] = config.OutputModalities
 	}
 	audio := map[string]interface{}{}
-	if config.InputAudioFormat != nil || config.InputAudioTranscription != nil || config.TurnDetection != nil {
+	if transcription || config.InputAudioFormat != nil || config.InputAudioTranscription != nil || config.TurnDetection != nil {
 		input := map[string]interface{}{}
 		if config.InputAudioFormat != nil {
 			input["format"] = audioFormatMap(config.InputAudioFormat)
@@ -198,26 +349,32 @@ func addOpenAIRealtimeSessionFields(session map[string]interface{}, config provi
 		} else if config.TurnDetection != nil {
 			input["turn_detection"] = turnDetectionMap(config.TurnDetection, true)
 		}
-		if config.InputAudioTranscription != nil {
+		if transcription || config.InputAudioTranscription != nil {
+			// A transcription session's model defaults to the model ID
+			// (TS 892af4dab7); a conversation's to gpt-realtime-whisper.
 			model := "gpt-realtime-whisper"
-			if config.InputAudioTranscription.Model != nil {
-				model = *config.InputAudioTranscription.Model
+			if transcription {
+				model = modelID
 			}
-			if model == "" {
-				model = ""
+			t := config.InputAudioTranscription
+			if t == nil {
+				t = &provider.RealtimeAudioTranscriptionConfig{}
 			}
-			transcription := map[string]interface{}{"model": model}
-			if config.InputAudioTranscription.Language != nil {
-				transcription["language"] = *config.InputAudioTranscription.Language
+			if t.Model != nil {
+				model = *t.Model
 			}
-			if config.InputAudioTranscription.Prompt != nil {
-				transcription["prompt"] = *config.InputAudioTranscription.Prompt
+			entry := map[string]interface{}{"model": model}
+			if t.Language != nil {
+				entry["language"] = *t.Language
 			}
-			input["transcription"] = transcription
+			if t.Prompt != nil {
+				entry["prompt"] = *t.Prompt
+			}
+			input["transcription"] = entry
 		}
 		audio["input"] = input
 	}
-	if config.OutputAudioFormat != nil || config.Voice != nil {
+	if !transcription && (config.OutputAudioFormat != nil || config.Voice != nil) {
 		output := map[string]interface{}{}
 		if config.OutputAudioFormat != nil {
 			output["format"] = audioFormatMap(config.OutputAudioFormat)
@@ -230,7 +387,7 @@ func addOpenAIRealtimeSessionFields(session map[string]interface{}, config provi
 	if len(audio) > 0 {
 		session["audio"] = audio
 	}
-	if len(config.Tools) > 0 {
+	if len(config.Tools) > 0 && !transcription {
 		session["tools"] = realtimeTools(config.Tools)
 		session["tool_choice"] = "auto"
 	}
@@ -250,10 +407,10 @@ func audioFormatMap(f *provider.RealtimeAudioFormat) map[string]interface{} {
 func turnDetectionMap(td *provider.RealtimeTurnDetection, openaiNames bool) map[string]interface{} {
 	t := td.Type
 	if openaiNames {
-		switch t {
-		case "server-vad":
+		// TS: type === 'server-vad' ? 'server_vad' : 'semantic_vad'.
+		if t == "server-vad" {
 			t = "server_vad"
-		case "semantic-vad":
+		} else {
 			t = "semantic_vad"
 		}
 	} else {
@@ -289,7 +446,7 @@ func realtimeTools(tools []provider.RealtimeToolDefinition) []map[string]interfa
 
 func parseOpenAICompatibleRealtimeServerEvent(raw json.RawMessage, xai bool) provider.RealtimeServerEvent {
 	var event map[string]interface{}
-	_ = json.Unmarshal(raw, &event)
+	_ = jsonexact.Unmarshal(raw, &event)
 	rawType, _ := event["type"].(string)
 	e := provider.RealtimeServerEvent{Raw: raw}
 	switch rawType {
@@ -320,6 +477,7 @@ func parseOpenAICompatibleRealtimeServerEvent(raw json.RawMessage, xai bool) pro
 		e.Type = "input-transcription-completed"
 		e.ItemID = stringField(event, "item_id")
 		e.Transcript = stringField(event, "transcript")
+		e.Usage = openAIRealtimeTranscriptionUsage(event["usage"])
 	case "response.created":
 		e.Type = "response-created"
 		if responseID, ok := nestedStringField(event, "response", "id"); ok {
@@ -339,6 +497,17 @@ func parseOpenAICompatibleRealtimeServerEvent(raw json.RawMessage, xai bool) pro
 		} else {
 			e.Status = "completed"
 		}
+		// TS 892af4dab7: response.usage (xAI: event.usage ?? response.usage).
+		var usage interface{}
+		if xai {
+			usage = event["usage"]
+		}
+		if usage == nil {
+			if response, ok := event["response"].(map[string]interface{}); ok {
+				usage = response["usage"]
+			}
+		}
+		e.Usage = openAIRealtimeResponseUsage(usage)
 	case "response.output_item.added":
 		e.Type = "output-item-added"
 		e.ResponseID = stringField(event, "response_id")
@@ -449,6 +618,11 @@ func parseOpenAICompatibleRealtimeServerEvent(raw json.RawMessage, xai bool) pro
 		} else {
 			e.Code = stringField(event, "code")
 		}
+		// TS: clientEventId = error.event_id (the id of the client event the
+		// error answers).
+		if clientEventID, ok := nestedStringField(event, "error", "event_id"); ok {
+			e.ClientEventID = clientEventID
+		}
 	default:
 		e.Type = "custom"
 		e.RawType = rawType
@@ -460,9 +634,17 @@ func serializeOpenAICompatibleRealtimeClientEvent(event provider.RealtimeClientE
 	var out interface{}
 	switch event.Type {
 	case "session-update":
-		out = map[string]interface{}{"type": "session.update", "session": buildSession(event.Config)}
+		m := map[string]interface{}{"type": "session.update", "session": buildSession(event.Config)}
+		if event.EventID != "" {
+			m["event_id"] = event.EventID
+		}
+		out = m
 	case "input-audio-append":
-		out = map[string]interface{}{"type": "input_audio_buffer.append", "audio": event.Audio}
+		m := map[string]interface{}{"type": "input_audio_buffer.append", "audio": event.Audio}
+		if event.EventID != "" {
+			m["event_id"] = event.EventID
+		}
+		out = m
 	case "input-audio-commit":
 		out = map[string]interface{}{"type": "input_audio_buffer.commit"}
 	case "input-audio-clear":
@@ -506,7 +688,44 @@ func serializeOpenAICompatibleRealtimeClientEvent(event provider.RealtimeClientE
 	default:
 		return nil, nil
 	}
-	return json.Marshal(out)
+	// TS JSON.stringify of the event object literal: its key order.
+	return json.RawMessage(providerutils.StringifyOrdered(out, openAIRealtimeClientEventOrder)), nil
+}
+
+// openAIRealtimeSessionOrder is the key order of TS buildOpenAISessionConfig's
+// session object (provider options follow, as Object.assign appends them).
+var openAIRealtimeSessionOrder = map[string][]string{
+	"":                           {"type", "model", "instructions", "output_modalities", "audio", "tools", "tool_choice"},
+	"audio":                      {"input", "output"},
+	"audio.input":                {"format", "turn_detection", "transcription"},
+	"audio.input.format":         {"type", "rate"},
+	"audio.input.turn_detection": {"type", "threshold", "silence_duration_ms", "prefix_padding_ms"},
+	"audio.input.transcription":  {"model", "language", "prompt"},
+	"audio.output":               {"format", "voice"},
+	"audio.output.format":        {"type", "rate"},
+	"tools":                      {"type", "name", "description", "parameters"},
+}
+
+// openAIRealtimeClientEventOrder is the key order of TS
+// serializeOpenAIRealtimeClientEvent's object literals (each event uses a
+// subset; event_id is spread last).
+var openAIRealtimeClientEventOrder = withOrderPrefix(map[string][]string{
+	"":             {"type", "session", "item", "item_id", "content_index", "audio_end_ms", "audio", "response", "event_id"},
+	"item":         {"type", "role", "content", "call_id", "output"},
+	"item.content": {"type", "text", "audio"},
+	"response":     {"output_modalities", "instructions", "metadata"},
+}, "session", openAIRealtimeSessionOrder)
+
+// withOrderPrefix returns orders plus nested's paths under prefix.
+func withOrderPrefix(orders map[string][]string, prefix string, nested map[string][]string) map[string][]string {
+	for path, keys := range nested {
+		if path == "" {
+			orders[prefix] = keys
+		} else {
+			orders[prefix+"."+path] = keys
+		}
+	}
+	return orders
 }
 
 func openAIConversationItem(item provider.RealtimeConversationItem) (map[string]interface{}, error) {
@@ -548,4 +767,72 @@ func nestedStringField(m map[string]interface{}, key, nested string) (string, bo
 		return "", false
 	}
 	return stringFieldPresent(child, nested)
+}
+
+// openAIRealtimeUsageNumber reads a token count (TS numbers; nil when absent
+// or not a number).
+func openAIRealtimeUsageNumber(m map[string]interface{}, key string) *float64 {
+	if f, ok := m[key].(float64); ok {
+		return &f // TS keeps the JS number
+	}
+	return nil
+}
+
+// openAIRealtimeResponseUsage is TS mapResponseUsage (892af4dab7): gross
+// input/output totals, cache-inclusive input buckets and the cached
+// portions; nil when nothing is reported.
+func openAIRealtimeResponseUsage(raw interface{}) *provider.RealtimeUsage {
+	usage, ok := raw.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	input, _ := usage["input_token_details"].(map[string]interface{})
+	output, _ := usage["output_token_details"].(map[string]interface{})
+	cached, _ := input["cached_tokens_details"].(map[string]interface{})
+	u := provider.RealtimeUsage{
+		InputTokens:            openAIRealtimeUsageNumber(usage, "input_tokens"),
+		OutputTokens:           openAIRealtimeUsageNumber(usage, "output_tokens"),
+		CachedInputTokens:      openAIRealtimeUsageNumber(input, "cached_tokens"),
+		InputAudioTokens:       openAIRealtimeUsageNumber(input, "audio_tokens"),
+		InputTextTokens:        openAIRealtimeUsageNumber(input, "text_tokens"),
+		OutputAudioTokens:      openAIRealtimeUsageNumber(output, "audio_tokens"),
+		OutputTextTokens:       openAIRealtimeUsageNumber(output, "text_tokens"),
+		CachedInputAudioTokens: openAIRealtimeUsageNumber(cached, "audio_tokens"),
+		CachedInputTextTokens:  openAIRealtimeUsageNumber(cached, "text_tokens"),
+	}
+	if u.HasSeconds() {
+		return nil // no token field: nothing observable
+	}
+	return &u
+}
+
+// openAIRealtimeTranscriptionUsage is TS mapTranscriptionUsage: duration
+// billing reports seconds, token billing the token counts (output tokens
+// are output text).
+func openAIRealtimeTranscriptionUsage(raw interface{}) *provider.RealtimeUsage {
+	usage, ok := raw.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	if usage["type"] == "duration" {
+		seconds, ok := usage["seconds"].(float64)
+		if !ok {
+			return nil
+		}
+		u := provider.RealtimeUsage{}
+		u.SetSeconds(seconds)
+		return &u
+	}
+	input, _ := usage["input_token_details"].(map[string]interface{})
+	u := provider.RealtimeUsage{
+		InputTokens:      openAIRealtimeUsageNumber(usage, "input_tokens"),
+		OutputTokens:     openAIRealtimeUsageNumber(usage, "output_tokens"),
+		InputAudioTokens: openAIRealtimeUsageNumber(input, "audio_tokens"),
+		InputTextTokens:  openAIRealtimeUsageNumber(input, "text_tokens"),
+		OutputTextTokens: openAIRealtimeUsageNumber(usage, "output_tokens"),
+	}
+	if u.HasSeconds() {
+		return nil
+	}
+	return &u
 }

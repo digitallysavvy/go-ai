@@ -71,11 +71,11 @@ func TestBedrockReasoningNoneMapsToDisabled(t *testing.T) {
 		t.Fatalf("getArgs error: %v", err)
 	}
 	fields, _ := args.Body["additionalModelRequestFields"].(map[string]interface{})
-	// "disabled" thinking is not an enabled/adaptive type, so getArgs never
-	// populates additionalModelRequestFields.thinking for it (mirrors TS:
-	// only isAnthropicThinkingEnabled branches write `thinking`).
-	if _, ok := fields["thinking"]; ok {
-		t.Fatalf("expected no thinking field for disabled reasoning, got %v", fields["thinking"])
+	// TS 22b44614a2: disabled thinking is sent for Anthropic models newer
+	// than Claude 3.5.
+	thinking, _ := fields["thinking"].(map[string]interface{})
+	if thinking["type"] != "disabled" || len(thinking) != 1 {
+		t.Fatalf("thinking = %v, want {type: disabled}", fields["thinking"])
 	}
 }
 
@@ -109,7 +109,9 @@ func TestBedrockAdaptiveThinkingUsesEffort(t *testing.T) {
 		{types.ReasoningLow, "low"},
 		{types.ReasoningMedium, "medium"},
 		{types.ReasoningHigh, "high"},
-		{types.ReasoningXHigh, "max"},
+		// claude-opus-5 supports xhigh effort (TS 61a315e333 adds it to the
+		// map when the model supports it).
+		{types.ReasoningXHigh, "xhigh"},
 	}
 
 	for _, tt := range tests {
@@ -272,7 +274,9 @@ func TestBedrockNonAnthropicReasoningEffort(t *testing.T) {
 		{types.ReasoningLow, "low", true},
 		{types.ReasoningMedium, "medium", true},
 		{types.ReasoningHigh, "high", true},
-		{types.ReasoningXHigh, "max", true},
+		// Nova 2 supports only low/medium/high; xhigh and max map to high.
+		{types.ReasoningXHigh, "high", true},
+		{types.ReasoningMax, "high", true},
 		{types.ReasoningNone, "", false},
 	}
 
@@ -316,7 +320,8 @@ func TestBedrockNova2LiteHighReasoningOmitsMaxTokens(t *testing.T) {
 		want  string
 	}{
 		{"high", types.ReasoningHigh, "high"},
-		{"xhigh", types.ReasoningXHigh, "max"},
+		{"xhigh", types.ReasoningXHigh, "high"},
+		{"max", types.ReasoningMax, "high"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

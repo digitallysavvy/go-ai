@@ -19,6 +19,7 @@ import (
 	"context"
 	"errors"
 	"regexp"
+	"sync"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/agent"
@@ -289,8 +290,15 @@ func RunHarnessAgent(ctx context.Context, opts RunHarnessAgentOptions) (HarnessW
 	// below needs the real message to recognize a suspend-induced closure,
 	// so this engine always supplies its own passthrough formatter (TS's
 	// `errorText` already carries the underlying error/rejection reason).
-	chunksCh, errCh := ai.ToUIMessageStream(ctx, result.Stream(), ai.UIMessageStreamResultOptions{
+	// The converter goroutine must not outlive this call when the loop below
+	// stops early (a writer error): cancel it on return.
+	uiCtx, stopUI := context.WithCancel(ctx)
+	defer stopUI()
+	chunksCh, errCh := ai.ToUIMessageStream(uiCtx, result.Stream(), ai.UIMessageStreamResultOptions{
 		OnError: func(err error) string { return err.Error() },
+		// A time-sliced turn closes mid-step by design; the next slice
+		// continues it, so nothing may be repaired or invented here.
+		PartialStream: true,
 	})
 
 	sawError := false
@@ -341,6 +349,14 @@ func RunHarnessAgent(ctx context.Context, opts RunHarnessAgentOptions) (HarnessW
 			// turn closure doesn't fail the execution via this second path
 			// after already being swallowed as a chunk.
 			if e != nil && suspend.triggered() && isAbortErrorValue(e.Error()) {
+				e = nil
+			}
+			// A genuine error part was already surfaced as an "error" chunk
+			// above (sawError): the run fails through the failed-state path
+			// below, with the session detached and resume state returned,
+			// instead of rejecting the whole execution (TS reads the same
+			// failure once, as the stream's error chunk).
+			if e != nil && sawError {
 				e = nil
 			}
 			pipelineErr = e
@@ -395,7 +411,7 @@ func RunHarnessAgent(ctx context.Context, opts RunHarnessAgentOptions) (HarnessW
 		}, nil
 	}
 
-	finishReason := result.FinishReason()
+	finishReason := finishReasonString(result.FinishReason())
 	usage := result.Usage()
 
 	if session.HasUnfinishedTurn() {
@@ -415,7 +431,7 @@ func RunHarnessAgent(ctx context.Context, opts RunHarnessAgentOptions) (HarnessW
 		}
 
 		if writer != nil {
-			if werr := writer.Write(ai.UIMessageChunk{"type": "finish", "finishReason": string(finishReason)}); werr != nil {
+			if werr := writer.Write(ai.UIMessageChunk{"type": "finish", "finishReason": finishReason}); werr != nil {
 				return HarnessWorkflowState{}, werr
 			}
 			if werr := writer.Close(); werr != nil {
@@ -425,7 +441,7 @@ func RunHarnessAgent(ctx context.Context, opts RunHarnessAgentOptions) (HarnessW
 		return HarnessWorkflowState{
 			SessionID: state.SessionID, Prompt: state.Prompt, Status: HarnessWorkflowStatusAwaitingToolApproval,
 			ContinueFrom: continueFrom, ResumeFrom: toResumeState(continueFrom),
-			FinalResult: &HarnessWorkflowFinalResult{SessionID: state.SessionID, FinishReason: string(finishReason), Usage: toUsageSummary(usage)},
+			FinalResult: &HarnessWorkflowFinalResult{SessionID: state.SessionID, FinishReason: finishReason, Usage: toUsageSummary(usage)},
 		}, nil
 	}
 
@@ -446,7 +462,7 @@ func RunHarnessAgent(ctx context.Context, opts RunHarnessAgentOptions) (HarnessW
 		// — actually came back. Both cases funnel into the same
 		// failed-session handling TS's single try/catch already shares.
 		if oerr == nil && output == nil {
-			oerr = errors.New("harness agent result does not expose structured output")
+			oerr = errors.New("Harness agent result does not expose structured output.") //nolint:staticcheck // matches TS SDK exact error text
 		}
 		if oerr != nil {
 			resumeFrom, continueFrom, ferr := endFailedHarnessSession(ctx, session, destroyOnFinish, nil)
@@ -493,7 +509,7 @@ func RunHarnessAgent(ctx context.Context, opts RunHarnessAgentOptions) (HarnessW
 		resumeFrom = rf
 	}
 
-	finalResult := &HarnessWorkflowFinalResult{SessionID: state.SessionID, FinishReason: string(finishReason), Usage: toUsageSummary(usage)}
+	finalResult := &HarnessWorkflowFinalResult{SessionID: state.SessionID, FinishReason: finishReason, Usage: toUsageSummary(usage)}
 	if shouldCaptureOutput {
 		finalResult.Output = output
 	}
@@ -650,6 +666,13 @@ type suspendGate struct {
 	doneCh  chan struct{}
 	state   *harness.ContinueTurnState
 	err     error
+
+	// mu makes "decide to suspend" and "stop the timer" mutually exclusive, so
+	// a timer that fires just as the turn ends either suspends before the
+	// caller checks triggered(), or never suspends (JS gets this for free from
+	// its single thread and clearTimeout).
+	mu      sync.Mutex
+	stopped bool
 }
 
 func newSuspendGate(ctx context.Context, session *harness.AgentSession, timeSliceSeconds float64) *suspendGate {
@@ -661,10 +684,13 @@ func newSuspendGate(ctx context.Context, session *harness.AgentSession, timeSlic
 	g.doneCh = make(chan struct{})
 	dur := time.Duration(timeSliceSeconds * float64(time.Second))
 	g.timer = time.AfterFunc(dur, func() {
-		if !session.HasUnfinishedTurn() {
+		g.mu.Lock()
+		if g.stopped || !session.HasUnfinishedTurn() {
+			g.mu.Unlock()
 			return
 		}
 		close(g.firedCh)
+		g.mu.Unlock()
 		st, err := session.SuspendTurn(ctx)
 		g.state, g.err = st, err
 		close(g.doneCh)
@@ -690,6 +716,9 @@ func (g *suspendGate) wait() (*harness.ContinueTurnState, error) {
 }
 
 func (g *suspendGate) stopTimer() {
+	g.mu.Lock()
+	g.stopped = true
+	g.mu.Unlock()
 	if g.timer != nil {
 		g.timer.Stop()
 	}
@@ -734,21 +763,14 @@ func toUsageSummary(u types.Usage) *HarnessWorkflowUsageSummary {
 	return &HarnessWorkflowUsageSummary{InputTokens: u.InputTokens, OutputTokens: u.OutputTokens}
 }
 
-// abortErrorPattern mirrors TS `isAbortError`'s regex plus one Go-specific
-// addition: pkg/harness's run_prompt.go models a bridge closing its
-// connection mid-turn (exactly what a real adapter's DoSuspendTurn does) as
-// a soft `ChunkTypeError` carrying "adapter ended the turn without emitting
-// `finish`" (see run_prompt.go's consumeLoop, `!ok` branch), rather than TS's
-// clean, error-free ReadableStream close (to-harness-stream.ts's
-// `control.done` resolving calls safeClose() with no error at all). Both are
-// the same event — a suspend-induced closure of the in-flight turn — so both
-// must be swallowed here under the same suspend-in-flight guard.
-var abortErrorPattern = regexp.MustCompile(`(?i)\baborted\b|AbortError|operation was aborted|ended the turn without emitting`)
+// abortErrorPattern is TS `isAbortError`'s regex (run-harness-agent.ts). A
+// turn that a suspend closes without `finish` settles normally in
+// pkg/harness (TS result.finish(undefined)), so no Go-only pattern is needed.
+var abortErrorPattern = regexp.MustCompile(`(?i)\baborted\b|AbortError|operation was aborted`)
 
 // isAbortErrorValue reports whether a UI-message error chunk's errorText
 // describes an abort — the expected consequence of SuspendTurn tearing the
-// turn down at a slice boundary. Mirrors TS `isAbortError` (see
-// abortErrorPattern's doc for the one Go-specific addition).
+// turn down at a slice boundary. Mirrors TS `isAbortError`.
 func isAbortErrorValue(v any) bool {
 	s, ok := v.(string)
 	if !ok || s == "" {
@@ -774,10 +796,47 @@ type mutableStreamContext struct {
 	pendingToolInputs    map[string]ai.UIMessageChunk
 }
 
+// orderedSet is a set that remembers insertion order (a JS Set), so parts
+// close in the order they opened.
+type orderedSet struct {
+	order []string
+	m     map[string]struct{}
+}
+
+func newOrderedSet() *orderedSet { return &orderedSet{m: map[string]struct{}{}} }
+
+func (s *orderedSet) has(id string) bool { _, ok := s.m[id]; return ok }
+
+func (s *orderedSet) add(id string) {
+	if _, ok := s.m[id]; ok {
+		return
+	}
+	s.m[id] = struct{}{}
+	s.order = append(s.order, id)
+}
+
+func (s *orderedSet) delete(id string) {
+	if _, ok := s.m[id]; !ok {
+		return
+	}
+	delete(s.m, id)
+	for i, existing := range s.order {
+		if existing == id {
+			s.order = append(s.order[:i:i], s.order[i+1:]...)
+			break
+		}
+	}
+}
+
+func (s *orderedSet) clear() {
+	s.order = nil
+	s.m = map[string]struct{}{}
+}
+
 type executionPartState struct {
-	openedTextParts      map[string]struct{}
-	openedReasoningParts map[string]struct{}
-	openedToolInputs     map[string]struct{}
+	openedTextParts      *orderedSet
+	openedReasoningParts *orderedSet
+	openedToolInputs     *orderedSet
 }
 
 func newMutableStreamContext(ctx *HarnessWorkflowStreamContext) *mutableStreamContext {
@@ -807,9 +866,9 @@ func newMutableStreamContext(ctx *HarnessWorkflowStreamContext) *mutableStreamCo
 
 func newExecutionPartState() *executionPartState {
 	return &executionPartState{
-		openedTextParts:      map[string]struct{}{},
-		openedReasoningParts: map[string]struct{}{},
-		openedToolInputs:     map[string]struct{}{},
+		openedTextParts:      newOrderedSet(),
+		openedReasoningParts: newOrderedSet(),
+		openedToolInputs:     newOrderedSet(),
 	}
 }
 
@@ -828,38 +887,38 @@ func writeWorkflowChunk(w HarnessWorkflowWriter, chunk ai.UIMessageChunk, sc *mu
 
 func writeRequiredPrelude(w HarnessWorkflowWriter, chunk ai.UIMessageChunk, sc *mutableStreamContext, ps *executionPartState) error {
 	typ, _ := chunk["type"].(string)
-	id, _ := chunk["id"].(string)
-	toolCallID, _ := chunk["toolCallId"].(string)
+	id, hasID := chunk["id"].(string)
+	toolCallID, hasToolCallID := chunk["toolCallId"].(string)
 
-	if (typ == "text-delta" || typ == "text-end") && id != "" {
+	if (typ == "text-delta" || typ == "text-end") && hasID {
 		if start, ok := sc.activeTextParts[id]; ok {
-			if _, opened := ps.openedTextParts[id]; !opened {
+			if !ps.openedTextParts.has(id) {
 				if w != nil {
 					if err := w.Write(start); err != nil {
 						return err
 					}
 				}
-				ps.openedTextParts[id] = struct{}{}
+				ps.openedTextParts.add(id)
 			}
 		}
 	}
 
-	if (typ == "reasoning-delta" || typ == "reasoning-end") && id != "" {
+	if (typ == "reasoning-delta" || typ == "reasoning-end") && hasID {
 		if start, ok := sc.activeReasoningParts[id]; ok {
-			if _, opened := ps.openedReasoningParts[id]; !opened {
+			if !ps.openedReasoningParts.has(id) {
 				if w != nil {
 					if err := w.Write(start); err != nil {
 						return err
 					}
 				}
-				ps.openedReasoningParts[id] = struct{}{}
+				ps.openedReasoningParts.add(id)
 			}
 		}
 	}
 
-	if typ == "tool-input-delta" && toolCallID != "" {
+	if typ == "tool-input-delta" && hasToolCallID {
 		if active, ok := sc.activeToolInputs[toolCallID]; ok {
-			if _, opened := ps.openedToolInputs[toolCallID]; !opened {
+			if !ps.openedToolInputs.has(toolCallID) {
 				if w != nil {
 					if err := w.Write(active.start); err != nil {
 						return err
@@ -870,7 +929,7 @@ func writeRequiredPrelude(w HarnessWorkflowWriter, chunk ai.UIMessageChunk, sc *
 						}
 					}
 				}
-				ps.openedToolInputs[toolCallID] = struct{}{}
+				ps.openedToolInputs.add(toolCallID)
 			}
 		}
 	}
@@ -879,73 +938,73 @@ func writeRequiredPrelude(w HarnessWorkflowWriter, chunk ai.UIMessageChunk, sc *
 
 func recordWorkflowChunk(chunk ai.UIMessageChunk, sc *mutableStreamContext, ps *executionPartState) {
 	typ, _ := chunk["type"].(string)
-	id, _ := chunk["id"].(string)
-	toolCallID, _ := chunk["toolCallId"].(string)
+	id, hasID := chunk["id"].(string)
+	toolCallID, hasToolCallID := chunk["toolCallId"].(string)
 
 	switch {
-	case typ == "text-start" && id != "":
+	case typ == "text-start" && hasID:
 		sc.activeTextParts[id] = cloneChunk(chunk)
-		ps.openedTextParts[id] = struct{}{}
+		ps.openedTextParts.add(id)
 		return
-	case typ == "text-end" && id != "":
+	case typ == "text-end" && hasID:
 		delete(sc.activeTextParts, id)
-		delete(ps.openedTextParts, id)
+		ps.openedTextParts.delete(id)
 		return
-	case typ == "reasoning-start" && id != "":
+	case typ == "reasoning-start" && hasID:
 		sc.activeReasoningParts[id] = cloneChunk(chunk)
-		ps.openedReasoningParts[id] = struct{}{}
+		ps.openedReasoningParts.add(id)
 		return
-	case typ == "reasoning-end" && id != "":
+	case typ == "reasoning-end" && hasID:
 		delete(sc.activeReasoningParts, id)
-		delete(ps.openedReasoningParts, id)
+		ps.openedReasoningParts.delete(id)
 		return
-	case typ == "tool-input-start" && toolCallID != "":
+	case typ == "tool-input-start" && hasToolCallID:
 		sc.activeToolInputs[toolCallID] = activeToolInput{start: cloneChunk(chunk)}
-		ps.openedToolInputs[toolCallID] = struct{}{}
+		ps.openedToolInputs.add(toolCallID)
 		return
-	case typ == "tool-input-delta" && toolCallID != "":
+	case typ == "tool-input-delta" && hasToolCallID:
 		if active, ok := sc.activeToolInputs[toolCallID]; ok {
 			if delta, ok := chunk["inputTextDelta"].(string); ok {
 				sc.activeToolInputs[toolCallID] = activeToolInput{start: active.start, text: active.text + delta}
 			}
 		}
 		return
-	case typ == "tool-input-available" && toolCallID != "":
+	case typ == "tool-input-available" && hasToolCallID:
 		delete(sc.activeToolInputs, toolCallID)
-		delete(ps.openedToolInputs, toolCallID)
+		ps.openedToolInputs.delete(toolCallID)
 		sc.pendingToolInputs[toolCallID] = cloneChunk(chunk)
 		return
-	case typ == "tool-input-error" && toolCallID != "":
+	case typ == "tool-input-error" && hasToolCallID:
 		delete(sc.activeToolInputs, toolCallID)
-		delete(ps.openedToolInputs, toolCallID)
+		ps.openedToolInputs.delete(toolCallID)
 		delete(sc.pendingToolInputs, toolCallID)
 		return
 	}
 
-	if toolCallID != "" && (typ == "tool-output-error" || typ == "tool-output-denied" ||
+	if hasToolCallID && (typ == "tool-output-error" || typ == "tool-output-denied" ||
 		(typ == "tool-output-available" && chunk["preliminary"] != true)) {
 		delete(sc.pendingToolInputs, toolCallID)
 	}
 }
 
 func closeOpenExecutionParts(w HarnessWorkflowWriter, sc *mutableStreamContext, ps *executionPartState) error {
-	for id := range ps.openedTextParts {
+	for _, id := range ps.openedTextParts.order {
 		if _, ok := sc.activeTextParts[id]; ok && w != nil {
 			if err := w.Write(ai.UIMessageChunk{"type": "text-end", "id": id}); err != nil {
 				return err
 			}
 		}
 	}
-	ps.openedTextParts = map[string]struct{}{}
+	ps.openedTextParts.clear()
 
-	for id := range ps.openedReasoningParts {
+	for _, id := range ps.openedReasoningParts.order {
 		if _, ok := sc.activeReasoningParts[id]; ok && w != nil {
 			if err := w.Write(ai.UIMessageChunk{"type": "reasoning-end", "id": id}); err != nil {
 				return err
 			}
 		}
 	}
-	ps.openedReasoningParts = map[string]struct{}{}
+	ps.openedReasoningParts.clear()
 	return nil
 }
 
@@ -984,4 +1043,13 @@ func cloneChunk(chunk ai.UIMessageChunk) ai.UIMessageChunk {
 		out[k] = v
 	}
 	return out
+}
+
+// finishReasonString is TS toFinishReasonString: the unified finish reason, or
+// "stop" when the turn reported none.
+func finishReasonString(reason types.FinishReason) string {
+	if reason == "" {
+		return "stop"
+	}
+	return string(reason)
 }

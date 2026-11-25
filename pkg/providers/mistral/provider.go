@@ -1,10 +1,14 @@
 package mistral
 
 import (
-	"fmt"
+	"context"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
@@ -12,6 +16,8 @@ import (
 type Provider struct {
 	config Config
 	client *http.Client
+	// baseURL is the resolved API origin without the /v1 segment.
+	baseURL string
 }
 
 // Config contains configuration for the Mistral AI provider
@@ -19,19 +25,47 @@ type Config struct {
 	// APIKey is the Mistral AI API key
 	APIKey string
 
+	// APIKeyFunc resolves the API key before each request (TS apiKey given as
+	// a function, 7716e189ee), for keys that are looked up, refreshed or
+	// rotated. It cannot be combined with APIKey; the environment variable is
+	// not read, and its result is sent as is.
+	APIKeyFunc providerutils.APIKeyFunc `json:"-"`
+
 	// BaseURL is the base URL for the Mistral AI API (optional)
 	BaseURL string
 
 	// Headers are custom HTTP headers to include in requests.
 	Headers map[string]string `json:"headers,omitempty"`
+
+	// GenerateID generates the ids TS takes from the generateId setting:
+	// streamed reasoning block ids and missing tool call ids of chat models,
+	// and the ids of conversation models. Nil uses the default generator.
+	GenerateID func() string `json:"-"`
+}
+
+// generateID returns Config.GenerateID's id, or a default one.
+func (p *Provider) generateID() string {
+	if p.config.GenerateID != nil {
+		return p.config.GenerateID()
+	}
+	return streaming.GenerateID()
 }
 
 // New creates a new Mistral AI provider with the given configuration
 func New(cfg Config) *Provider {
+	// TS loadApiKey: the key defaults to the MISTRAL_API_KEY environment variable.
+	if cfg.APIKeyFunc == nil {
+		cfg.APIKey = providerutils.APIKeyOrEnv(cfg.APIKey, "MISTRAL_API_KEY")
+	}
 	baseURL := cfg.BaseURL
 	if baseURL == "" {
 		baseURL = "https://api.mistral.ai"
 	}
+	// TS withoutTrailingSlash(baseURL).
+	baseURL = providerutils.WithoutTrailingSlash(baseURL)
+	// TS baseURL values include the version segment (".../v1"); every request
+	// path here already starts with "/v1/", so accept both spellings.
+	baseURL = strings.TrimSuffix(baseURL, "/v1")
 
 	client := http.NewClient(http.Config{
 		BaseURL: baseURL,
@@ -39,11 +73,21 @@ func New(cfg Config) *Provider {
 			"Authorization": "Bearer " + cfg.APIKey,
 			"Content-Type":  "application/json",
 		}, cfg.Headers), version.ProviderUserAgent("mistral")),
+		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
+		HeadersFuncCtx: func(ctx context.Context) (map[string]string, error) {
+			if cfg.APIKeyFunc != nil {
+				return providerutils.RequestAuthHeaderFunc(ctx, cfg.Headers, providerutils.ResolveAPIKeyOptions{
+					APIKey: cfg.APIKey, APIKeyFunc: cfg.APIKeyFunc, EnvVar: "MISTRAL_API_KEY", Description: "Mistral",
+				}, "Authorization", "Bearer ")
+			}
+			return providerutils.RequestAuthHeader(cfg.Headers, cfg.APIKey, "MISTRAL_API_KEY", "Mistral", "Authorization", "Bearer ")
+		},
 	})
 
 	return &Provider{
-		config: cfg,
-		client: client,
+		config:  cfg,
+		client:  client,
+		baseURL: baseURL,
 	}
 }
 
@@ -69,6 +113,16 @@ func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error)
 	return NewLanguageModel(p, modelID), nil
 }
 
+// ConversationModel returns a language model that uses Mistral's Conversations
+// API (POST /v1/conversations), with support for the built-in WebSearch and
+// WebSearchPremium tools. Mirrors TS provider.conversation(modelId).
+func (p *Provider) ConversationModel(modelID string) *ConversationLanguageModel {
+	if modelID == "" {
+		modelID = "mistral-medium"
+	}
+	return NewConversationLanguageModel(p, modelID)
+}
+
 // EmbeddingModel returns an embedding model by ID
 func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
 	if modelID == "" {
@@ -80,7 +134,7 @@ func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, erro
 
 // ImageModel returns an image generation model by ID
 func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
-	return nil, fmt.Errorf("mistral AI does not support image generation")
+	return nil, providererrors.NewNoSuchModelError(modelID, "imageModel")
 }
 
 // SpeechModel returns a speech synthesis model by ID
@@ -101,7 +155,7 @@ func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionMod
 
 // RerankingModel returns a reranking model by ID
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("mistral AI does not support reranking")
+	return nil, providererrors.NewNoSuchModelError(modelID, "rerankingModel")
 }
 
 // Client returns the HTTP client for making API requests

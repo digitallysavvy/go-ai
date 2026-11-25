@@ -2,12 +2,17 @@ package cerebras
 
 import (
 	"bytes"
-	"encoding/json"
 	"io"
 	"net/http"
+	"sort"
+
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // Provider implements the provider.Provider interface for Cerebras
@@ -24,31 +29,48 @@ type Config struct {
 	// BaseURL is the base URL for the Cerebras API (optional)
 	BaseURL string
 
+	// Headers are custom HTTP headers sent with every request (TS provider
+	// settings `headers`).
+	Headers map[string]string `json:"headers,omitempty"`
+
 	// HTTPClient overrides the HTTP client used for requests.
 	HTTPClient *http.Client
+
+	// APIKeyFunc resolves the API key before each request with the
+	// request's context (TS `apiKey: Resolvable<string>`, 7716e189ee).
+	// CEREBRAS_API_KEY is not read when it is set; setting both APIKey and
+	// APIKeyFunc fails every request with an InvalidArgumentError.
+	APIKeyFunc providerutils.APIKeyFunc `json:"-"`
 }
 
 // New creates a new Cerebras provider
 // Cerebras uses OpenAI-compatible API
 func New(cfg Config) *Provider {
+	// TS loadApiKey: the key defaults to the CEREBRAS_API_KEY environment variable.
+	if cfg.APIKeyFunc == nil {
+		cfg.APIKey = providerutils.APIKeyOrEnv(cfg.APIKey, "CEREBRAS_API_KEY")
+	}
 	baseURL := cfg.BaseURL
 	if baseURL == "" {
 		baseURL = "https://api.cerebras.ai/v1"
 	}
 
+	structuredOutputs := true
 	openaiProvider := openai.New(openai.Config{
-		APIKey: cfg.APIKey,
-		// Never fall back to OPENAI_API_KEY (it would be sent to Cerebras).
-		APIKeyEnvVar: "CEREBRAS_API_KEY",
-		Name:         "cerebras",
-		BaseURL:      baseURL,
-		HTTPClient:   withCerebrasTransform(cfg.HTTPClient),
+		APIKey:            cfg.APIKey,
+		APIKeyFunc:        cfg.APIKeyFunc,
+		APIKeyEnvVar:      "CEREBRAS_API_KEY",
+		APIKeyDescription: "Cerebras API key",
+		Name:              "cerebras",
+		BaseURL:           baseURL,
+		Headers:           cfg.Headers,
+		HTTPClient:        withCerebrasTransform(cfg.HTTPClient),
 		// TS CerebrasChatLanguageModel extends OpenAICompatibleChatLanguageModel,
 		// which supports video_url content parts (7dd9ec320c).
-		AllowVideo:    true,
-		UserAgentName: "cerebras",
-		// TS sends stream_options only when includeUsage is set (it is not).
-		OmitStreamUsage: true,
+		AllowVideo:                true,
+		OpenAICompatible:          true,
+		SupportsStructuredOutputs: &structuredOutputs, // TS supportsStructuredOutputs: true
+		UserAgentName:             "cerebras",
 		// TransformRequestBody applies the structural (provider-options-
 		// independent) half of TS transformCerebrasRequestBody: renaming
 		// max_tokens -> max_completion_tokens and reasoning_content ->
@@ -63,6 +85,9 @@ func New(cfg Config) *Provider {
 		// cerebrasTransformTransport, which still receives the per-call
 		// extras via context (see cerebrasOptionsContextKey).
 		TransformRequestBody: transformCerebrasRequestBody,
+		// TS cerebrasMetadataExtractor (4a4e854fa6): the applied service
+		// tier as providerMetadata.cerebras.serviceTier.
+		MetadataExtractor: cerebrasMetadataExtractor{},
 	})
 
 	return &Provider{
@@ -119,21 +144,31 @@ func (t cerebrasTransformTransport) RoundTrip(req *http.Request) (*http.Response
 		// transport to rewrite.
 		return t.base.RoundTrip(req)
 	}
+	// A RoundTripper must close the request body, also on error, and must
+	// not modify the caller's request: the rewritten body goes on a clone.
 	body, err := io.ReadAll(req.Body)
-	if err != nil {
-		return nil, err
-	}
 	_ = req.Body.Close()
-	var payload interface{}
-	if err := json.Unmarshal(body, &payload); err == nil {
-		applyCerebrasRequestExtras(payload, extras)
-		if transformed, err := json.Marshal(payload); err == nil {
-			body = transformed
+	if err != nil {
+		return nil, internalhttp.RejectFetch(err)
+	}
+	// TS {...restArgs, ...extras}: the body keeps its key order, a key
+	// already there keeps its place and the others follow it (a Go map
+	// re-encode sorted every key).
+	if parsed, ok := jsonorder.Parse(body); ok {
+		if obj, isObj := parsed.(*jsonorder.Object); isObj {
+			for _, key := range cerebrasExtrasKeyOrder(extras) {
+				obj.Set(key, extras[key])
+			}
+			if transformed, err := obj.MarshalJSON(); err == nil {
+				body = transformed
+			}
 		}
 	}
-	req.Body = io.NopCloser(bytes.NewReader(body))
-	req.ContentLength = int64(len(body))
-	return t.base.RoundTrip(req)
+	clone := req.Clone(req.Context())
+	clone.Body = io.NopCloser(bytes.NewReader(body))
+	clone.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(body)), nil }
+	clone.ContentLength = int64(len(body))
+	return t.base.RoundTrip(clone)
 }
 
 // cerebrasOptionsContextKey is the context key LanguageModel uses to hand
@@ -155,6 +190,15 @@ type cerebrasOptionsContextKey struct{}
 func transformCerebrasRequestBody(body map[string]interface{}) map[string]interface{} {
 	renameReasoningContent(body)
 	renameMaxTokens(body)
+	// The shared chat model forwards unknown providerOptions.cerebras keys
+	// verbatim (TS passthrough); TS's transform destructures these camelCase
+	// keys out again and re-adds them as snake_case, which
+	// cerebrasTransformTransport does per call.
+	// queueThreshold goes out as the queue_threshold header instead
+	// (TS 4a4e854fa6).
+	for _, k := range []string{"parallelToolCalls", "topLogprobs", "logitBias", "serviceTier", "queueThreshold", "reasoningFormat", "promptCacheKey"} {
+		delete(body, k)
+	}
 	return body
 }
 
@@ -169,19 +213,36 @@ func renameMaxTokens(payload map[string]interface{}) {
 	payload["max_completion_tokens"] = maxTokens
 }
 
-// applyCerebrasRequestExtras merges providerOptions.cerebras-derived fields
-// into the request body (TS transformCerebrasRequestBody). strictJsonSchema
-// is not among these: the base OpenAI-compatible chat model already applies
-// it to response_format.json_schema.strict when building the body (see
+// cerebrasExtrasTSOrder is the order TS transformCerebrasRequestBody adds
+// the providerOptions.cerebras-derived fields in.
+var cerebrasExtrasTSOrder = []string{
+	"user", "logprobs", "reasoning_effort", "prediction",
+	"parallel_tool_calls", "top_logprobs", "logit_bias", "service_tier", "reasoning_format", "prompt_cache_key",
+}
+
+// cerebrasExtrasKeyOrder lists the extras keys (the providerOptions.cerebras-
+// derived fields, TS transformCerebrasRequestBody) in TS order, then any
+// others sorted. strictJsonSchema is not among these: the base
+// OpenAI-compatible chat model already applies it to
+// response_format.json_schema.strict when building the body (see
 // resolveCerebrasOptions).
-func applyCerebrasRequestExtras(value interface{}, extras cerebrasRequestExtras) {
-	payload, ok := value.(map[string]interface{})
-	if !ok {
-		return
+func cerebrasExtrasKeyOrder(extras cerebrasRequestExtras) []string {
+	keys := make([]string, 0, len(extras))
+	seen := make(map[string]bool, len(extras))
+	for _, k := range cerebrasExtrasTSOrder {
+		if _, ok := extras[k]; ok {
+			keys = append(keys, k)
+			seen[k] = true
+		}
 	}
-	for key, val := range extras {
-		payload[key] = val
+	var rest []string
+	for k := range extras {
+		if !seen[k] {
+			rest = append(rest, k)
+		}
 	}
+	sort.Strings(rest)
+	return append(keys, rest...)
 }
 
 // renameReasoningContent mirrors TS transformCerebrasRequestBody's assistant
@@ -228,4 +289,39 @@ func forEachMessageMap(messages interface{}, fn func(map[string]interface{})) {
 // Name returns the provider name
 func (p *Provider) Name() string {
 	return "cerebras"
+}
+
+// EmbeddingModel returns a NoSuchModelError: Cerebras has no embedding
+// models (TS createCerebras embeddingModel throws; provc-05).
+func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
+	return nil, providererrors.NewNoSuchModelError(modelID, "embeddingModel")
+}
+
+// ImageModel returns a NoSuchModelError (TS imageModel throws; provc-05).
+func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
+	return nil, providererrors.NewNoSuchModelError(modelID, "imageModel")
+}
+
+// SpeechModel returns a NoSuchModelError: TS createCerebras has no speech
+// factory (provc-05).
+func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
+	return nil, providererrors.NewNoSuchModelError(modelID, "speechModel")
+}
+
+// TranscriptionModel returns a NoSuchModelError: TS createCerebras has no
+// transcription factory (provc-05).
+func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
+	return nil, providererrors.NewNoSuchModelError(modelID, "transcriptionModel")
+}
+
+// applyCerebrasRequestExtras merges the providerOptions.cerebras-derived
+// fields into a request body map (the exposed request body and raw request).
+func applyCerebrasRequestExtras(value interface{}, extras cerebrasRequestExtras) {
+	payload, ok := value.(map[string]interface{})
+	if !ok {
+		return
+	}
+	for key, val := range extras {
+		payload[key] = val
+	}
 }

@@ -6,10 +6,8 @@ import (
 )
 
 // TestRealtimeModel_GetWebSocketConfig_TeamFromProviderHeaders verifies the
-// x-vercel-ai-gateway-team subprotocol scope comes from the provider's
-// resolved header set (gatewayTeamFromHeaders(m.provider.headers)), mirroring
-// how transcription_stream.go sources it from the merged per-call headers,
-// rather than reading the static TeamIDOrSlug config field directly.
+// team subprotocol scope comes from the TeamIDOrSlug setting (TS
+// config.teamIdOrSlug).
 func TestRealtimeModel_GetWebSocketConfig_TeamFromProviderHeaders(t *testing.T) {
 	p, err := New(Config{APIKey: "test-token", TeamIDOrSlug: "acme-team"})
 	if err != nil {

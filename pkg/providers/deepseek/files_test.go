@@ -2,7 +2,6 @@ package deepseek
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -11,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 func TestDeepSeekFilesUploadFile(t *testing.T) {
@@ -151,9 +150,9 @@ func TestDeepSeekFilesUploadFileRejectsInvalidResponseFields(t *testing.T) {
 				Data:      types.FileData{Type: types.FileDataTypeData, Data: []byte{1, 2, 3}},
 				MediaType: "image/png",
 			})
-			var respErr *providererrors.InvalidResponseDataError
-			if !errors.As(err, &respErr) {
-				t.Fatalf("error = %v, want InvalidResponseDataError", err)
+			// TS createJsonResponseHandler(deepSeekFilesResponseSchema).
+			if !providerutils.IsInvalidJSONResponse(err) {
+				t.Fatalf("error = %v, want Invalid JSON response", err)
 			}
 		})
 	}
@@ -280,5 +279,64 @@ func TestDeepSeekProviderFilesReturnsFilesAPI(t *testing.T) {
 	p := New(Config{APIKey: "k"})
 	if _, ok := p.Files().(*FilesAPI); !ok {
 		t.Fatalf("Files() = %T, want *FilesAPI", p.Files())
+	}
+}
+
+func TestDeepSeekFilesUploadFileSendsCallHeaders(t *testing.T) {
+	var gotCall, gotAuth string
+	p := newDeepseekProviderWithTransport(t, func(r *http.Request) (*http.Response, error) {
+		gotCall, gotAuth = r.Header.Get("X-Call"), r.Header.Get("Authorization")
+		return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{"id":"file-1","object":"file"}`))}, nil
+	})
+	files := &FilesAPI{provider: p}
+	_, err := files.UploadFile(context.Background(), types.UploadFileOptions{
+		Data:      types.FileData{Type: types.FileDataTypeData, Data: []byte{0x89, 0x50, 0x4e, 0x47}},
+		MediaType: "image/png",
+		Headers:   map[string]string{"X-Call": "c"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotCall != "c" || gotAuth == "" {
+		t.Fatalf("call header %q, auth %q", gotCall, gotAuth)
+	}
+}
+
+func TestDeepSeekFilesUploadFileExpiresAfterMustBeInteger(t *testing.T) {
+	p := New(Config{APIKey: "k"})
+	files := &FilesAPI{provider: p}
+	for _, v := range []interface{}{3600.5, "3600"} {
+		_, err := files.UploadFile(context.Background(), types.UploadFileOptions{
+			Data:            types.FileData{Type: types.FileDataTypeData, Data: []byte{0x89, 0x50, 0x4e, 0x47}},
+			MediaType:       "image/png",
+			ProviderOptions: map[string]interface{}{"deepseek": map[string]interface{}{"expiresAfter": v}},
+		})
+		if err == nil {
+			t.Fatalf("expiresAfter %v should be rejected", v)
+		}
+	}
+}
+
+// TS always returns providerMetadata.deepseek, an empty object when the
+// response has no optional metadata.
+func TestDeepSeekFilesUploadFileIncompleteResponseHasEmptyMetadata(t *testing.T) {
+	p := newDeepseekProviderWithTransport(t, func(r *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{"id":"file-incomplete"}`))}, nil
+	})
+	files := &FilesAPI{provider: p}
+	result, err := files.UploadFile(context.Background(), types.UploadFileOptions{
+		Data:      types.FileData{Type: types.FileDataTypeData, Data: []byte{0x89, 0x50, 0x4e, 0x47}},
+		MediaType: "image/png",
+		Filename:  "request-filename.png",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta, ok := result.ProviderMetadata["deepseek"].(map[string]interface{})
+	if !ok || len(meta) != 0 {
+		t.Fatalf("ProviderMetadata = %#v, want deepseek: {}", result.ProviderMetadata)
+	}
+	if result.Filename != "request-filename.png" {
+		t.Fatalf("Filename = %q", result.Filename)
 	}
 }

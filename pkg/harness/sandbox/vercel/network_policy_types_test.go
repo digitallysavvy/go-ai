@@ -69,3 +69,17 @@ func TestNetworkPolicyNotEqualDifferentContent(t *testing.T) {
 		t.Fatal("expected allow-all != deny-all")
 	}
 }
+
+func TestR25EmptyExactMatcherKeptOnWire(t *testing.T) {
+	b, err := json.Marshal(&PolicyKeyValueMatcher{Value: &PolicyRuleMatcher{Exact: ""}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != `{"value":{"exact":""}}` {
+		t.Fatalf("got %s", b)
+	}
+	b, _ = json.Marshal(PolicyRuleMatcher{StartsWith: "/v1/"})
+	if string(b) != `{"startsWith":"/v1/"}` {
+		t.Fatalf("got %s", b)
+	}
+}

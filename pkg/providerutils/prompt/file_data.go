@@ -2,13 +2,13 @@ package prompt
 
 import (
 	"context"
-	"encoding/base64"
+	"errors"
 	"fmt"
-	"mime"
-	"net/url"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -30,6 +30,16 @@ func (e *InvalidInlineDataURLError) Unwrap() error {
 	return e.Cause
 }
 
+// InvalidURLError is returned when a URL file part's URL does not parse as a
+// WHATWG URL. Its text is that of the TypeError TS `new URL(url)` throws.
+type InvalidURLError struct {
+	URL string
+}
+
+func (e *InvalidURLError) Error() string {
+	return "Invalid URL"
+}
+
 // ReasoningFileConstraintError is returned when a reasoning-file part uses a
 // FileData variant that cannot represent model-produced reasoning output.
 type ReasoningFileConstraintError struct {
@@ -37,7 +47,8 @@ type ReasoningFileConstraintError struct {
 }
 
 func (e *ReasoningFileConstraintError) Error() string {
-	return fmt.Sprintf("reasoning-file data type %q is not supported; allowed types are %q and %q", e.Type, types.FileDataTypeData, types.FileDataTypeURL)
+	// TS convertToLanguageModelPrompt: `Unsupported reasoning-file data type: ${data.type}`.
+	return fmt.Sprintf("Unsupported reasoning-file data type: %s", e.Type)
 }
 
 // UnsupportedSystemMessageError is returned when a messages prompt contains a
@@ -45,7 +56,31 @@ func (e *ReasoningFileConstraintError) Error() string {
 type UnsupportedSystemMessageError struct{}
 
 func (e *UnsupportedSystemMessageError) Error() string {
-	return "system messages are not allowed in the messages field; use the system option instead or set AllowSystemMessages"
+	// TS standardizePrompt's InvalidPromptError message ("Invalid prompt: " prefix included).
+	return "Invalid prompt: " + unsupportedSystemMessageText
+}
+
+const unsupportedSystemMessageText = "System messages are not allowed in the prompt or messages fields. Use the instructions option instead."
+
+// Unwrap exposes the TS InvalidPromptError the condition corresponds to, so
+// errors.As matches *InvalidPromptError as well as this type.
+func (e *UnsupportedSystemMessageError) Unwrap() error {
+	return &providererrors.InvalidPromptError{Message: unsupportedSystemMessageText}
+}
+
+// ValidatePromptInput is the first part of TS standardizePrompt: a call must
+// carry a prompt or messages, not both, and the messages must not be empty.
+// (An empty prompt string counts as unset in Go.)
+func ValidatePromptInput(prompt string, messages []types.Message) error {
+	switch {
+	case prompt != "" && len(messages) > 0:
+		return &providererrors.InvalidPromptError{Prompt: prompt, Message: "prompt and messages cannot be defined at the same time"}
+	case prompt == "" && messages == nil:
+		return &providererrors.InvalidPromptError{Prompt: prompt, Message: "prompt or messages must be defined"}
+	case prompt == "" && len(messages) == 0:
+		return &providererrors.InvalidPromptError{Prompt: prompt, Message: "messages must not be empty"}
+	}
+	return nil
 }
 
 // NormalizePrompt applies the core prompt conversion rules before providers see
@@ -147,16 +182,306 @@ func NormalizePromptWithDownloadSupport(ctx context.Context, prompt types.Prompt
 	if err != nil {
 		return types.Prompt{}, err
 	}
-	if download == nil {
-		normalized.Messages = MergeConsecutiveToolMessages(normalized.Messages)
-		return normalized, nil
+	messages := normalized.Messages
+	if download != nil {
+		if messages, err = DownloadUnsupportedFileURLs(ctx, normalized.Messages, download, isURLSupported); err != nil {
+			return types.Prompt{}, err
+		}
 	}
-	messages, err := DownloadUnsupportedFileURLs(ctx, normalized.Messages, download, isURLSupported)
-	if err != nil {
+	if messages, err = sniffImageMediaTypes(messages); err != nil {
 		return types.Prompt{}, err
 	}
-	normalized.Messages = MergeConsecutiveToolMessages(messages)
+	normalized.Messages = MergeConsecutiveToolMessages(removeEmptyTextParts(messages))
 	return normalized, nil
+}
+
+// removeEmptyTextParts is TS convertToLanguageModelMessage's empty text
+// filter (convert-to-language-model-prompt.ts): a user message loses every
+// text part with empty text, an assistant message every empty text part
+// without provider options (`part.providerOptions != null` keeps it, so a
+// replayed Google thoughtSignature on an empty text part reaches the
+// provider). Go messages always hold parts, so TS's string-content form,
+// which is never filtered, has no counterpart. Messages are copied before
+// changes.
+func removeEmptyTextParts(messages []types.Message) []types.Message {
+	var out []types.Message
+	for i, message := range messages {
+		if message.Role != types.RoleUser && message.Role != types.RoleAssistant {
+			continue
+		}
+		drop := func(part types.ContentPart) bool {
+			var text *types.TextContent
+			switch p := part.(type) {
+			case types.TextContent:
+				text = &p
+			case *types.TextContent:
+				if p == nil {
+					return false
+				}
+				text = p
+			default:
+				return false
+			}
+			if text.Text != "" {
+				return false
+			}
+			return message.Role == types.RoleUser || text.ProviderOptions == nil
+		}
+		var kept []types.ContentPart
+		changed := false
+		for j, part := range message.Content {
+			if drop(part) {
+				if !changed {
+					kept = append(make([]types.ContentPart, 0, len(message.Content)), message.Content[:j]...)
+					changed = true
+				}
+				continue
+			}
+			if changed {
+				kept = append(kept, part)
+			}
+		}
+		if !changed {
+			continue
+		}
+		if out == nil {
+			out = append([]types.Message(nil), messages...)
+		}
+		out[i].Content = kept
+	}
+	if out == nil {
+		return messages
+	}
+	return out
+}
+
+// sniffImageMediaTypes mirrors the tail of TS convertPartToLanguageModelPart:
+// inline file data whose bytes carry an image signature gets that image media
+// type, replacing whatever was declared (including the bare "image" default of
+// a legacy image part). It applies to user file parts and tool-result file
+// content, not to assistant file parts. Messages are copied before changes.
+// Base64 string data (FileData.DataString) is sniffed too (TS detectMediaType
+// takes a string); a string that is not base64 fails the conversion, as TS's
+// decode throws.
+func sniffImageMediaTypes(messages []types.Message) ([]types.Message, error) {
+	var out []types.Message
+	for i, message := range messages {
+		if message.Role != types.RoleUser && message.Role != types.RoleTool && message.Role != types.RoleAssistant {
+			continue
+		}
+		var parts []types.ContentPart
+		for j, part := range message.Content {
+			if !isDownloadablePart(message.Role, part) {
+				continue
+			}
+			var replaced types.ContentPart
+			var err error
+			switch typed := part.(type) {
+			case types.FileContent:
+				var f types.FileContent
+				var ok bool
+				if f, ok, err = sniffFileContent(typed); ok {
+					replaced = f
+				}
+			case *types.FileContent:
+				if typed != nil {
+					var f types.FileContent
+					var ok bool
+					if f, ok, err = sniffFileContent(*typed); ok {
+						replaced = &f
+					}
+				}
+			case types.ToolResultContent:
+				var t types.ToolResultContent
+				var ok bool
+				if t, ok, err = sniffToolResult(typed); ok {
+					replaced = t
+				}
+			case *types.ToolResultContent:
+				if typed != nil {
+					var t types.ToolResultContent
+					var ok bool
+					if t, ok, err = sniffToolResult(*typed); ok {
+						replaced = &t
+					}
+				}
+			}
+			if err != nil {
+				return nil, err
+			}
+			if replaced == nil {
+				continue
+			}
+			if out == nil {
+				out = append([]types.Message(nil), messages...)
+			}
+			if parts == nil {
+				parts = append([]types.ContentPart(nil), message.Content...)
+			}
+			parts[j] = replaced
+		}
+		if parts != nil {
+			out[i].Content = parts
+		}
+	}
+	if out == nil {
+		return messages, nil
+	}
+	return out, nil
+}
+
+// sniffImageType detects an image media type from inline data: the bytes, or
+// the base64 string when there are none.
+func sniffImageType(data types.FileData) (string, bool, error) {
+	if len(data.Data) == 0 {
+		if data.DataString == "" {
+			return "", false, nil
+		}
+		return fileutil.DetectMediaTypeSignatureBase64(data.DataString, "image")
+	}
+	detected, ok := fileutil.DetectMediaTypeSignature(data.Data, "image")
+	return detected, ok, nil
+}
+
+func sniffFileContent(f types.FileContent) (types.FileContent, bool, error) {
+	if f.FileData.Type != types.FileDataTypeData {
+		return f, false, nil
+	}
+	detected, ok, err := sniffImageType(f.FileData)
+	if err != nil {
+		return f, false, err
+	}
+	if !ok || (f.MediaType == detected && f.FileData.MediaType == detected) {
+		return f, false, nil
+	}
+	f.MediaType = detected
+	f.FileData.MediaType = detected
+	if f.MimeType != "" {
+		f.MimeType = detected
+	}
+	return f, true, nil
+}
+
+func sniffToolResult(t types.ToolResultContent) (types.ToolResultContent, bool, error) {
+	if t.Output == nil || t.Output.Type != types.ToolResultOutputContent {
+		return t, false, nil
+	}
+	var blocks []types.ToolResultContentBlock
+	for i, block := range t.Output.Content {
+		var b types.FileContentBlock
+		var isPtr bool
+		switch typed := block.(type) {
+		case types.FileContentBlock:
+			b = typed
+		case *types.FileContentBlock:
+			if typed == nil {
+				continue
+			}
+			b, isPtr = *typed, true
+		default:
+			continue
+		}
+		if b.FileData.Type != types.FileDataTypeData {
+			continue
+		}
+		// TS returns legacy "file-data" / "image-data" items without
+		// convertPartToLanguageModelPart, so their declared media type is
+		// kept (convert-to-language-model-prompt.ts:679-692,746-758).
+		if legacy := b.LegacyContentType(); legacy == "file-data" || legacy == "image-data" {
+			continue
+		}
+		detected, ok, err := sniffImageType(b.FileData)
+		if err != nil {
+			return t, false, err
+		}
+		if !ok || (b.MediaType == detected && b.FileData.MediaType == detected) {
+			continue
+		}
+		b.MediaType = detected
+		b.FileData.MediaType = detected
+		if blocks == nil {
+			blocks = append([]types.ToolResultContentBlock(nil), t.Output.Content...)
+		}
+		if isPtr {
+			blocks[i] = &b
+		} else {
+			blocks[i] = b
+		}
+	}
+	if blocks == nil {
+		return t, false, nil
+	}
+	output := *t.Output
+	output.Content = blocks
+	t.Output = &output
+	return t, true, nil
+}
+
+// ImageContentPartDeprecation is the TS convertToLanguageModelPrompt
+// deprecation warning for an "image" part (types.ImageContent) of a user
+// message (setting `"image" content part`, code
+// AISDK_DEP_IMAGE_CONTENT_PART).
+const ImageContentPartDeprecation = `The "image" content part type is deprecated. Use a "file" part with mediaType: 'image' (or a more specific image/* subtype) instead.`
+
+// DeprecatedContentWarnings returns the deprecation warnings TS
+// convertToLanguageModelPrompt logs (logWarnings, without provider or model)
+// when it converts message: one per "image" part of a user message, and one
+// per tool-result content item of a legacy type ("file-data", "file-url",
+// "image-url", ...; see types.FileContentBlock.DeprecationWarning) in an
+// assistant or tool message, in part order. Core functions log them once per
+// message that has any.
+func DeprecatedContentWarnings(message types.Message) []types.Warning {
+	var warnings []types.Warning
+	switch message.Role {
+	case types.RoleUser:
+		for _, part := range message.Content {
+			switch typed := part.(type) {
+			case types.ImageContent:
+			case *types.ImageContent:
+				if typed == nil {
+					continue
+				}
+			default:
+				continue
+			}
+			warnings = append(warnings, types.Warning{
+				Type:    "deprecated",
+				Setting: `"image" content part`,
+				Message: ImageContentPartDeprecation,
+			})
+		}
+	case types.RoleAssistant, types.RoleTool:
+		for _, part := range message.Content {
+			var output *types.ToolResultOutput
+			switch typed := part.(type) {
+			case types.ToolResultContent:
+				output = typed.Output
+			case *types.ToolResultContent:
+				if typed != nil {
+					output = typed.Output
+				}
+			}
+			if output == nil || output.Type != types.ToolResultOutputContent {
+				continue
+			}
+			for _, block := range output.Content {
+				var warning types.Warning
+				var ok bool
+				switch typed := block.(type) {
+				case types.FileContentBlock:
+					warning, ok = typed.DeprecationWarning()
+				case *types.FileContentBlock:
+					if typed != nil {
+						warning, ok = typed.DeprecationWarning()
+					}
+				}
+				if ok {
+					warnings = append(warnings, warning)
+				}
+			}
+		}
+	}
+	return warnings
 }
 
 // NormalizeMessages rewrites message content into provider-facing v4 content.
@@ -192,23 +517,28 @@ func DownloadToolResultFiles(ctx context.Context, messages []types.Message, down
 // DownloadUnsupportedFileURLs returns a copy of messages where unsupported user
 // file URLs and tool-result file URLs have been converted to inline data blocks.
 func DownloadUnsupportedFileURLs(ctx context.Context, messages []types.Message, download DownloadFunction, isURLSupported URLSupportChecker) ([]types.Message, error) {
-	if len(messages) == 0 || download == nil {
+	if download == nil {
 		return messages, nil
 	}
+	// TS downloadAssets calls the download function once per conversion,
+	// with an empty list when nothing is planned
+	// (convert-to-language-model-prompt.ts 494).
 	requests := collectDownloadRequests(messages, isURLSupported)
-	if len(requests) == 0 {
-		return messages, nil
+	if requests == nil {
+		requests = []DownloadRequest{}
 	}
 	results, err := download(ctx, requests)
 	if err != nil {
 		return nil, err
 	}
-	if results == nil {
+	if results == nil || len(requests) == 0 {
 		return messages, nil
 	}
 	if len(results) != len(requests) {
 		return nil, fmt.Errorf("download returned %d results for %d requests", len(results), len(requests))
 	}
+	// Keyed by the planned (normalized) URL, as TS keys downloaded assets by
+	// url.toString().
 	downloaded := make(map[string]*DownloadResult, len(results))
 	for i, result := range results {
 		if result != nil {
@@ -226,10 +556,27 @@ func collectDownloadRequests(messages []types.Message, isURLSupported URLSupport
 	var requests []DownloadRequest
 	for _, message := range messages {
 		for _, part := range message.Content {
+			if !isDownloadablePart(message.Role, part) {
+				continue
+			}
 			collectContentPartDownloadRequests(part, isURLSupported, &requests)
 		}
 	}
 	return requests
+}
+
+// isDownloadablePart mirrors TS downloadAssets: file parts are downloaded only
+// from user messages, and tool-result file content only from tool and
+// assistant messages. File parts inside assistant messages are passed through
+// untouched.
+func isDownloadablePart(role types.MessageRole, part types.ContentPart) bool {
+	switch part.(type) {
+	case types.FileContent, *types.FileContent:
+		return role == types.RoleUser
+	case types.ToolResultContent, *types.ToolResultContent:
+		return role == types.RoleTool || role == types.RoleAssistant
+	}
+	return false
 }
 
 func collectContentPartDownloadRequests(part types.ContentPart, isURLSupported URLSupportChecker, requests *[]DownloadRequest) {
@@ -275,6 +622,7 @@ func appendFileDownloadRequest(fileData types.FileData, fallbackURL, fallbackMed
 	if url == "" {
 		return
 	}
+	url = downloadKey(url)
 	*requests = append(*requests, DownloadRequest{
 		URL:                   url,
 		IsURLSupportedByModel: mediaType != "" && isURLSupported != nil && isURLSupported(mediaType, url),
@@ -286,16 +634,20 @@ func applyDownloadedFiles(messages []types.Message, downloaded map[string]*Downl
 	for i, message := range messages {
 		converted := message
 		if len(message.Content) > 0 {
-			converted.Content = applyDownloadedContent(message.Content, downloaded)
+			converted.Content = applyDownloadedContent(message.Role, message.Content, downloaded)
 		}
 		out[i] = converted
 	}
 	return out
 }
 
-func applyDownloadedContent(parts []types.ContentPart, downloaded map[string]*DownloadResult) []types.ContentPart {
+func applyDownloadedContent(role types.MessageRole, parts []types.ContentPart, downloaded map[string]*DownloadResult) []types.ContentPart {
 	out := make([]types.ContentPart, len(parts))
 	for i, part := range parts {
+		if !isDownloadablePart(role, part) {
+			out[i] = part
+			continue
+		}
 		switch typed := part.(type) {
 		case types.FileContent:
 			converted := applyDownloadedFileContent(typed, downloaded)
@@ -361,7 +713,7 @@ func applyDownloadedFileContent(file types.FileContent, downloaded map[string]*D
 		url = file.FileData.URL
 		mediaType = firstNonEmpty(mediaType, file.FileData.MediaType)
 	}
-	result := downloaded[url]
+	result := downloaded[downloadKey(url)]
 	if result == nil {
 		return file
 	}
@@ -385,7 +737,7 @@ func applyDownloadedFileContentBlock(block types.FileContentBlock, downloaded ma
 		url = block.FileData.URL
 		mediaType = firstNonEmpty(mediaType, block.FileData.MediaType)
 	}
-	result := downloaded[url]
+	result := downloaded[downloadKey(url)]
 	if result == nil {
 		return block
 	}
@@ -401,9 +753,21 @@ func applyDownloadedFileContentBlock(block types.FileContentBlock, downloaded ma
 	return block
 }
 
+// downloadKey is the URL a download is planned and matched by: the WHATWG
+// serialization (TS url.toString()), which NormalizeFileData has already
+// applied on the standard path. A URL that does not parse is used as given.
+func downloadKey(url string) string {
+	if href, err := urlnorm.Href(url); err == nil {
+		return href
+	}
+	return url
+}
+
 func isFullMediaType(mediaType string) bool {
-	parts := strings.Split(mediaType, "/")
-	return len(parts) == 2 && parts[0] != "" && parts[1] != ""
+	// TS isFullMediaType: a slash followed by a non-empty subtype other than
+	// the "*" wildcard (the top-level type is not checked).
+	_, subtype, ok := strings.Cut(mediaType, "/")
+	return ok && subtype != "" && subtype != "*"
 }
 
 // NormalizeContentParts rewrites content parts into provider-facing v4 content.
@@ -422,6 +786,9 @@ func NormalizeContentParts(parts []types.ContentPart) ([]types.ContentPart, erro
 			}
 			normalized = append(normalized, file)
 		case *types.ImageContent:
+			if typed == nil {
+				continue
+			}
 			file, err := NormalizeImageContent(*typed)
 			if err != nil {
 				return nil, err
@@ -434,6 +801,9 @@ func NormalizeContentParts(parts []types.ContentPart) ([]types.ContentPart, erro
 			}
 			normalized = append(normalized, file)
 		case *types.FileContent:
+			if typed == nil {
+				continue
+			}
 			file, err := NormalizeFileContent(*typed)
 			if err != nil {
 				return nil, err
@@ -446,6 +816,9 @@ func NormalizeContentParts(parts []types.ContentPart) ([]types.ContentPart, erro
 			}
 			normalized = append(normalized, file)
 		case *types.ReasoningFileContent:
+			if typed == nil {
+				continue
+			}
 			file, err := NormalizeReasoningFileContent(*typed)
 			if err != nil {
 				return nil, err
@@ -458,6 +831,9 @@ func NormalizeContentParts(parts []types.ContentPart) ([]types.ContentPart, erro
 			}
 			normalized = append(normalized, toolResult)
 		case *types.ToolResultContent:
+			if typed == nil {
+				continue
+			}
 			toolResult, err := NormalizeToolResultContent(*typed)
 			if err != nil {
 				return nil, err
@@ -472,6 +848,8 @@ func NormalizeContentParts(parts []types.ContentPart) ([]types.ContentPart, erro
 
 // NormalizeFileData validates and normalizes a tagged FileData value. It also
 // converts data: URLs passed through the URL variant into inline data bytes.
+// The media type is passed on as given: TS convertToLanguageModelPrompt does
+// not validate it.
 func NormalizeFileData(data types.FileData) (types.FileData, error) {
 	switch data.Type {
 	case "":
@@ -483,36 +861,40 @@ func NormalizeFileData(data types.FileData) (types.FileData, error) {
 				Cause: fmt.Errorf("data URLs must use the %q variant, not %q", types.FileDataTypeURL, types.FileDataTypeData),
 			}
 		}
-		if err := validateMediaType(data.MediaType); err != nil {
-			return types.FileData{}, err
+		if len(data.Data) == 0 && strings.HasPrefix(data.DataString, "data:") {
+			// TS convertToLanguageModelV4FilePart: a `data:` string in the
+			// data variant is an InvalidDataContentError (file-part-data.ts
+			// 95-103).
+			return types.FileData{}, &InvalidInlineDataURLError{
+				Value: data.DataString,
+				Cause: errors.New(`Data URLs are not valid inline data. Pass them as { type: "url", url } instead.`), //nolint:staticcheck // TS text
+			}
 		}
 		return data, nil
 	case types.FileDataTypeURL:
-		if strings.HasPrefix(data.URL, "data:") {
-			return ParseDataURL(data.URL)
+		// TS file parts carry a URL object and providers send
+		// url.toString(): the WHATWG serialization of the URL. A URL that
+		// does not parse is TS's `new URL(url)` TypeError.
+		parsed, err := urlnorm.Parse(data.URL)
+		if err != nil {
+			return types.FileData{}, &InvalidURLError{URL: data.URL}
 		}
-		if err := validateRemoteFileURL(data.URL); err != nil {
-			return types.FileData{}, err
+		href := parsed.String()
+		if parsed.Scheme == "data" {
+			// TS: url.protocol === 'data:' -> splitDataUrl(url.toString()).
+			return ParseDataURL(href)
 		}
+		data.URL = href
 		if data.MediaType == "" {
-			data.MediaType = fileutil.InferMediaTypeFromURL(data.URL, "application/octet-stream")
-		}
-		if err := validateMediaType(data.MediaType); err != nil {
-			return types.FileData{}, err
+			data.MediaType = fileutil.InferMediaTypeFromURL(href, "application/octet-stream")
 		}
 		return data, nil
 	case types.FileDataTypeReference:
 		if len(data.Reference) == 0 {
 			return types.FileData{}, fmt.Errorf("file reference is required")
 		}
-		if err := validateMediaType(data.MediaType); err != nil {
-			return types.FileData{}, err
-		}
 		return data, nil
 	case types.FileDataTypeText:
-		if err := validateMediaType(data.MediaType); err != nil {
-			return types.FileData{}, err
-		}
 		return data, nil
 	default:
 		return types.FileData{}, fmt.Errorf("unsupported file data type %q", data.Type)
@@ -543,9 +925,20 @@ func NormalizeFileContent(part types.FileContent) (types.FileContent, error) {
 	if err != nil {
 		return types.FileContent{}, err
 	}
+	if part.FileData.IsZero() {
+		normalized = keepOriginalURL(normalized, part.URL)
+	}
 	part.FileData = normalized
-	part.MediaType = firstNonEmpty(part.MediaType, normalized.MediaType, part.MimeType)
-	part.MimeType = firstNonEmpty(part.MimeType, part.MediaType)
+	if data.Type == types.FileDataTypeURL && normalized.Type == types.FileDataTypeData {
+		// TS: mediaType = dataUrlMediaType ?? part.mediaType, so the media
+		// type embedded in a data: URL wins over the declared one, even when
+		// it is the empty string of `data:;base64,...`.
+		part.MediaType = normalized.MediaType
+		part.MimeType = normalized.MediaType
+	} else {
+		part.MediaType = firstNonEmpty(part.MediaType, normalized.MediaType, part.MimeType)
+		part.MimeType = firstNonEmpty(part.MimeType, part.MediaType)
+	}
 	part.Data = nil
 	part.URL = ""
 	part.Reference = ""
@@ -575,7 +968,9 @@ func NormalizeImageContent(part types.ImageContent) (types.FileContent, error) {
 		ProviderOptions: part.ProviderOptions,
 	}
 	if part.URL != "" {
-		file.FileData = types.FileData{Type: types.FileDataTypeURL, URL: part.URL, MediaType: mediaType}
+		// The legacy URL string (TS `image: string`) is normalized like a
+		// FileContent.URL string, keeping the original when it differs.
+		file.URL = part.URL
 	} else {
 		file.FileData = types.FileData{Type: types.FileDataTypeData, Data: part.Image, MediaType: mediaType}
 		file.Data = part.Image
@@ -606,6 +1001,9 @@ func NormalizeToolResultFileContent(block types.FileContentBlock) (types.FileCon
 	normalized, err := NormalizeFileData(data)
 	if err != nil {
 		return types.FileContentBlock{}, err
+	}
+	if block.FileData.IsZero() {
+		normalized = keepOriginalURL(normalized, block.URL)
 	}
 	block.FileData = normalized
 	block.MediaType = firstNonEmpty(block.MediaType, normalized.MediaType)
@@ -645,6 +1043,9 @@ func NormalizeToolResultContent(part types.ToolResultContent) (types.ToolResultC
 			}
 			blocks = append(blocks, normalized)
 		case *types.FileContentBlock:
+			if typed == nil {
+				continue
+			}
 			normalized, err := NormalizeToolResultFileContent(*typed)
 			if err != nil {
 				return types.ToolResultContent{}, err
@@ -661,6 +1062,9 @@ func NormalizeToolResultContent(part types.ToolResultContent) (types.ToolResultC
 			}
 			blocks = append(blocks, normalized)
 		case *types.ImageContentBlock:
+			if typed == nil {
+				continue
+			}
 			normalized, err := NormalizeToolResultFileContent(types.FileContentBlock{
 				Data:            typed.Data,
 				MediaType:       firstNonEmpty(typed.MediaType, "image"),
@@ -699,7 +1103,13 @@ func NormalizeReasoningFileContent(part types.ReasoningFileContent) (types.Reaso
 		return types.ReasoningFileContent{}, &ReasoningFileConstraintError{Type: normalized.Type}
 	}
 	part.FileData = normalized
-	part.MediaType = firstNonEmpty(part.MediaType, normalized.MediaType)
+	if data.Type == types.FileDataTypeURL && normalized.Type == types.FileDataTypeData {
+		// TS mediaType: mediaType ?? part.mediaType: a data: URL's media
+		// type wins over the declared one.
+		part.MediaType = normalized.MediaType
+	} else {
+		part.MediaType = firstNonEmpty(part.MediaType, normalized.MediaType)
+	}
 	part.Data = nil
 	if normalized.Type == types.FileDataTypeData {
 		part.Data = normalized.Data
@@ -707,7 +1117,9 @@ func NormalizeReasoningFileContent(part types.ReasoningFileContent) (types.Reaso
 	return part, nil
 }
 
-// ParseDataURL converts an RFC 2397 base64 data URL into a data FileData value.
+// ParseDataURL converts a data URL into a data FileData value: the text after
+// the first comma is decoded as base64, with or without a ";base64" marker
+// (TS splitDataUrl).
 func ParseDataURL(value string) (types.FileData, error) {
 	prefix, rest, ok := strings.Cut(value, ":")
 	if !ok || prefix != "data" {
@@ -717,53 +1129,36 @@ func ParseDataURL(value string) (types.FileData, error) {
 	if !ok {
 		return types.FileData{}, &InvalidInlineDataURLError{Value: value, Cause: fmt.Errorf("missing comma separator")}
 	}
-	parts := strings.Split(meta, ";")
-	mediaType := parts[0]
-	if mediaType == "" {
-		mediaType = "text/plain"
+	// TS splitDataUrl: the media type is header.split(';')[0].split(':')[1],
+	// taken as given (`data:;base64,...` has the empty media type "", which
+	// is not nullish and wins over the declared one). TS checks neither a
+	// ";base64" marker nor the media type: the text after the comma is the
+	// base64 data (file-part-data.ts 32-47, split-data-url.ts).
+	mediaType, _, _ := strings.Cut(meta, ";")
+	mediaType, _, _ = strings.Cut(mediaType, ":")
+	// TS keeps the text after the first comma and later decodes it with atob
+	// after mapping the URL-safe alphabet (convertBase64ToUint8Array): the
+	// forgiving decode accepts whitespace and missing padding.
+	if i := strings.IndexByte(body, ','); i >= 0 {
+		body = body[:i]
 	}
-	if err := validateMediaType(mediaType); err != nil {
-		return types.FileData{}, &InvalidInlineDataURLError{Value: value, Cause: err}
-	}
-	if len(parts) == 1 || parts[len(parts)-1] != "base64" {
-		return types.FileData{}, &InvalidInlineDataURLError{Value: value, Cause: fmt.Errorf("only base64 data URLs are supported")}
-	}
-	decoded, err := base64.StdEncoding.DecodeString(body)
+	decoded, err := fileutil.ConvertBase64ToBytes(body)
 	if err != nil {
 		return types.FileData{}, &InvalidInlineDataURLError{Value: value, Cause: err}
 	}
 	return types.FileData{Type: types.FileDataTypeData, Data: decoded, MediaType: mediaType}, nil
 }
 
-func validateRemoteFileURL(value string) error {
-	parsed, err := url.Parse(value)
-	if err != nil {
-		return err
+// keepOriginalURL mirrors TS convertUrlStringToFilePartData for a legacy URL
+// string field (FileContent.URL, ImageContent.URL, FileContentBlock.URL, the
+// Go form of a TS string URL): when the normalized URL differs from the
+// string as given, the string is kept as OriginalURL. A tagged FileData URL
+// (TS `{ type: 'url', url: URL }`) keeps only the OriginalURL its caller set.
+func keepOriginalURL(normalized types.FileData, raw string) types.FileData {
+	if normalized.Type == types.FileDataTypeURL && raw != "" && normalized.URL != raw {
+		normalized.OriginalURL = raw
 	}
-	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return fmt.Errorf("remote file URL must use http or https scheme")
-	}
-	if parsed.Host == "" {
-		return fmt.Errorf("remote file URL must include a host")
-	}
-	return nil
-}
-
-func validateMediaType(mediaType string) error {
-	if mediaType == "" {
-		return nil
-	}
-	if strings.Count(mediaType, "/") == 0 {
-		return nil
-	}
-	parsed, _, err := mime.ParseMediaType(mediaType)
-	if err != nil {
-		return err
-	}
-	if parsed == "" || strings.HasSuffix(parsed, "/") {
-		return fmt.Errorf("invalid media type %q", mediaType)
-	}
-	return nil
+	return normalized
 }
 
 func firstNonEmpty(values ...string) string {

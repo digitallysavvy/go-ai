@@ -3,15 +3,15 @@ package gateway
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // TranscriptionModel implements the provider.TranscriptionModel interface for AI Gateway.
@@ -70,9 +70,13 @@ func (p *Provider) GetTranscriptionToken(ctx context.Context, modelID string, op
 	if err != nil {
 		return nil, err
 	}
+	wsURL, err := gatewayWebSocketURLChecked(p.baseURL, "/transcription-model", modelID)
+	if err != nil {
+		return nil, err
+	}
 	return &TranscriptionClientSecretResult{
 		Token:     secret.Token,
-		URL:       ToGatewayTranscriptionURL(p.baseURL, modelID),
+		URL:       wsURL,
 		ExpiresAt: secret.ExpiresAt,
 	}, nil
 }
@@ -82,16 +86,10 @@ func (p *Provider) GetTranscriptionToken(ctx context.Context, modelID string, op
 // gateway-transcription-model.ts): the HTTP(S) base is upgraded to WS(S) and
 // the model id is passed as the "ai-model-id" query parameter, since a
 // browser WebSocket cannot set headers and slashes in qualified ids (e.g.
-// "openai/gpt-realtime-whisper") must survive query encoding.
+// "openai/gpt-realtime-whisper") must survive query encoding. It is "" when
+// the base URL does not parse (TS throws "Invalid URL").
 func ToGatewayTranscriptionURL(baseURL string, modelID string) string {
-	u, err := url.Parse(strings.Replace(baseURL, "http", "ws", 1) + "/transcription-model")
-	if err != nil {
-		return ""
-	}
-	query := u.Query()
-	query.Set("ai-model-id", modelID)
-	u.RawQuery = query.Encode()
-	return u.String()
+	return gatewayWebSocketURL(baseURL, "/transcription-model", modelID)
 }
 
 // DoTranscribe transcribes audio via the Gateway transcription-model endpoint.
@@ -99,24 +97,28 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	if opts == nil {
 		opts = &provider.TranscriptionOptions{}
 	}
+	// TS sends a string audio input as given and encodes bytes.
+	audio := base64.StdEncoding.EncodeToString(opts.Audio)
+	if opts.AudioBase64 != "" {
+		audio = opts.AudioBase64
+	}
 	body := map[string]interface{}{
-		"audio":     base64.StdEncoding.EncodeToString(opts.Audio),
+		"audio":     audio,
 		"mediaType": opts.MimeType,
 	}
 	if opts.ProviderOptions != nil {
 		body["providerOptions"] = opts.ProviderOptions
 	}
 
-	headers := m.getModelConfigHeaders()
-	AddO11yHeaders(headers, GetO11yHeaders(ctx))
-	headers = internalhttp.MergeHeaders(headers, opts.Headers)
+	headers := gatewayRequestHeaders(ctx, opts.Headers, m.getModelConfigHeaders())
 
 	var response gatewayTranscriptionResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/transcription-model",
-		Body:    body,
-		Headers: headers,
+		ValidateResponse: providerutils.MediaResponseValidator("gateway", providerutils.SchemaGatewayTranscription),
+		Method:           http.MethodPost,
+		Path:             "/transcription-model",
+		Body:             body,
+		Headers:          headers,
 	}, &response)
 	if err != nil {
 		return nil, (&LanguageModel{provider: m.provider, modelID: m.modelID}).handleErrorWithContext(ctx, err)
@@ -131,13 +133,36 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		})
 	}
 
-	warnings := response.Warnings
-	if warnings == nil {
-		warnings = []types.Warning{}
+	warnings := warningsOrEmpty(response.Warnings)
+	// TS 41465fd1b6: the adapter does not forward the shared
+	// timestampGranularities option and says so when one was requested.
+	if len(opts.TimestampGranularities) > 0 {
+		warnings = append(warnings, types.Warning{
+			Type:    "unsupported",
+			Feature: "timestampGranularities",
+			Details: "The AI Gateway adapter does not forward the shared timestampGranularities option.",
+		})
+	}
+	rawBody := parseGatewayTranscriptionRawBody(httpResp.Body)
+	if isXaiTranscriptionModel(m.modelID) && requestsXaiDiarization(opts.ProviderOptions) && !containsSpeaker(rawBody) {
+		warnings = append(warnings, types.Warning{
+			Type:    "unsupported",
+			Feature: "providerOptions.xai.diarize",
+			Details: "AI Gateway does not currently expose xAI speaker diarization metadata.",
+		})
+	}
+	// TS: words are passed through when the response has them (nullish).
+	var words []types.TranscriptionWord
+	if response.Words != nil {
+		words = make([]types.TranscriptionWord, 0, len(*response.Words))
+		for _, w := range *response.Words {
+			words = append(words, types.TranscriptionWord{Text: w.Text, StartSecond: w.StartSecond, EndSecond: w.EndSecond})
+		}
 	}
 	return &types.TranscriptionResult{
 		Text:              response.Text,
 		Segments:          segments,
+		Words:             words,
 		Language:          response.Language,
 		DurationInSeconds: response.DurationInSeconds,
 		Timestamps:        segments,
@@ -147,7 +172,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 			Timestamp: time.Now(),
 			ModelID:   m.modelID,
 			Headers:   flattenHeaders(httpResp.Headers),
-			Body:      parseGatewayTranscriptionRawBody(httpResp.Body),
+			Body:      rawBody,
 		},
 		Usage: types.TranscriptionUsage{
 			DurationSeconds: durationValue(response.DurationInSeconds),
@@ -166,6 +191,7 @@ func (m *TranscriptionModel) getModelConfigHeaders() map[string]string {
 type gatewayTranscriptionResponse struct {
 	Text              string                 `json:"text"`
 	Segments          []gatewaySegment       `json:"segments,omitempty"`
+	Words             *[]gatewaySegment      `json:"words"`
 	Language          string                 `json:"language,omitempty"`
 	DurationInSeconds *float64               `json:"durationInSeconds,omitempty"`
 	Warnings          []types.Warning        `json:"warnings,omitempty"`
@@ -179,6 +205,47 @@ type gatewaySegment struct {
 	EndSecond   float64 `json:"endSecond"`
 }
 
+// isXaiTranscriptionModel reports whether modelID routes to an xAI
+// transcription model (TS isXaiTranscriptionModel).
+func isXaiTranscriptionModel(modelID string) bool {
+	return strings.HasPrefix(modelID, "spacexai/") || strings.HasPrefix(modelID, "xai/")
+}
+
+// requestsXaiDiarization reports whether providerOptions asks for xAI
+// speaker diarization under either the xai or spacexai namespace.
+func requestsXaiDiarization(providerOptions map[string]interface{}) bool {
+	// Typed-option ruling: a Go-typed namespace is read in its JSON form.
+	providerOptions = providerutils.NormalizeOptionsJSON(providerOptions)
+	for _, ns := range []string{"xai", "spacexai"} {
+		if opts, ok := providerOptions[ns].(map[string]interface{}); ok {
+			if diarize, ok := opts["diarize"].(bool); ok && diarize {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// containsSpeaker reports whether value contains a non-null "speaker" key at
+// any depth of the decoded response.
+func containsSpeaker(value interface{}) bool {
+	switch v := value.(type) {
+	case []interface{}:
+		for _, item := range v {
+			if containsSpeaker(item) {
+				return true
+			}
+		}
+	case map[string]interface{}:
+		for key, nested := range v {
+			if (key == "speaker" && nested != nil) || containsSpeaker(nested) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func durationValue(duration *float64) float64 {
 	if duration == nil {
 		return 0
@@ -188,7 +255,7 @@ func durationValue(duration *float64) float64 {
 
 func parseGatewayTranscriptionRawBody(body []byte) interface{} {
 	var raw interface{}
-	if err := json.Unmarshal(body, &raw); err != nil {
+	if err := jsonexact.Unmarshal(body, &raw); err != nil {
 		return string(body)
 	}
 	return raw

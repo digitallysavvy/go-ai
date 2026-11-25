@@ -56,6 +56,9 @@ type StreamRenderSource struct {
 	responseMessages []types.Message
 	finalStep        types.StepResult
 	usage            types.Usage
+	// uiMessage is the assistant message built from a ChatTransport response
+	// (nil for other sources).
+	uiMessage *ai.UIMessage
 
 	mu        sync.Mutex
 	started   bool

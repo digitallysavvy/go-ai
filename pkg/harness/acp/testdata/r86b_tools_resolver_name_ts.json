@@ -1,0 +1,49 @@
+{
+ "source": "node v24.20.0: TS 30548ee7f9 harness-github-copilot/src/github-copilot-harness.ts resolveGitHubCopilotHostToolCall (552-563) on JSON.parse(toolCall), serverName \"host\", toolNames [\"search\"]",
+ "cases": [
+  {
+   "toolCall": "{\"toolCallId\":\"c1\",\"title\":\"host-search\",\"rawInput\":{\"q\":1}}",
+   "ts": {
+    "toolName": "search",
+    "input": {
+     "q": 1
+    }
+   }
+  },
+  {
+   "toolCall": "{\"toolCallId\":\"c1\",\"title\":\"host-search\",\"name\":\"\",\"rawInput\":{\"q\":1}}",
+   "ts": null
+  },
+  {
+   "toolCall": "{\"toolCallId\":\"c1\",\"title\":\"host-search\",\"name\":null,\"rawInput\":{\"q\":1}}",
+   "ts": {
+    "toolName": "search",
+    "input": {
+     "q": 1
+    }
+   }
+  },
+  {
+   "toolCall": "{\"toolCallId\":\"c1\",\"title\":\"host-search\",\"name\":\"search\",\"rawInput\":{\"q\":1}}",
+   "ts": null
+  },
+  {
+   "toolCall": "{\"toolCallId\":\"c1\",\"title\":\"host-search\",\"Name\":\"x\",\"rawInput\":{\"q\":1}}",
+   "ts": {
+    "toolName": "search",
+    "input": {
+     "q": 1
+    }
+   }
+  },
+  {
+   "toolCall": "{\"toolCallId\":\"c1\",\"title\":\"host-search\",\"name\":\"x\",\"name\":null,\"rawInput\":{\"q\":1}}",
+   "ts": {
+    "toolName": "search",
+    "input": {
+     "q": 1
+    }
+   }
+  }
+ ]
+}

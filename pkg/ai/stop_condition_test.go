@@ -1,9 +1,12 @@
 package ai
 
 import (
+	"context"
 	"testing"
 
+	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/testutil"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -156,4 +159,41 @@ func TestHasToolCall_MatchesAnyToolName(t *testing.T) {
 	}
 	reason := cond(state)
 	assert.Equal(t, "tool 'final_answer' was called", reason)
+}
+
+// TS evaluates stop conditions only when the loop would otherwise continue.
+// A step that ends the loop on its own (no tool calls) must not call them.
+func TestStopConditions_NotEvaluatedOnNaturalEnd(t *testing.T) {
+	t.Parallel()
+
+	var calls int
+	cond := func(StopConditionState) string { calls++; return "" }
+	model := &testutil.MockLanguageModel{
+		DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{Text: "hi", FinishReason: types.FinishReasonStop}, nil
+		},
+		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: "hi"},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+	res, err := GenerateText(context.Background(), GenerateTextOptions{Model: model, Prompt: "x", StopWhen: []StopCondition{cond}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 0 || res.StopReason != "" {
+		t.Fatalf("generate: calls=%d reason=%q", calls, res.StopReason)
+	}
+	sr, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "x", StopWhen: []StopCondition{cond}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sr.ReadAll(); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 0 || sr.StopReason() != "" {
+		t.Fatalf("stream: calls=%d reason=%q", calls, sr.StopReason())
+	}
 }

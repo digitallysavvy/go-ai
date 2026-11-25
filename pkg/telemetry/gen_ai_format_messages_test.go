@@ -268,7 +268,7 @@ func TestFormatInputMessagesReasoning(t *testing.T) {
 
 func TestFormatOutputMessagesTextOnly(t *testing.T) {
 	content := []types.ContentPart{types.TextContent{Text: "Hello world"}}
-	assertJSONEqual(t, formatOutputMessagesFromContent(content, "stop"), `[
+	assertJSONEqual(t, formatOutputContent(content, "stop"), `[
 		{"finish_reason": "stop", "parts": [{"content": "Hello world", "type": "text"}], "role": "assistant"}
 	]`)
 }
@@ -278,7 +278,7 @@ func TestFormatOutputMessagesWithReasoning(t *testing.T) {
 		types.ReasoningContent{Text: "Let me think..."},
 		types.TextContent{Text: "The answer is 42"},
 	}
-	assertJSONEqual(t, formatOutputMessagesFromContent(content, "stop"), `[
+	assertJSONEqual(t, formatOutputContent(content, "stop"), `[
 		{"finish_reason": "stop", "parts": [
 			{"content": "Let me think...", "type": "reasoning"},
 			{"content": "The answer is 42", "type": "text"}
@@ -290,7 +290,7 @@ func TestFormatOutputMessagesWithToolCalls(t *testing.T) {
 	content := []types.ContentPart{
 		types.ToolCallContent{ToolCallID: "call_abc", ToolName: "get_weather", Arguments: map[string]interface{}{"city": "Paris"}},
 	}
-	assertJSONEqual(t, formatOutputMessagesFromContent(content, "tool-calls"), `[
+	assertJSONEqual(t, formatOutputContent(content, "tool-calls"), `[
 		{"finish_reason": "tool_call", "parts": [
 			{"arguments": {"city": "Paris"}, "id": "call_abc", "name": "get_weather", "type": "tool_call"}
 		], "role": "assistant"}
@@ -304,7 +304,7 @@ func TestFormatOutputMessagesWithToolResults(t *testing.T) {
 			Output:     &types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: map[string]interface{}{"temperature": 21.0}},
 		},
 	}
-	assertJSONEqual(t, formatOutputMessagesFromContent(content, "stop"), `[
+	assertJSONEqual(t, formatOutputContent(content, "stop"), `[
 		{"finish_reason": "stop", "parts": [
 			{"id": "call_abc", "response": {"temperature": 21}, "type": "tool_call_response"}
 		], "role": "assistant"}
@@ -315,7 +315,7 @@ func TestFormatOutputMessagesWithFiles(t *testing.T) {
 	content := []types.ContentPart{
 		types.GeneratedFileContent{MediaType: "image/png", Data: []byte("abc123")},
 	}
-	got := formatOutputMessagesFromContent(content, "stop")
+	got := formatOutputContent(content, "stop")
 	msgs, ok := got[0].Parts[0]["content"].(string)
 	if !ok || msgs == "" {
 		t.Fatalf("expected non-empty base64 content, got %#v", got[0].Parts[0])
@@ -331,7 +331,7 @@ func TestFormatOutputMessagesCombined(t *testing.T) {
 		types.TextContent{Text: "Here is the result"},
 		types.ToolCallContent{ToolCallID: "tc1", ToolName: "search", Arguments: map[string]interface{}{"q": "test"}},
 	}
-	assertJSONEqual(t, formatOutputMessagesFromContent(content, "stop"), `[
+	assertJSONEqual(t, formatOutputContent(content, "stop"), `[
 		{"finish_reason": "stop", "parts": [
 			{"content": "Thinking...", "type": "reasoning"},
 			{"content": "Here is the result", "type": "text"},
@@ -364,5 +364,18 @@ func TestFormatObjectOutputMessages(t *testing.T) {
 func TestFormatInputMessagesEmpty(t *testing.T) {
 	if got := formatInputMessages(nil); len(got) != 0 {
 		t.Fatalf("formatInputMessages(nil) = %v, want empty", got)
+	}
+}
+
+func TestConvertMessagePartToSemConv_ToolApprovalResponseOmitsEmptyReason(t *testing.T) {
+	t.Parallel()
+
+	without := convertMessagePartToSemConv(types.ToolApprovalResponseContent{ApprovalID: "a1", Approved: true})
+	if _, ok := without["reason"]; ok {
+		t.Fatalf("reason must be omitted when unset (TS undefined), got %v", without)
+	}
+	with := convertMessagePartToSemConv(types.ToolApprovalResponseContent{ApprovalID: "a1", Approved: false, Reason: "no"})
+	if with["reason"] != "no" || with["approved"] != false || with["approval_id"] != "a1" {
+		t.Fatalf("unexpected part %v", with)
 	}
 }

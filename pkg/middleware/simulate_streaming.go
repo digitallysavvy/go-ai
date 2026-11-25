@@ -7,8 +7,10 @@ import (
 	"io"
 	"strconv"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // providerMetadataRawJSON marshals a provider-metadata map into the
@@ -19,7 +21,7 @@ func providerMetadataRawJSON(metadata map[string]interface{}) json.RawMessage {
 	if len(metadata) == 0 {
 		return nil
 	}
-	data, err := json.Marshal(metadata)
+	data, err := jsonstr.Marshal(metadata)
 	if err != nil {
 		return nil
 	}
@@ -77,7 +79,8 @@ func toolResultFromResultContent(rc types.ToolResultContent) types.ToolResult {
 	}
 	var providerMetadata map[string]interface{}
 	if len(rc.ProviderMetadata) > 0 {
-		_ = json.Unmarshal(rc.ProviderMetadata, &providerMetadata)
+		// TS enqueues the part's providerMetadata as is (no re-parse).
+		_ = jsonexact.UnmarshalPlain(rc.ProviderMetadata, &providerMetadata)
 	}
 	return types.ToolResult{
 		ToolCallID:       rc.ToolCallID,
@@ -92,6 +95,38 @@ func toolResultFromResultContent(rc types.ToolResultContent) types.ToolResult {
 		ProviderExecuted: rc.ProviderExecuted,
 		ProviderMetadata: providerMetadata,
 		ToolMetadata:     rc.ToolMetadata,
+	}
+}
+
+// toolCallFromCallContent converts a tool-call content part into the
+// stream's ToolCall: the decoded Arguments win, otherwise the raw JSON
+// Input is parsed.
+func toolCallFromCallContent(part types.ToolCallContent) types.ToolCall {
+	args := part.Arguments
+	if args == nil && part.Input != "" {
+		var parsed map[string]interface{}
+		if err := jsonexact.Unmarshal([]byte(part.Input), &parsed); err == nil {
+			args = parsed
+		}
+	}
+	var providerMetadata map[string]interface{}
+	if len(part.ProviderMetadata) > 0 {
+		// TS enqueues the part's providerMetadata as is (no re-parse).
+		_ = jsonexact.UnmarshalPlain(part.ProviderMetadata, &providerMetadata)
+	}
+	return types.ToolCall{
+		ID:                  part.ToolCallID,
+		ToolName:            part.ToolName,
+		Title:               part.Title,
+		Arguments:           args,
+		RawArguments:        part.Input,
+		ProviderExecuted:    part.ProviderExecuted,
+		ProviderExecutedSet: part.ProviderExecuted,
+		ProviderMetadata:    providerMetadata,
+		ToolMetadata:        part.ToolMetadata,
+		ThoughtSignature:    part.ThoughtSignature,
+		Dynamic:             part.Dynamic,
+		Invalid:             part.Invalid,
 	}
 }
 
@@ -142,18 +177,19 @@ func (s *simulatedStream) buildChunks() {
 	}
 
 	sawTextContent := false
+	emittedCalls := map[string]bool{}
 	for _, part := range s.result.Content {
 		switch p := part.(type) {
 		case types.TextContent:
 			sawTextContent = true
-			if len(p.Text) == 0 {
+			if len(p.Text) == 0 && len(p.Citations) == 0 {
 				continue
 			}
 			id := newID()
 			chunks = append(chunks,
 				&provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: id, ProviderMetadata: p.ProviderMetadata},
 				&provider.StreamChunk{Type: provider.ChunkTypeText, ID: id, Text: p.Text},
-				&provider.StreamChunk{Type: provider.ChunkTypeTextEnd, ID: id},
+				&provider.StreamChunk{Type: provider.ChunkTypeTextEnd, ID: id, Citations: p.Citations},
 			)
 		case types.ReasoningContent:
 			id := newID()
@@ -185,9 +221,24 @@ func (s *simulatedStream) buildChunks() {
 			part := p
 			chunks = append(chunks, &provider.StreamChunk{Type: provider.ChunkTypeToolApprovalRequest, ToolApprovalRequest: &part})
 		case types.ToolCallContent:
-			// Deliberately not emitted here: GenerateResult.ToolCalls (used
-			// below) is the flat mirror of every ToolCallContent entry, so
-			// handling it in this switch too would duplicate the chunk.
+			// Emitted in content order (TS enqueues every other part as is).
+			// The flat GenerateResult.ToolCalls entry carries the full
+			// provider-facing call; calls missing from Content follow below.
+			matched := false
+			for i := range s.result.ToolCalls {
+				if s.result.ToolCalls[i].ID == p.ToolCallID && !emittedCalls[p.ToolCallID] {
+					emittedCalls[p.ToolCallID] = true
+					chunks = append(chunks, &provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &s.result.ToolCalls[i]})
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				// A tool-call part with no flat ToolCalls entry is still
+				// enqueued (TS enqueues every tool-call content part).
+				call := toolCallFromCallContent(p)
+				chunks = append(chunks, &provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &call})
+			}
 		}
 	}
 
@@ -205,6 +256,9 @@ func (s *simulatedStream) buildChunks() {
 
 	// Emit tool calls
 	for i := range s.result.ToolCalls {
+		if emittedCalls[s.result.ToolCalls[i].ID] {
+			continue
+		}
 		chunks = append(chunks, &provider.StreamChunk{
 			Type:     provider.ChunkTypeToolCall,
 			ToolCall: &s.result.ToolCalls[i],
@@ -252,4 +306,31 @@ func (s *simulatedStream) Close() error {
 // Err returns any error from the stream (always nil for simulated streams)
 func (s *simulatedStream) Err() error {
 	return nil
+}
+
+// RequestBody is the wrapped DoGenerate result's request body (TS
+// simulateStreamingMiddleware returns request: result.request).
+func (s *simulatedStream) RequestBody() interface{} {
+	if s.result == nil {
+		return nil
+	}
+	return s.result.RawRequest
+}
+
+// RequestURL is the wrapped DoGenerate result's request URL (TS 934100cad4).
+func (s *simulatedStream) RequestURL() string {
+	if s.result == nil {
+		return ""
+	}
+	return s.result.RequestURL
+}
+
+// ResponseHeaders implements provider.StreamResponseHeaders: TS
+// simulateStreamingMiddleware returns `response: result.response` beside the
+// stream (review round 87e).
+func (s *simulatedStream) ResponseHeaders() map[string]string {
+	if s.result == nil {
+		return nil
+	}
+	return s.result.ResponseHeaders
 }

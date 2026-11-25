@@ -1215,3 +1215,125 @@ func TestVideoModel_ProviderIntegration(t *testing.T) {
 		t.Error("expected an error for an empty model ID")
 	}
 }
+
+// TS serializes the operation with referenceVideoIndices: [] and reports
+// referenceVideoUrls: [] / referenceVideoIndices: [] when no reference video
+// was sent (minimax-video-model.test.ts "should report nothing sent for a
+// text-only request").
+func TestResolvedInputsAreEmptyArraysWhenNoReferenceVideo(t *testing.T) {
+	server, _, _ := newMinimaxTestServer(t, minimaxTestTaskID, []string{minimaxSucceededResponse(), minimaxSucceededResponse()})
+	defer server.Close()
+	model := newVideoModel(providerForMinimaxServer(server.URL), ModelH3)
+
+	start, err := model.DoStart(context.Background(), &provider.VideoModelV3StartOptions{VideoModelV3CallOptions: *minimaxDefaultCallOptions(nil)})
+	if err != nil {
+		t.Fatalf("DoStart() error: %v", err)
+	}
+	var op map[string]interface{}
+	if err := json.Unmarshal(start.Operation, &op); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := op["resolvedInputs"].(map[string]interface{})["referenceVideoIndices"].([]interface{}); !ok || len(got) != 0 {
+		t.Errorf("operation referenceVideoIndices = %#v, want []", op["resolvedInputs"])
+	}
+
+	status, err := model.DoStatus(context.Background(), &provider.VideoModelV3StatusOptions{Operation: start.Operation})
+	if err != nil {
+		t.Fatalf("DoStatus() error: %v", err)
+	}
+	statusResolved := status.ProviderMetadata["minimax"].(map[string]interface{})["resolvedInputs"].(map[string]interface{})
+	if got, ok := statusResolved["referenceVideoIndices"].([]int); !ok || got == nil || len(got) != 0 {
+		t.Errorf("status referenceVideoIndices = %#v, want []", statusResolved["referenceVideoIndices"])
+	}
+
+	gen, err := model.DoGenerate(context.Background(), minimaxDefaultCallOptions(nil))
+	if err != nil {
+		t.Fatalf("DoGenerate() error: %v", err)
+	}
+	genResolved := gen.ProviderMetadata["minimax"].(map[string]interface{})["resolvedInputs"].(map[string]interface{})
+	if got, ok := genResolved["referenceVideoUrls"].([]string); !ok || got == nil || len(got) != 0 {
+		t.Errorf("referenceVideoUrls = %#v, want []", genResolved["referenceVideoUrls"])
+	}
+}
+
+// TS doGenerate lets a status-request failure propagate unchanged (no
+// "status check failed:" wrapper).
+func TestDoGenerate_StatusErrorPropagatesUnchanged(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v2/video_generation", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprintf(w, `{"task_id": %q}`, minimaxTestTaskID)
+	})
+	mux.HandleFunc("/v2/query/video_generation/"+minimaxTestTaskID, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = fmt.Fprint(w, `{"error":{"message":"upstream exploded"}}`)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	model := newVideoModel(providerForMinimaxServer(server.URL), ModelH3)
+
+	_, err := model.DoGenerate(context.Background(), minimaxDefaultCallOptions(minimaxProviderOptions(map[string]interface{}{"pollIntervalMs": 1})))
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if err.Error() != "upstream exploded" {
+		t.Errorf("error = %q, want %q", err.Error(), "upstream exploded")
+	}
+}
+
+// usage members are plain numbers (undefined ones omitted), not pointers.
+func TestDoGenerate_UsageMetadataValues(t *testing.T) {
+	server, _, _ := newMinimaxTestServer(t, minimaxTestTaskID, []string{
+		`{"task":{"id":"task-123","status":"succeeded","content":{"url":"https://cdn.minimax.io/v.mp4"},"usage":{"total_seconds":5}}}`,
+	})
+	defer server.Close()
+	model := newVideoModel(providerForMinimaxServer(server.URL), ModelH3)
+	result, err := model.DoGenerate(context.Background(), minimaxDefaultCallOptions(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	usage, _ := result.ProviderMetadata["minimax"].(map[string]interface{})["usage"].(map[string]interface{})
+	if v, ok := usage["totalSeconds"].(float64); !ok || v != 5 {
+		t.Errorf("totalSeconds = %#v", usage["totalSeconds"])
+	}
+	if _, ok := usage["inputSeconds"]; ok {
+		t.Errorf("undefined inputSeconds should be omitted: %#v", usage)
+	}
+}
+
+// The missing-task_id error prints the zod-parsed response (task_id only).
+func TestDoStart_NoTaskIDErrorShowsParsedResponse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"task_id":null,"base_resp":{"status_code":0}}`))
+	}))
+	defer srv.Close()
+	model := newVideoModel(providerForMinimaxServer(srv.URL), ModelH3)
+	_, err := model.DoStart(context.Background(), &provider.VideoModelV3StartOptions{VideoModelV3CallOptions: *minimaxDefaultCallOptions(nil)})
+	if err == nil || !strings.HasSuffix(err.Error(), `Response: {"task_id":null}`) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// The reference-audio cap warning names MiniMax-H3 literally.
+func TestDoStart_AudioCapWarningNamesH3(t *testing.T) {
+	server, _, _ := newMinimaxTestServer(t, minimaxTestTaskID, []string{minimaxSucceededResponse()})
+	defer server.Close()
+	model := newVideoModel(providerForMinimaxServer(server.URL), "custom-model")
+	o := minimaxDefaultCallOptions(minimaxProviderOptions(map[string]interface{}{
+		"referenceAudioUrls": []interface{}{"a", "b", "c", "d"},
+	}))
+	o.InputReferences = []provider.VideoModelV3File{{Type: "url", URL: "https://x/i.png", MediaType: "image/png"}}
+	res, err := model.DoStart(context.Background(), &provider.VideoModelV3StartOptions{VideoModelV3CallOptions: *o})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, w := range res.Warnings {
+		if w.Details == "MiniMax-H3 accepts at most 3 reference audios. Extra audios were ignored." {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("warnings = %+v", res.Warnings)
+	}
+}

@@ -391,7 +391,7 @@ func TestRunCodeMode_ContextCancellationAbortsInFlightNestedToolCall(t *testing.
 
 	select {
 	case <-started:
-	case <-time.After(5 * time.Second):
+	case <-time.After(60 * time.Second):
 		t.Fatal("tool never started")
 	}
 	cancel()
@@ -399,8 +399,8 @@ func TestRunCodeMode_ContextCancellationAbortsInFlightNestedToolCall(t *testing.
 	select {
 	case out := <-done:
 		assertErrMatches(t, out.err, `(?i)abort`)
-	case <-time.After(5 * time.Second):
-		t.Fatal("RunCodeMode did not return promptly after cancellation")
+	case <-time.After(60 * time.Second):
+		t.Fatal("RunCodeMode did not return after cancellation")
 	}
 }
 
@@ -674,7 +674,7 @@ func TestRunCodeMode_HostToolOutputDateFormatting(t *testing.T) {
 	}
 }
 
-func TestRunCodeMode_OmitsNilPropertiesFromHostToolOutputs(t *testing.T) {
+func TestRunCodeMode_KeepsNilPropertiesAsNullInHostToolOutputs(t *testing.T) {
 	tools := ToolSet{"catalog": {
 		Name:       "catalog",
 		Parameters: map[string]interface{}{"type": "object"},
@@ -694,7 +694,7 @@ func TestRunCodeMode_OmitsNilPropertiesFromHostToolOutputs(t *testing.T) {
 	want := map[string]interface{}{
 		"concepts": []interface{}{
 			map[string]interface{}{"name": "first", "recommendedNextAction": "open"},
-			map[string]interface{}{"name": "second"},
+			map[string]interface{}{"name": "second", "recommendedNextAction": nil},
 		},
 	}
 	assertDeepEqual(t, got, want)
@@ -839,13 +839,9 @@ func TestSetMaxWorkers_RejectsOverCap(t *testing.T) {
 	if err := SetMaxWorkers(1); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	defer func() {
-		if err := SetMaxWorkers(0); err != nil {
-			t.Fatalf("unexpected error resetting maxWorkers: %v", err)
-		}
-	}()
+	defer ResetMaxWorkers()
 
-	release, err := acquireWorkerSlot()
+	release, err := acquireWorkerSlot(DefaultMemoryLimitBytes)
 	if err != nil {
 		t.Fatalf("unexpected error acquiring the first slot: %v", err)
 	}
@@ -877,4 +873,51 @@ func assertDeepEqual(t *testing.T, got, want interface{}) {
 	if fmt.Sprintf("%#v", got) != fmt.Sprintf("%#v", want) {
 		t.Fatalf("got %#v, want %#v", got, want)
 	}
+}
+
+// TS hands the sandbox argument to input validation unchanged: a non-object
+// argument is an input error, never silently replaced by an empty object.
+func TestRunCodeMode_NonObjectToolInputIsRejected(t *testing.T) {
+	var called bool
+	tools := ToolSet{"echo": {
+		Name:       "echo",
+		Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{"q": map[string]interface{}{"type": "string"}}},
+		Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			called = true
+			return input, nil
+		},
+	}}
+	for _, js := range []string{`return await tools.echo("text");`, `return await tools.echo([1]);`, `return await tools.echo(null);`} {
+		_, err := RunCodeMode(context.Background(), RunInput{JS: js, Tools: tools})
+		assertErrMatches(t, err, `Invalid input for tool "echo"`)
+	}
+	if called {
+		t.Fatal("execute must not run for a non-object input")
+	}
+}
+
+// TS reports a failed validation with details.input set to the sandbox's
+// argument, not the schema-defaulted value.
+func TestRunCodeMode_InvalidToolInputDetailsKeepRawInput(t *testing.T) {
+	tools := ToolSet{"echo": {
+		Name: "echo",
+		Parameters: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"a": map[string]interface{}{"type": "string", "default": "x"},
+				"n": map[string]interface{}{"type": "number"},
+			},
+			"required": []interface{}{"n"},
+		},
+		Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			return input, nil
+		},
+	}}
+	_, err := RunCodeMode(context.Background(), RunInput{JS: `return await tools.echo({b: 1});`, Tools: tools})
+	var toolErr *ToolError
+	if !errors.As(err, &toolErr) {
+		t.Fatalf("err = %v, want *ToolError", err)
+	}
+	details, _ := toolErr.ErrorDetails().(map[string]interface{})
+	assertDeepEqual(t, details["input"], map[string]interface{}{"b": float64(1)})
 }

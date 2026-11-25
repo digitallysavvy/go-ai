@@ -103,7 +103,16 @@ func TestGenerateText_UnnamedApprovalLiteralDoesNotExecute(t *testing.T) {
 	if executed {
 		t.Fatal("tool ran without approval")
 	}
-	if len(result.ToolResults) != 1 || result.ToolResults[0].ApprovalStatus != types.ToolApprovalStatusUserApproval {
-		t.Fatalf("tool results = %+v, want one pending user approval", result.ToolResults)
+	if len(result.ToolResults) != 0 {
+		t.Fatalf("tool results = %+v, want none (TS toolResults holds tool-result parts only)", result.ToolResults)
+	}
+	pending := 0
+	for _, part := range result.Content {
+		if _, ok := part.(types.ToolApprovalRequestContent); ok {
+			pending++
+		}
+	}
+	if pending != 1 {
+		t.Fatalf("content = %+v, want one tool-approval-request", result.Content)
 	}
 }

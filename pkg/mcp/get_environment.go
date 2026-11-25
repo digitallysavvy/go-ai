@@ -4,6 +4,8 @@ import (
 	"os"
 	"runtime"
 	"strings"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // defaultInheritedEnvVars mirrors TS DEFAULT_INHERITED_ENV_VARS
@@ -65,7 +67,7 @@ func getEnvironmentForGOOS(goos string, customEnv []string, parentEnv []string) 
 			continue
 		}
 		if isWindows {
-			key = strings.ToUpper(key)
+			key = providerutils.JSToUpper(key)
 		}
 		customKeys[key] = true
 	}
@@ -77,7 +79,7 @@ func getEnvironmentForGOOS(goos string, customEnv []string, parentEnv []string) 
 			continue
 		}
 		if isWindows {
-			key = strings.ToUpper(key)
+			key = providerutils.JSToUpper(key)
 		}
 		parent[key] = value
 	}
@@ -85,7 +87,7 @@ func getEnvironmentForGOOS(goos string, customEnv []string, parentEnv []string) 
 	for _, key := range defaultInheritedEnvVars(goos) {
 		lookupKey := key
 		if isWindows {
-			lookupKey = strings.ToUpper(lookupKey)
+			lookupKey = providerutils.JSToUpper(lookupKey)
 		}
 		if customKeys[lookupKey] {
 			continue

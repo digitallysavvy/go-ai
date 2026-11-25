@@ -1,6 +1,11 @@
 package tui
 
-import "testing"
+import (
+	"bufio"
+	"context"
+	"strings"
+	"testing"
+)
 
 func TestParseTerminalKeyDecodesControlKeys(t *testing.T) {
 	tests := []struct {
@@ -34,5 +39,16 @@ func TestParseTerminalKeyKeepsPrintableInput(t *testing.T) {
 	want := TerminalKey{Type: TerminalKeyCharacter, Value: "hello"}
 	if got != want {
 		t.Fatalf("ParseTerminalKey printable = %#v, want %#v", got, want)
+	}
+}
+
+func TestReadTerminalKeyAssemblesMultiByteCharacters(t *testing.T) {
+	var reader *bufio.Reader
+	input := strings.NewReader("é👍x")
+	for _, want := range []string{"é", "👍", "x"} {
+		key, err := readTerminalKey(context.Background(), input, &reader)
+		if err != nil || key.Type != TerminalKeyCharacter || key.Value != want {
+			t.Fatalf("key = %#v, %v; want %q", key, err, want)
+		}
 	}
 }

@@ -9,7 +9,7 @@ func TestCerebrasSerializeAndDeserializeLanguageModel(t *testing.T) {
 		t.Fatalf("LanguageModel error = %v", err)
 	}
 	serialized := model.(*LanguageModel).Serialize()
-	if serialized.Provider != "cerebras" || serialized.ModelID != "llama3.1-8b" || serialized.Config == nil {
+	if serialized.Provider != "cerebras.chat" || serialized.ModelID != "llama3.1-8b" || serialized.Config == nil {
 		t.Fatalf("serialize mismatch: %#v", serialized)
 	}
 	if _, ok := serialized.Config["APIKey"]; ok {
@@ -19,7 +19,7 @@ func TestCerebrasSerializeAndDeserializeLanguageModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("deserializeModel error = %v", err)
 	}
-	if restored.Provider() != "cerebras" || restored.ModelID() != "llama3.1-8b" {
+	if restored.Provider() != "cerebras.chat" || restored.ModelID() != "llama3.1-8b" {
 		t.Fatalf("restored mismatch: provider=%s model=%s", restored.Provider(), restored.ModelID())
 	}
 }

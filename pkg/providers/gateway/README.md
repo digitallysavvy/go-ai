@@ -309,7 +309,7 @@ func main() {
 
     // Create parallel search tool
     parallelSearch := tools.NewParallelSearch(tools.ParallelSearchConfig{
-        Mode:       "one-shot", // or "agentic"
+        Mode:       tools.ParallelSearchModeBasic, // turbo, fast, basic (default), advanced
         MaxResults: intPtr(10),
         SourcePolicy: &tools.ParallelSearchSourcePolicy{
             IncludeDomains: []string{"wikipedia.org", "nature.com"},
@@ -334,8 +334,22 @@ func main() {
 
 #### Parallel Search Modes
 
-- **one-shot**: Comprehensive results with longer excerpts for single-response answers
-- **agentic**: Concise, token-efficient results for multi-step workflows
+The tool runs on Parallel's GA Search API:
+
+- **turbo**: Fastest, shorter excerpts (English and Japanese only)
+- **fast**: Low latency with shorter excerpts
+- **basic**: Balanced (default)
+- **advanced**: Most thorough
+- **one-shot** and **agentic**: Deprecated aliases of `basic` and `advanced`
+
+Other options: `Location` (ISO 3166-1 alpha-2 country code), `MaxCharsTotal`
+(replaces the deprecated `Excerpts.MaxCharsTotal`), and `FetchPolicy.TimeoutSeconds` /
+`FetchPolicy.DisableCacheFallback`. `FetchPolicy.MaxAgeSeconds` has a minimum of 600.
+
+Results are returned in Parallel's snake_case shape: `search_id`, `results[]` with
+`url`, `title`, `publish_date` and `excerpts` (a list of strings), plus optional
+`warnings`, `usage` and `session_id`. Errors add `execution_error`,
+`gateway_rate_limit` and `unknown_tool`.
 
 ### Perplexity Search
 
@@ -515,11 +529,13 @@ the `ai-o11y-project-id` header alongside other Vercel observability headers.
 
 ### Parallel Search Config
 
-- `Mode` (string): "one-shot" or "agentic"
+- `Mode` (string): "turbo", "fast", "basic" (default), "advanced" (or the deprecated "one-shot" / "agentic")
 - `MaxResults` (int): Maximum results (1-20, default: 10)
 - `SourcePolicy` (*ParallelSearchSourcePolicy): Domain and date filtering
 - `Excerpts` (*ParallelSearchExcerpts): Excerpt length configuration
-- `FetchPolicy` (*ParallelSearchFetchPolicy): Content freshness settings
+- `MaxCharsTotal` (*int): Maximum total characters across all result excerpts
+- `Location` (string): ISO 3166-1 alpha-2 country code to localize results
+- `FetchPolicy` (*ParallelSearchFetchPolicy): Content freshness settings (`MaxAgeSeconds`, `TimeoutSeconds`, `DisableCacheFallback`)
 
 ### Perplexity Search Config
 
@@ -599,6 +615,7 @@ Inline `[]byte` file data in Gateway language-model requests is base64-encoded e
 Gateway response errors are decoded into typed errors under `pkg/providers/gateway/errors`. The common `GatewayError` interface exposes status code, public type, generation ID, and retryability. Unknown Gateway error types preserve the raw type through `GatewayErrorDetails`.
 
 - `GatewayForbiddenError.RuleID` identifies which routing rule denied the request, when the Gateway reports one.
+- `GatewayAccessPolicyDeniedError` (type `access_policy_denied`, HTTP 403) is returned when an access policy denies the requested model or provider. It is not a `GatewayForbiddenError`. `PolicyIDs`, `RemovedModels` and `RemovedProviders` hold what the Gateway reported in the error param and are nil when absent.
 - `GatewayNotFoundError` (type `not_found`) is returned for unknown Gateway resources (e.g. an async batch/video job id) and is distinct from `GatewayModelNotFoundError`, which is model-specific.
 
 ```go

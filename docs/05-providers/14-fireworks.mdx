@@ -47,11 +47,15 @@ export FIREWORKS_API_KEY=fw_...
 | accounts/fireworks/models/mixtral-8x7b-instruct | 32K | Balanced |
 | accounts/fireworks/models/kimi-k2p5 | 128K | Extended reasoning |
 
+### Text Completion
+
+`provider.CompletionModel(id)` returns the OpenAI-compatible text completion
+model (`/v1/completions`).
+
 ### Image Models
 
 | Model ID | Type | Notes |
 |----------|------|-------|
-| accounts/fireworks/models/flux-kontext-dev | Text-to-image, image editing | Async polling |
 | accounts/fireworks/models/flux-kontext-pro | Text-to-image, image editing | Async polling |
 | accounts/fireworks/models/flux-kontext-max | Text-to-image, image editing | Async polling |
 | accounts/fireworks/models/stable-diffusion-xl-1024-v1-0 | Text-to-image | Sync |
@@ -115,7 +119,7 @@ func main() {
         APIKey: os.Getenv("FIREWORKS_API_KEY"),
     })
 
-    model, err := prov.ImageModel("accounts/fireworks/models/flux-kontext-dev")
+    model, err := prov.ImageModel("accounts/fireworks/models/flux-kontext-pro")
     if err != nil {
         log.Fatal(err)
     }

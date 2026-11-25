@@ -1124,7 +1124,7 @@ Telemetry no longer emits per-chunk `OnChunk` events; stream consumers should co
 
 ### Sandbox description (May 2026 detail)
 
-`ai.Experimental_SandboxSession` includes `Description() string`. When a sandbox is active, non-empty descriptions are appended to system instructions before provider calls, matching the TypeScript SDK sandbox instruction behavior.
+`ai.Experimental_SandboxSession` includes `Description() string`. In v0.5 a non-empty description was appended to the system instructions before provider calls. The TypeScript SDK never does this (the description "is not added to the model prompt automatically"), and v0.6.0 no longer appends it: tool description functions and `PrepareStep` read it. See [Sandbox description no longer added to the system prompt](./from-v0.5-to-v0.6.mdx#sandbox-description-not-in-prompt).
 
 ```go
 sandbox := ai.NewShellSandbox(

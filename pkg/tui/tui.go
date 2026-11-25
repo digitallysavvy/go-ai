@@ -59,7 +59,9 @@ type RunAgentTUIOptions struct {
 	// Title is shown in the terminal UI header.
 	Title string
 
-	// Tools controls how tool calls render. Defaults to "auto-collapsed".
+	// Tools controls how tool calls render. A tool call that is waiting for an
+	// approval decision is always shown with its input until the decision is
+	// made. Defaults to "auto-collapsed".
 	Tools TerminalPartDisplayMode
 
 	// Reasoning controls how reasoning parts render. Defaults to "auto-collapsed".

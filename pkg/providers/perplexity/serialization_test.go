@@ -32,7 +32,7 @@ func TestPerplexitySerializeAndDeserializeEmbeddingModel(t *testing.T) {
 		t.Fatalf("EmbeddingModel error = %v", err)
 	}
 	serialized := modelAny.(*EmbeddingModel).Serialize()
-	if serialized.Provider != "perplexity" || serialized.ModelID != "perplexity-embed" {
+	if serialized.Provider != "perplexity.embedding" || serialized.ModelID != "perplexity-embed" {
 		t.Fatalf("serialize mismatch: %#v", serialized)
 	}
 	if _, ok := serialized.Config["APIKey"]; ok {
@@ -43,7 +43,7 @@ func TestPerplexitySerializeAndDeserializeEmbeddingModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("deserializeEmbeddingModel error = %v", err)
 	}
-	if restored.Provider() != "perplexity" || restored.ModelID() != "perplexity-embed" {
+	if restored.Provider() != "perplexity.embedding" || restored.ModelID() != "perplexity-embed" {
 		t.Fatalf("restored mismatch: provider=%s model=%s", restored.Provider(), restored.ModelID())
 	}
 

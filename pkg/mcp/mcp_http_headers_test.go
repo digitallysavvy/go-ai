@@ -182,3 +182,14 @@ func TestEncodeMCPHeaderValue(t *testing.T) {
 		})
 	}
 }
+
+// TS Number.isSafeInteger rejects 2^53 (Number.MAX_SAFE_INTEGER is 2^53-1).
+func TestCreateMCPToolHeadersRejectsUnsafeInteger(t *testing.T) {
+	bindings := []MCPToolHeaderBinding{{HeaderName: "N", Path: []string{"n"}, ValueType: MCPHeaderValueInteger}}
+	if _, err := CreateMCPToolHeaders(bindings, map[string]interface{}{"n": float64(1 << 53)}); err == nil {
+		t.Fatal("2^53 must be rejected")
+	}
+	if got, err := CreateMCPToolHeaders(bindings, map[string]interface{}{"n": float64(1<<53 - 1)}); err != nil || got["Mcp-Param-N"] != "9007199254740991" {
+		t.Fatalf("got %v, %v", got, err)
+	}
+}

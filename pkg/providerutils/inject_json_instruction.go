@@ -2,6 +2,7 @@ package providerutils
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -33,7 +34,17 @@ type InjectJSONInstructionOptions struct {
 // object mode). schema may be nil (no schema available) or an empty, non-nil
 // map (an empty JSON Schema, which is still serialized and included).
 func InjectJSONInstruction(prompt string, schema map[string]interface{}, opts InjectJSONInstructionOptions) string {
-	hasSchema := schema != nil
+	if schema == nil {
+		return InjectJSONInstructionSchema(prompt, nil, opts)
+	}
+	return InjectJSONInstructionSchema(prompt, schema, opts)
+}
+
+// InjectJSONInstructionSchema is InjectJSONInstruction for a schema of any
+// shape. A json.RawMessage schema is serialized in its own key order (like
+// JSON.stringify of the parsed object); a map is serialized sorted.
+func InjectJSONInstructionSchema(prompt string, schema interface{}, opts InjectJSONInstructionOptions) string {
+	hasSchema := schemaIsPresent(schema)
 	schemaPrefix := opts.SchemaPrefix
 	if schemaPrefix == "" && hasSchema {
 		schemaPrefix = defaultJSONInstructionSchemaPrefix
@@ -55,8 +66,9 @@ func InjectJSONInstruction(prompt string, schema map[string]interface{}, opts In
 		lines = append(lines, schemaPrefix)
 	}
 	if hasSchema {
-		if b, err := json.Marshal(schema); err == nil {
-			lines = append(lines, string(b))
+		// JSON.stringify does not HTML-escape <, > and &; json.Marshal does.
+		if text, ok := schemaInstructionText(schema); ok {
+			lines = append(lines, text)
 		}
 	}
 	if schemaSuffix != "" {
@@ -71,16 +83,28 @@ func InjectJSONInstruction(prompt string, schema map[string]interface{}, opts In
 // message, creating a new one when the prompt doesn't start with a system
 // message. The input slice and its messages are not mutated.
 func InjectJSONInstructionIntoMessages(messages []types.Message, schema map[string]interface{}, opts InjectJSONInstructionOptions) []types.Message {
+	if schema == nil {
+		return InjectJSONInstructionIntoMessagesSchema(messages, nil, opts)
+	}
+	return InjectJSONInstructionIntoMessagesSchema(messages, schema, opts)
+}
+
+// InjectJSONInstructionIntoMessagesSchema is InjectJSONInstructionIntoMessages
+// for a schema of any shape (see InjectJSONInstructionSchema).
+func InjectJSONInstructionIntoMessagesSchema(messages []types.Message, schema interface{}, opts InjectJSONInstructionOptions) []types.Message {
 	hasLeadingSystem := len(messages) > 0 && messages[0].Role == types.RoleSystem
 	existingText := ""
 	if hasLeadingSystem {
 		existingText = concatTextContent(messages[0].Content)
 	}
 
-	systemMessage := types.Message{
-		Role:    types.RoleSystem,
-		Content: []types.ContentPart{types.TextContent{Text: InjectJSONInstruction(existingText, schema, opts)}},
+	// TS spreads the existing system message ({ ...messages[0] }), so its
+	// providerOptions (and any other fields) survive; only content changes.
+	systemMessage := types.Message{Role: types.RoleSystem}
+	if hasLeadingSystem {
+		systemMessage = messages[0]
 	}
+	systemMessage.Content = []types.ContentPart{types.TextContent{Text: InjectJSONInstructionSchema(existingText, schema, opts)}}
 
 	rest := messages
 	if hasLeadingSystem {
@@ -100,4 +124,27 @@ func concatTextContent(parts []types.ContentPart) string {
 		}
 	}
 	return b.String()
+}
+
+// schemaIsPresent is TS's `schema != null`: nil, a nil map, a nil pointer and
+// JSON null (json.RawMessage("null")) all mean no schema.
+func schemaIsPresent(schema interface{}) bool {
+	switch s := schema.(type) {
+	case nil:
+		return false
+	case map[string]interface{}:
+		return s != nil
+	case json.RawMessage:
+		return !isJSONNull(s)
+	case []byte:
+		return !isJSONNull(s)
+	}
+	if v := reflect.ValueOf(schema); v.Kind() == reflect.Pointer && v.IsNil() {
+		return false
+	}
+	return true
+}
+
+func isJSONNull(b []byte) bool {
+	return strings.TrimSpace(string(b)) == "null"
 }

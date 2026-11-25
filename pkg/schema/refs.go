@@ -18,6 +18,13 @@ import (
 // go-ai has no document to fetch it from and treating it as unconstrained is
 // safer than hard-failing a schema we cannot fully understand.
 func resolveLocalRef(root map[string]interface{}, ref string) (resolved map[string]interface{}, found bool, err error) {
+	if ref == "#" {
+		// The document root (zod's reference to a recursive root schema).
+		if root == nil {
+			return nil, false, fmt.Errorf("%q: no document root to resolve against", ref)
+		}
+		return root, true, nil
+	}
 	if !strings.HasPrefix(ref, "#/") {
 		return nil, false, nil
 	}

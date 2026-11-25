@@ -145,7 +145,11 @@ type SubagentDelegation struct {
 }
 
 // DelegationTracker tracks subagent delegations during agent execution
+//
+// DelegationTracker is safe for concurrent use: tools run in parallel, so
+// several delegations may be tracked at once.
 type DelegationTracker struct {
+	mu          sync.Mutex
 	delegations []SubagentDelegation
 }
 
@@ -158,20 +162,30 @@ func NewDelegationTracker() *DelegationTracker {
 
 // Track adds a delegation to the tracker
 func (t *DelegationTracker) Track(delegation SubagentDelegation) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	t.delegations = append(t.delegations, delegation)
 }
 
 // GetDelegations returns all tracked delegations
 func (t *DelegationTracker) GetDelegations() []SubagentDelegation {
-	return t.delegations
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	out := make([]SubagentDelegation, len(t.delegations))
+	copy(out, t.delegations)
+	return out
 }
 
 // Count returns the number of tracked delegations
 func (t *DelegationTracker) Count() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	return len(t.delegations)
 }
 
 // Clear removes all tracked delegations
 func (t *DelegationTracker) Clear() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	t.delegations = make([]SubagentDelegation, 0)
 }

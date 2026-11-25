@@ -4,6 +4,9 @@ package anthropic
 // Use these constants instead of raw strings to avoid typos and get IDE support.
 // See https://docs.anthropic.com/en/docs/about-claude/models/overview for the full list.
 const (
+	// Claude Haiku 5.5 — adaptive-thinking Haiku with all five effort levels
+	ClaudeHaiku5_5 = "claude-haiku-5-5"
+
 	// Claude Opus 5.5 — always-adaptive-thinking flagship model
 	ClaudeOpus5_5 = "claude-opus-5-5"
 
@@ -16,6 +19,9 @@ const (
 
 	// Claude Sonnet 5 — current-generation Sonnet
 	ClaudeSonnet5 = "claude-sonnet-5"
+
+	// Claude Fable 5.2 — always-adaptive-thinking model with the same capabilities as Fable 5.1
+	ClaudeFable5_2 = "claude-fable-5-2"
 
 	// Claude Fable 5.1 — always-adaptive-thinking model with system-message clearAt/effort
 	ClaudeFable5_1 = "claude-fable-5-1"

@@ -3,6 +3,7 @@ package xai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -19,8 +20,8 @@ func TestVideoModel_Metadata(t *testing.T) {
 	prov := New(Config{APIKey: "test-key"})
 	model := NewVideoModel(prov, "grok-imagine-video")
 
-	assert.Equal(t, "v3", model.SpecificationVersion())
-	assert.Equal(t, "xai", model.Provider())
+	assert.Equal(t, "v4", model.SpecificationVersion())
+	assert.Equal(t, "xai.video", model.Provider())
 	assert.Equal(t, "grok-imagine-video", model.ModelID())
 	assert.NotNil(t, model.MaxVideosPerCall())
 	assert.Equal(t, 1, *model.MaxVideosPerCall())
@@ -403,7 +404,9 @@ func TestVideoModel_ReferenceImagesValidation(t *testing.T) {
 				},
 			})
 			require.Error(t, err)
-			assert.Contains(t, err.Error(), "referenceImageUrls")
+			assert.Equal(t, "invalid xai provider options", err.Error())
+			require.NotNil(t, errors.Unwrap(err))
+			assert.Contains(t, errors.Unwrap(err).Error(), "referenceImageUrls")
 		})
 	}
 }
@@ -1413,7 +1416,8 @@ func TestVideoModel_ReferenceVoiceIds_TooMany(t *testing.T) {
 	require.Error(t, err)
 	var invalidArg *providererrors.InvalidArgumentError
 	require.ErrorAs(t, err, &invalidArg)
-	assert.Equal(t, "referenceVoiceIds", invalidArg.Field)
+	// TS parseProviderOptions .max(3): "invalid xai provider options" (r91 PB-25).
+	assert.Equal(t, "providerOptions", invalidArg.Field)
 }
 
 // TestVideoModel_ReferenceVoiceIds_OutsideR2V_Warns verifies referenceVoiceIds

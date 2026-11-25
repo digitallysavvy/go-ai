@@ -36,10 +36,12 @@ func originParts(u *url.URL) (scheme, host, port string, ok bool) {
 	port = u.Port()
 	if port == "" {
 		switch scheme {
-		case "http":
+		case "http", "ws":
 			port = "80"
-		case "https":
+		case "https", "wss":
 			port = "443"
+		case "ftp":
+			port = "21"
 		}
 	}
 	return scheme, host, port, true

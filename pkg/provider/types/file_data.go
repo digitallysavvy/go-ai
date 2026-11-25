@@ -2,9 +2,11 @@ package types
 
 import (
 	"encoding/base64"
-	"encoding/json"
 	"io"
 	"strings"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/atob"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // ProviderReference maps provider names to provider-specific file identifiers.
@@ -45,8 +47,18 @@ type FileData struct {
 	// multipart payload.
 	DataString string `json:"-"`
 
-	// URL holds a remote http(s) URL for Type == FileDataTypeURL.
+	// URL holds the file URL for Type == FileDataTypeURL. Core prompt
+	// conversion replaces it with its WHATWG serialization (TS
+	// url.toString()), which providers send.
 	URL string `json:"url,omitempty"`
+
+	// OriginalURL holds the URL as the caller wrote it when that differs
+	// from the normalized URL, for Type == FileDataTypeURL. Core prompt
+	// conversion sets it for the legacy URL string fields
+	// (FileContent.URL, ImageContent.URL, FileContentBlock.URL); a tagged
+	// FileData URL keeps the OriginalURL its caller set. Mirrors TS
+	// `{ type: 'url', url, originalUrl? }`; Google sends it as given.
+	OriginalURL string `json:"originalUrl,omitempty"`
 
 	// Reference holds provider file references for Type == FileDataTypeReference.
 	// It mirrors the TypeScript SDK's provider reference shape:
@@ -81,7 +93,7 @@ func (f FileData) MarshalJSON() ([]byte, error) {
 		} else if f.Data != nil {
 			value = f.Data
 		}
-		return json.Marshal(struct {
+		return jsonstr.Marshal(struct {
 			fileDataBase
 			Data interface{} `json:"data"`
 		}{
@@ -89,19 +101,21 @@ func (f FileData) MarshalJSON() ([]byte, error) {
 			Data:         value,
 		})
 	case FileDataTypeURL:
-		return json.Marshal(struct {
+		return jsonstr.Marshal(struct {
 			fileDataBase
-			URL string `json:"url"`
+			URL         string `json:"url"`
+			OriginalURL string `json:"originalUrl,omitempty"`
 		}{
 			fileDataBase: base,
 			URL:          f.URL,
+			OriginalURL:  f.OriginalURL,
 		})
 	case FileDataTypeReference:
 		reference := f.Reference
 		if reference == nil {
 			reference = ProviderReference{}
 		}
-		return json.Marshal(struct {
+		return jsonstr.Marshal(struct {
 			fileDataBase
 			Reference ProviderReference `json:"reference"`
 		}{
@@ -109,7 +123,7 @@ func (f FileData) MarshalJSON() ([]byte, error) {
 			Reference:    reference,
 		})
 	case FileDataTypeText:
-		return json.Marshal(struct {
+		return jsonstr.Marshal(struct {
 			fileDataBase
 			Text string `json:"text"`
 		}{
@@ -135,7 +149,7 @@ func (f FileData) MarshalJSON() ([]byte, error) {
 		} else if len(f.Data) > 0 {
 			out.Data = f.Data
 		}
-		return json.Marshal(out)
+		return jsonstr.Marshal(out)
 	}
 }
 
@@ -144,6 +158,7 @@ func (f FileData) IsZero() bool {
 		len(f.Data) == 0 &&
 		f.DataString == "" &&
 		f.URL == "" &&
+		f.OriginalURL == "" &&
 		len(f.Reference) == 0 &&
 		f.Text == "" &&
 		f.MediaType == "" &&
@@ -151,13 +166,45 @@ func (f FileData) IsZero() bool {
 }
 
 // DecodeFileDataString decodes the base64/base64url string variant accepted by
-// the TypeScript SDK for file data.
+// the TypeScript SDK for file data, like TS convertBase64ToUint8Array:
+// base64url characters are mapped, then the string is decoded with atob's
+// WHATWG forgiving-base64 rules (ASCII whitespace ignored, up to two
+// trailing "=" dropped when the length is a multiple of 4, any other "=" or
+// a length of 1 mod 4 rejected). The same rules as
+// fileutil.DecodeForgivingBase64, which this package cannot import. A
+// failure is the DOMException atob throws (*atob.InvalidCharacterError with
+// Node's message).
 func DecodeFileDataString(value string) ([]byte, error) {
-	normalized := strings.NewReplacer("-", "+", "_", "/").Replace(value)
-	if decoded, err := base64.StdEncoding.DecodeString(normalized); err == nil {
-		return decoded, nil
+	data, err := decodeFileDataString(value)
+	if err != nil {
+		return nil, atob.Error(value)
 	}
-	return base64.RawStdEncoding.DecodeString(normalized)
+	return data, nil
+}
+
+func decodeFileDataString(value string) ([]byte, error) {
+	compact := strings.Map(func(r rune) rune {
+		switch r {
+		case ' ', '\t', '\n', '\f', '\r':
+			return -1
+		case '-':
+			return '+'
+		case '_':
+			return '/'
+		}
+		return r
+	}, value)
+	if len(compact)%4 == 0 {
+		if strings.HasSuffix(compact, "==") {
+			compact = compact[:len(compact)-2]
+		} else if strings.HasSuffix(compact, "=") {
+			compact = compact[:len(compact)-1]
+		}
+	}
+	if strings.Contains(compact, "=") || len(compact)%4 == 1 {
+		return nil, base64.CorruptInputError(0)
+	}
+	return base64.RawStdEncoding.DecodeString(compact)
 }
 
 // ProviderReferenceString returns a stable single-provider reference for legacy

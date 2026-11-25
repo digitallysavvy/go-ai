@@ -32,34 +32,10 @@ func TestFileSearch(t *testing.T) {
 			t.Error("expected non-empty description")
 		}
 
-		// Verify parameters structure
-		params, ok := tool.Parameters.(map[string]interface{})
-		if !ok {
-			t.Fatal("expected Parameters to be map[string]interface{}")
-		}
-
-		if params["type"] != "object" {
-			t.Errorf("expected type 'object', got %v", params["type"])
-		}
-
-		properties, ok := params["properties"].(map[string]interface{})
-		if !ok {
-			t.Fatal("expected properties to be map[string]interface{}")
-		}
-
-		// Verify query parameter exists
-		if _, exists := properties["query"]; !exists {
-			t.Error("expected 'query' property to exist")
-		}
-
-		// Verify required fields
-		required, ok := params["required"].([]string)
-		if !ok {
-			t.Fatal("expected required to be []string")
-		}
-
-		if len(required) != 1 || required[0] != "query" {
-			t.Errorf("expected required to be ['query'], got %v", required)
+		// The input schema is TS's z.object({}): the config is tool args.
+		assertXAIEmptyInputSchema(t, tool)
+		if got, ok := tool.ProviderOptions.(FileSearchOptions); !ok || len(got.VectorStoreIDs) != 2 || got.MaxNumResults != 5 {
+			t.Errorf("ProviderOptions = %#v, want the config", tool.ProviderOptions)
 		}
 	})
 
@@ -141,46 +117,22 @@ func TestFileSearch(t *testing.T) {
 	})
 }
 
+// TS xai fileSearch / mcpServer: inputSchema z.object({}). Provider tool
+// calls are validated against Parameters, so it must hold the model input
+// schema only, never config defaults.
+func assertXAIEmptyInputSchema(t *testing.T, tool types.Tool) {
+	t.Helper()
+	params, ok := tool.Parameters.(map[string]interface{})
+	if !ok {
+		t.Fatalf("Parameters = %T, want map", tool.Parameters)
+	}
+	props, ok := params["properties"].(map[string]interface{})
+	if params["type"] != "object" || !ok || len(props) != 0 || params["required"] != nil || len(params) != 2 {
+		t.Errorf("Parameters = %#v, want {type: object, properties: {}}", params)
+	}
+}
+
 func TestFileSearch_ParameterSchema(t *testing.T) {
-	t.Run("includes vector store IDs when provided", func(t *testing.T) {
-		config := FileSearchConfig{
-			VectorStoreIDs: []string{"vs_123", "vs_456"},
-			MaxNumResults:  5,
-		}
-
-		tool := FileSearch(config)
-		params := tool.Parameters.(map[string]interface{})
-		properties := params["properties"].(map[string]interface{})
-
-		vectorStoreParam, exists := properties["vectorStoreIds"]
-		if !exists {
-			t.Error("expected vectorStoreIds property to exist")
-		}
-
-		vectorStoreMap := vectorStoreParam.(map[string]interface{})
-		if vectorStoreMap["type"] != "array" {
-			t.Errorf("expected vectorStoreIds type to be 'array', got %v", vectorStoreMap["type"])
-		}
-	})
-
-	t.Run("includes maxNumResults when provided", func(t *testing.T) {
-		config := FileSearchConfig{
-			VectorStoreIDs: []string{"vs_123"},
-			MaxNumResults:  20,
-		}
-
-		tool := FileSearch(config)
-		params := tool.Parameters.(map[string]interface{})
-		properties := params["properties"].(map[string]interface{})
-
-		maxResultsParam, exists := properties["maxNumResults"]
-		if !exists {
-			t.Error("expected maxNumResults property to exist")
-		}
-
-		maxResultsMap := maxResultsParam.(map[string]interface{})
-		if maxResultsMap["type"] != "integer" {
-			t.Errorf("expected maxNumResults type to be 'integer', got %v", maxResultsMap["type"])
-		}
-	})
+	assertXAIEmptyInputSchema(t, FileSearch(FileSearchConfig{VectorStoreIDs: []string{"vs_123", "vs_456"}, MaxNumResults: 20}))
+	assertXAIEmptyInputSchema(t, FileSearch(FileSearchConfig{}))
 }

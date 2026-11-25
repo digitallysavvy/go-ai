@@ -124,7 +124,8 @@ result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
 // Vertex AI — the ProviderOptions key is "googleVertex" (checked first),
 // with "vertex" and then "google" honored as fallbacks for compatibility.
 // "google-vertex" (with a hyphen) is the provider's identity string
-// (Provider().Name(), used for model IDs like "google-vertex:gemini-..."),
+// (Provider().Name(), used for model IDs like "google-vertex:gemini-...";
+// model.Provider() returns "google.vertex.chat" etc. as in TS),
 // not a ProviderOptions key — it is never read here.
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  vertexModel,

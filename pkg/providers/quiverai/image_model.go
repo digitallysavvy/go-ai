@@ -1,14 +1,19 @@
 package quiverai
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf16"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -76,6 +81,9 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	if opts == nil {
 		opts = &provider.ImageGenerateOptions{}
 	}
+	if err := validateImageOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	quiverOpts, err := parseQuiverAIImageModelOptions(quiverRawOptions(opts.ProviderOptions))
 	if err != nil {
 		return nil, err
@@ -90,16 +98,40 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	}
 	var response svgGenerationResponse
 	resp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    operationPath(operation),
-		Body:    body,
+		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaQuiverSVG),
+		Method:           http.MethodPost,
+		Path:             operationPath(operation),
+		// TS postJsonToApi JSON.stringify(body): the keys in the order of the
+		// TS body literal of each operation.
+		Body:    bytes.NewBufferString(providerutils.StringifyOrdered(body, quiverBodyOrder(operation))),
 		Headers: opts.Headers,
 	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
 	}
 	if len(response.Data) == 0 {
-		return nil, providererrors.NewProviderError("quiverai", 0, "", "no SVGs in response", nil)
+		// Unreachable for a conforming body: the TS schema requires data.min(1),
+		// so an empty array is "Invalid JSON response" before this point.
+		return &types.ImageResult{}, nil
+	}
+
+	// TS spreads loop_period_ms / opening_animation_ms when `!== undefined`, so
+	// an explicit null is reported as null; only an absent key is omitted.
+	var rawResponse struct {
+		Data []struct {
+			LoopPeriodMs       json.RawMessage `json:"loop_period_ms"`
+			OpeningAnimationMs json.RawMessage `json:"opening_animation_ms"`
+		} `json:"data"`
+	}
+	_ = jsonexact.Unmarshal(resp.Body, &rawResponse)
+	nullable := func(raw json.RawMessage, v *int64) (interface{}, bool) {
+		if raw == nil {
+			return nil, false
+		}
+		if v == nil {
+			return nil, true
+		}
+		return quiverNumber(*v), true
 	}
 
 	images := make([][]byte, len(response.Data))
@@ -110,11 +142,13 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 			"index":    i,
 			"mimeType": image.MimeType,
 		}
-		if image.LoopPeriodMs != nil {
-			meta["loopPeriodMs"] = *image.LoopPeriodMs
-		}
-		if image.OpeningAnimationMs != nil {
-			meta["openingAnimationMs"] = *image.OpeningAnimationMs
+		if i < len(rawResponse.Data) {
+			if v, ok := nullable(rawResponse.Data[i].LoopPeriodMs, image.LoopPeriodMs); ok {
+				meta["loopPeriodMs"] = v
+			}
+			if v, ok := nullable(rawResponse.Data[i].OpeningAnimationMs, image.OpeningAnimationMs); ok {
+				meta["openingAnimationMs"] = v
+			}
 		}
 		imageMetadata[i] = meta
 	}
@@ -125,9 +159,9 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	}
 	usage := types.ImageUsage{ImageCount: len(images)}
 	if response.Usage != nil {
-		usage.InputTokens = response.Usage.InputTokens
-		usage.OutputTokens = response.Usage.OutputTokens
-		usage.TotalTokens = response.Usage.TotalTokens
+		usage.InputTokens = quiverPlatformInt(response.Usage.InputTokens)
+		usage.OutputTokens = quiverPlatformInt(response.Usage.OutputTokens)
+		usage.TotalTokens = quiverPlatformInt(response.Usage.TotalTokens)
 	}
 
 	// Fixed-credit billing metadata: the API reports a flat per-request credit
@@ -135,7 +169,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	// the TS SDK's `...(response.credits != null && { credits: ... })` spread.
 	quiverMeta := map[string]interface{}{"images": imageMetadata}
 	if response.Credits != nil {
-		quiverMeta["credits"] = *response.Credits
+		quiverMeta["credits"] = quiverNumber(*response.Credits)
 	}
 
 	result := &types.ImageResult{
@@ -157,9 +191,32 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	return result, nil
 }
 
+// quiverBodyOrder is the key order of the TS request body literals
+// (quiverai-image-model.ts buildRequestBody, buildEditRequestBody and
+// buildAnimationRequestBody, with sharedOptions spread in place).
+func quiverBodyOrder(operation string) map[string][]string {
+	shared := []string{"temperature", "top_p", "presence_penalty", "max_output_tokens", "reasoning_effort", "attributes", "stream"}
+	orders := map[string][]string{
+		"attributes":         {"viewBox"},
+		"attributes.viewBox": {"minX", "minY", "width", "height"},
+		"settings":           {"max_output_tokens", "orchestrator_max_output_tokens", "shallow_max_output_tokens", "temperature"},
+	}
+	switch operation {
+	case OperationVectorize:
+		orders[""] = append(append([]string{"model", "image"}, shared...), "auto_crop", "target_size")
+	case OperationEdit:
+		orders[""] = []string{"model", "prompt", "svg_source", "reference_images", "max_review_steps", "reasoning_effort", "settings", "stream"}
+	case OperationAnimate:
+		orders[""] = []string{"model", "svg_source", "prompt", "temperature", "max_output_tokens", "reasoning_effort", "stream"}
+	default:
+		orders[""] = append(append([]string{"model", "n", "prompt"}, shared...), "instructions", "references")
+	}
+	return orders
+}
+
 func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions, operation string, quiverOpts *QuiverAIImageModelOptions) (map[string]interface{}, error) {
 	if isArrow2Model(m.modelID) && quiverOpts.MaxOutputTokens != nil && *quiverOpts.MaxOutputTokens > maxArrow2OutputTokens {
-		return nil, invalidQuiverArgument("providerOptions.quiverai.maxOutputTokens", fmt.Sprintf("QuiverAI model %q supports at most %d output tokens.", m.modelID, maxArrow2OutputTokens))
+		return nil, invalidQuiverArgument("maxOutputTokens", fmt.Sprintf("QuiverAI model \"%s\" supports at most %d output tokens.", m.modelID, maxArrow2OutputTokens))
 	}
 
 	if operation != OperationEdit {
@@ -194,6 +251,8 @@ func buildSharedOptions(quiverOpts *QuiverAIImageModelOptions) map[string]interf
 	}
 	if quiverOpts.PresencePenalty != nil {
 		shared["presence_penalty"] = *quiverOpts.PresencePenalty
+	} else if quiverOpts.presencePenaltyNull {
+		shared["presence_penalty"] = nil
 	}
 	if quiverOpts.MaxOutputTokens != nil {
 		shared["max_output_tokens"] = *quiverOpts.MaxOutputTokens
@@ -221,12 +280,12 @@ func attributesToWire(attrs *QuiverAIAttributes) map[string]interface{} {
 }
 
 func (m *ImageModel) buildGenerateBody(opts *provider.ImageGenerateOptions, quiverOpts *QuiverAIImageModelOptions) (map[string]interface{}, error) {
-	if strings.TrimSpace(opts.Prompt) == "" {
+	if providerutils.JSTrim(opts.Prompt) == "" {
 		return nil, invalidQuiverArgument("prompt", "QuiverAI image generation requires a non-empty prompt for generateImage.")
 	}
 	maxReferences := getGenerateReferenceLimit(m.modelID)
 	if len(opts.Files) > maxReferences {
-		return nil, invalidQuiverArgument("files", fmt.Sprintf("QuiverAI generate supports up to %d reference images for model %q.", maxReferences, m.modelID))
+		return nil, invalidQuiverArgument("files", fmt.Sprintf("QuiverAI generate supports up to %d reference images for model \"%s\".", maxReferences, m.modelID))
 	}
 
 	body := map[string]interface{}{
@@ -281,10 +340,10 @@ func (m *ImageModel) buildEditBody(opts *provider.ImageGenerateOptions, quiverOp
 	if !isArrow2Model(m.modelID) {
 		return nil, invalidQuiverArgument("modelId", `QuiverAI SVG editing is supported by the "arrow-2" and "arrow-2-telos" models.`)
 	}
-	if strings.TrimSpace(opts.Prompt) == "" {
+	if providerutils.JSTrim(opts.Prompt) == "" {
 		return nil, invalidQuiverArgument("prompt", "QuiverAI SVG editing requires a non-empty instruction in generateImage prompt.text.")
 	}
-	if len(opts.Prompt) > 4000 {
+	if len(utf16.Encode([]rune(opts.Prompt))) > 4000 {
 		return nil, invalidQuiverArgument("prompt", "QuiverAI SVG editing instructions must contain at most 4000 characters.")
 	}
 	if len(opts.Files) == 0 {
@@ -387,7 +446,7 @@ func (m *ImageModel) buildAnimateBody(opts *provider.ImageGenerateOptions, quive
 	// opts.Prompt == "" is treated as "no animation instruction provided" (Go
 	// has no separate undefined/empty distinction here); whitespace-only text
 	// is rejected the same way the TS SDK rejects an explicitly blank prompt.
-	if opts.Prompt != "" && strings.TrimSpace(opts.Prompt) == "" {
+	if opts.Prompt != "" && providerutils.JSTrim(opts.Prompt) == "" {
 		return nil, invalidQuiverArgument("prompt", "QuiverAI animate requires a non-empty prompt when an animation instruction is provided.")
 	}
 
@@ -396,7 +455,7 @@ func (m *ImageModel) buildAnimateBody(opts *provider.ImageGenerateOptions, quive
 		return nil, invalidQuiverArgument("providerOptions.quiverai.instructions", "QuiverAI animate does not support providerOptions.quiverai.instructions.")
 	case quiverOpts.TopP != nil:
 		return nil, invalidQuiverArgument("providerOptions.quiverai.topP", "QuiverAI animate does not support providerOptions.quiverai.topP.")
-	case quiverOpts.PresencePenalty != nil:
+	case quiverOpts.PresencePenalty != nil || quiverOpts.presencePenaltyNull:
 		return nil, invalidQuiverArgument("providerOptions.quiverai.presencePenalty", "QuiverAI animate does not support providerOptions.quiverai.presencePenalty.")
 	case quiverOpts.Attributes != nil:
 		return nil, invalidQuiverArgument("providerOptions.quiverai.attributes", "QuiverAI animate does not support providerOptions.quiverai.attributes.")
@@ -436,7 +495,7 @@ func (m *ImageModel) buildAnimateBody(opts *provider.ImageGenerateOptions, quive
 // mirroring the TS SDK's rejectEditOnlyOptions.
 func rejectEditOnlyOptions(operation string, opts *QuiverAIImageModelOptions) error {
 	var unsupported []string
-	if len(opts.ReferenceImages) > 0 {
+	if opts.ReferenceImages != nil { // TS `value == null`: an empty list is given
 		unsupported = append(unsupported, "referenceImages")
 	}
 	if opts.MaxReviewSteps != nil {
@@ -475,10 +534,10 @@ func imageCount(n *int) int {
 }
 
 func quiverRawOptions(providerOptions map[string]interface{}) map[string]interface{} {
-	if providerOptions == nil {
-		return nil
-	}
-	m, _ := providerOptions["quiverai"].(map[string]interface{})
+	// Go-typed values (the options struct, map[string]string, []string,
+	// ints) read like their JSON form, the form validateImageOptions
+	// checked (OVC-01).
+	m, _ := providerutils.NormalizeOptionsJSON(providerOptions)["quiverai"].(map[string]interface{})
 	return m
 }
 
@@ -500,14 +559,33 @@ func quiverWarnings(opts *provider.ImageGenerateOptions) []types.Warning {
 }
 
 func (m *ImageModel) handleError(err error) error {
-	if statusErr, ok := err.(*internalhttp.HTTPStatusError); ok {
-		var apiErr quiverAPIError
-		if json.Unmarshal(statusErr.Body, &apiErr) == nil && apiErr.Message != "" {
-			return providererrors.NewProviderError("quiverai", statusErr.StatusCode, apiErr.Code, apiErr.Message, err)
-		}
-		return providererrors.NewProviderError("quiverai", statusErr.StatusCode, "", string(statusErr.Body), err)
+	if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+		return cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
 	}
-	return providererrors.NewProviderError("quiverai", http.StatusInternalServerError, "", err.Error(), err)
+	if noResp, ok := internalhttp.NoResponseError(err); ok {
+		return noResp // TS handleFetchError: an abort or timeout is returned unchanged
+	}
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
+	var statusErr *internalhttp.HTTPStatusError
+	if errors.As(err, &statusErr) {
+		code, message := "", statusErr.Text()
+		// TS APICallError.data: the quiveraiErrorSchema output for a
+		// matching body, else undefined.
+		var data interface{}
+		if apiErr, ok := parseQuiverAIErrorBody(statusErr.Body); ok {
+			code, message, data = apiErr.Code, apiErr.Message, apiErr
+		}
+		perr := providererrors.NewProviderErrorFromResponse("quiverai", 0, code, message, err)
+		perr.Data = data
+		perr.Retryable = quiverAIRetryable(statusErr.StatusCode)
+		return perr
+	}
+	// Not an HTTP response (an abort, "Cannot connect to API", an invalid-JSON
+	// body already typed as an APICallError): TS lets these through unchanged,
+	// and a made-up 500 would make a cancelled call look retryable.
+	return err
 }
 
 type svgGenerationResponse struct {
@@ -516,19 +594,39 @@ type svgGenerationResponse struct {
 	Data    []struct {
 		SVG                string `json:"svg"`
 		MimeType           string `json:"mime_type"`
-		LoopPeriodMs       *int   `json:"loop_period_ms,omitempty"`
-		OpeningAnimationMs *int   `json:"opening_animation_ms,omitempty"`
+		LoopPeriodMs       *int64 `json:"loop_period_ms,omitempty"`
+		OpeningAnimationMs *int64 `json:"opening_animation_ms,omitempty"`
 	} `json:"data"`
+	// The integers are int64: svgGenerationResponseSchema accepts any safe
+	// integer (up to 2^53-1), which does not fit a 32-bit int.
 	Usage *struct {
-		InputTokens  int `json:"input_tokens"`
-		OutputTokens int `json:"output_tokens"`
-		TotalTokens  int `json:"total_tokens"`
+		InputTokens  int64 `json:"input_tokens"`
+		OutputTokens int64 `json:"output_tokens"`
+		TotalTokens  int64 `json:"total_tokens"`
 	} `json:"usage,omitempty"`
-	Credits *int `json:"credits,omitempty"`
+	Credits *int64 `json:"credits,omitempty"`
+}
+
+// quiverNumber reports a schema-validated safe integer as an int (the
+// v0.5.2 metadata type) when it fits the platform int, else as an int64.
+func quiverNumber(v int64) interface{} {
+	if v >= math.MinInt && v <= math.MaxInt {
+		return int(v)
+	}
+	return v
+}
+
+// quiverPlatformInt clamps a non-negative token count to the platform int
+// (ImageUsage fields are int).
+func quiverPlatformInt(v int64) int {
+	if v > math.MaxInt {
+		return math.MaxInt
+	}
+	return int(v)
 }
 
 type quiverAPIError struct {
-	Status    int    `json:"status"`
+	Status    int64  `json:"status"`
 	Code      string `json:"code"`
 	Message   string `json:"message"`
 	RequestID string `json:"request_id"`

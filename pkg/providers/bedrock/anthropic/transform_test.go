@@ -147,7 +147,7 @@ func TestTransformRequestBody_NoBetaForFunctionTools(t *testing.T) {
 	}
 }
 
-func TestTransformRequestBody_RenamesBlockBindingField(t *testing.T) {
+func TestTransformRequestBody_KeepsBlockBindingField(t *testing.T) {
 	body := map[string]interface{}{
 		"model":      "test-model-id",
 		"max_tokens": 1024,
@@ -165,7 +165,7 @@ func TestTransformRequestBody_RenamesBlockBindingField(t *testing.T) {
 		"type":    "adaptive",
 		"display": "summarized",
 		"block_binding": map[string]interface{}{
-			"mismatch_behavior": "drop_block",
+			"prefix_mismatch_behavior": "drop_block",
 		},
 	}
 	if !reflect.DeepEqual(thinking, want) {

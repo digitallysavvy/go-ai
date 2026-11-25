@@ -71,6 +71,26 @@ func TestSessionFilesResolveRelativeToWorkDir(t *testing.T) {
 	if err != nil || got == nil || *got != "l2\nl3" {
 		t.Fatal(got, err)
 	}
+	// TS extractLines preserves CRLF line endings and honours encoding.
+	if err := s.WriteTextFile(ctx, providerutils.SandboxWriteTextFileOptions{Path: "crlf.txt", Content: "a\r\nb\r\nc\r\nd"}); err != nil {
+		t.Fatal(err)
+	}
+	three := 3
+	crlf, err := s.ReadTextFile(ctx, providerutils.SandboxReadTextFileOptions{Path: "crlf.txt", StartLine: &two, EndLine: &three})
+	if err != nil || crlf == nil || *crlf != "b\r\nc" {
+		t.Fatalf("crlf slice: %v %v", crlf, err)
+	}
+	if err := s.WriteTextFile(ctx, providerutils.SandboxWriteTextFileOptions{Path: "l1.txt", Content: "caf\u00e9", Encoding: "latin1"}); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := s.ReadBinaryFile(ctx, "l1.txt")
+	if err != nil || string(raw) != "caf\xe9" {
+		t.Fatalf("latin1 write: %q %v", raw, err)
+	}
+	dec, err := s.ReadTextFile(ctx, providerutils.SandboxReadTextFileOptions{Path: "l1.txt", Encoding: "latin1"})
+	if err != nil || dec == nil || *dec != "caf\u00e9" {
+		t.Fatalf("latin1 read: %v %v", dec, err)
+	}
 	missing, err := s.ReadTextFile(ctx, providerutils.SandboxReadTextFileOptions{Path: "nope"})
 	if err != nil || missing != nil {
 		t.Fatal("missing files read as nil")
@@ -220,4 +240,62 @@ func TestOnFirstCreateRunsOnlyForFreshSessions(t *testing.T) {
 		t.Fatal("restricted view must not expose the network surface")
 	}
 	_ = s.Destroy(ctx)
+}
+
+func TestSessionDirIsOwnerOnly(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "root")
+	p := NewProvider(Options{RootDir: root})
+	sess, err := p.CreateSession(context.Background(), harness.CreateSandboxSessionOptions{SessionID: "s1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sess.Destroy(context.Background()) }()
+	for _, d := range []string{root, filepath.Join(root, "s1")} {
+		fi, err := os.Stat(d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fi.Mode().Perm() != 0o700 {
+			t.Fatalf("%s mode = %v, want 0700", d, fi.Mode().Perm())
+		}
+	}
+}
+
+func TestHostEnvAllowlist(t *testing.T) {
+	t.Setenv("LOCAL_SANDBOX_SECRET", "s3cret")
+	t.Setenv("LOCAL_SANDBOX_KEEP", "ok")
+	run := func(opts Options) string {
+		opts.RootDir = t.TempDir()
+		sess, err := NewProvider(opts).CreateSession(context.Background(), harness.CreateSandboxSessionOptions{SessionID: "e"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = sess.Destroy(context.Background()) }()
+		res, err := sess.Run(context.Background(), providerutils.SandboxProcessOptions{Command: `printf "%s|%s|%s" "$LOCAL_SANDBOX_SECRET" "$LOCAL_SANDBOX_KEEP" "$EXTRA"`})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res.Stdout
+	}
+	if got := run(Options{}); got != "s3cret|ok|" {
+		t.Fatalf("default inherits everything, got %q", got)
+	}
+	if got := run(Options{HostEnv: []string{"LOCAL_SANDBOX_KEEP", "PATH"}, Env: map[string]string{"EXTRA": "x"}}); got != "|ok|x" {
+		t.Fatalf("allowlist, got %q", got)
+	}
+}
+
+// A signal-killed command reports the TS reference sandbox's exit code (129),
+// not Go's -1.
+func TestSignalKilledCommandExitCode(t *testing.T) {
+	ctx := context.Background()
+	s, err := newTestProvider(t).CreateSession(ctx, harness.CreateSandboxSessionOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Destroy(ctx) //nolint:errcheck
+	res, err := s.Run(ctx, providerutils.SandboxProcessOptions{Command: "kill -9 $$"})
+	if err != nil || res.ExitCode != 129 {
+		t.Fatalf("exit code = %d err=%v, want 129", res.ExitCode, err)
+	}
 }
