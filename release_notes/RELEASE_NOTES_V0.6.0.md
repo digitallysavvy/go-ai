@@ -269,6 +269,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **Telemetry RecordInputs and RecordOutputs are pointers, and unset records** (compile error). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#telemetry-record-pointers)
 - **Evaluate end-event struct literals use the Decide field names** (compile error). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#evaluate-event-literals)
 - **Unkeyed acp.TextContentBlock literals** (compile error). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#acp-text-content-block)
+- **Unkeyed types.ToolApprovalOptions literals** (compile error). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#tool-approval-options-literals)
 - **Some structs are no longer comparable** (compile error). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#non-comparable-structs)
 
 ### Behavior changes that can break callers
@@ -300,6 +301,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **Start events report a Prompt string as a user message** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#start-event-messages)
 - **Deprecated tool execution callbacks run only when the new one is unset** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#tool-execution-callback-aliases)
 - **A PrepareStep that sets only System changes the step instructions** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#preparestep-system-override)
+- **PrepareStep messages may contain system messages** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#preparestep-system-messages)
 - **ExperimentalStreamTranscribe reports the cancel reason after Close** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#stream-transcribe-cancel-reason)
 - **Stop conditions run only when the loop would continue** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#stop-conditions-only-when-continue)
 - **Generated IDs use the TS formats** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#generated-id-formats)
@@ -389,6 +391,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **Reasoning-file data URLs take their media type; unsupported reasoning-file variants use the TS error text** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#reasoning-file-data-url-media-type)
 - **types.ImageContent prompt parts log the TS "image" content part deprecation warning** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#image-part-deprecation-warning)
 - **ExperimentalDecide reports non-finite numbers and cycles with the TS texts and no longer overflows the stack on a cyclic value** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#decide-serializable-json)
+- **Decide passes empty provider options as an empty map** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#decide-empty-provider-options)
 - **Base64 string file data (`FileData.DataString`) gets its detected image media type, and data that is not base64 fails the call, as TS detectMediaType** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#file-data-string-media-type)
 - **Legacy tool-result content types (`file-data`, `file-url`, `image-url`, ...) log the TS deprecation warning and drop the `filename` / `mediaType` TS drops** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#legacy-tool-result-content-deprecation)
 - **`GetTextFromDataURL` returns the TS atob string when no charset is declared and decodes a charset like TS `TextDecoder`** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#data-url-text-ts)
@@ -510,6 +513,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **WorkflowAgent PrepareStep overrides apply to one step** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-preparestep-one-step)
 - **WorkflowAgent timeouts are validated before the first model call** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-timeout-validation)
 - **WorkflowAgent port details** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-port1-details)
+- **WorkflowAgent PrepareStep instructions and approval resumes follow streamText** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-preparestep-instructions)
 
 #### UI message streams
 
@@ -986,6 +990,8 @@ search for and ends with a checklist for coding agents. Entries marked
 - **Media provider round 99 details** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#provc-r99-details)
 - **Google, Gateway, Groq and Mistral round 99 details** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#provg-r99-details)
 - **Gateway access policy denials have their own error** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#gateway-access-policy-denied)
+- **Gateway GetRealtimeToken routes Live model IDs to the Live API** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#gateway-realtime-live-token)
+- **Gateway model listings keep extraction models** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#gateway-extraction-model-type)
 - **Google Interactions sends tool results as top-level function results** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#google-interactions-function-result)
 - **Google batches reject a response schema** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#google-batch-response-schema)
 - **OpenAI reasoning and service-tier support follow the TS model table** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#openai-capability-matrix)

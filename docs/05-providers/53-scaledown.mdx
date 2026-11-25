@@ -6,12 +6,11 @@ description: Setup and usage guide for ScaleDown decision models with Go AI SDK
 # ScaleDown Provider
 
 ScaleDown provides decision models for the experimental `ai.ExperimentalDecide`
-API: it answers choice, boolean and score questions about a state through the
-ScaleDown Decisions API (`POST {baseURL}/v1/scaledown`). The decision model is
-the only capability in this release: `LanguageModel`, `EmbeddingModel`,
-`ImageModel`, `SpeechModel`, `TranscriptionModel` and `RerankingModel` return
-`NoSuchModelError`. (The TS provider also has an extraction model; it lands in
-Go with the extraction API.)
+API (choice, boolean and score questions about a state, through the ScaleDown
+Decisions API, `POST {baseURL}/v1/scaledown`) and extraction models for
+`ai.ExperimentalExtract`. These are the only capabilities: `LanguageModel`,
+`EmbeddingModel`, `ImageModel`, `SpeechModel`, `TranscriptionModel` and
+`RerankingModel` return `NoSuchModelError`.
 
 ## Setup
 
@@ -76,9 +75,48 @@ unchanged.
 - ScaleDown has no provider options: every `ProviderOptions["scaledown"]` key,
   and `MaxOutputTokens` or `Reasoning`, produce `unsupported` warnings.
 
+## Extraction
+
+```go
+model, err := provider.ExtractionModel(scaledown.ExtractionModelExtract1)
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := ai.ExperimentalExtract(ctx, ai.ExtractOptions{
+    Model: model,
+    State: "Invoice INV-2041 from Acme, total due $1,250.00.",
+    Fields: map[string]goprovider.ExtractionField{
+        "vendor": {Type: goprovider.ExtractionFieldText, Instructions: "Vendor name"},
+    },
+})
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Println(result.Answers["vendor"].Value)
+```
+
+- Model IDs: `scaledown.ExtractionModelExtract` (`extract`) and
+  `scaledown.ExtractionModelExtract1` (`extract-1`), listed by
+  `scaledown.ExtractionModelIDs()`; any other ID is sent unchanged.
+- `text` fields and `list` fields of `text` items are supported; other field
+  types fail with `*errors.ExtractionUnsupportedFieldTypeError` before any
+  request. A text answer keeps the highest-confidence match (the first of
+  equal ones) with its confidence and source; a list answer has every match
+  with per-item confidence and source; a missing value is `nil`.
+- Text sources are converted from ScaleDown's UTF-8 byte offsets to UTF-16
+  offsets into the state part. The state may hold one JPEG, PNG, TIFF or PDF
+  document (inline data, sent base64); a value read from it gets a file
+  source when the OCR text contains it.
+- Provider options (`ProviderOptions["scaledown"]`, `scaledown.ExtractionModelOptions`):
+  `threshold`, the minimum confidence from 0 to 1; other keys are ignored.
+  `MaxOutputTokens`, `Reasoning` and `ReferenceDate` produce `unsupported`
+  warnings. OCR text of a document is in `ProviderMetadata["scaledown"]["ocrText"]`.
+
 ## Workflow serialization
 
-The decision model serializes as `scaledown.decision`. The base URL and static
+The decision model serializes as `scaledown.decision` and the extraction model
+as `scaledown.extraction`. The base URL and static
 headers are kept; the API key is never serialized, so the restored model reads
 `SCALEDOWN_API_KEY`. See
 [Provider Serialization](../03-agents/07-workflow-agent.mdx#provider-serialization).

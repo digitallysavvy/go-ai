@@ -742,6 +742,22 @@ result, err := ai.ExperimentalStreamTranslate(ctx, ai.StreamTranslateOptions{
 })
 ```
 
+## Extractions (experimental)
+
+`Provider.ExtractionModel(id)` returns an extraction model for [`ai.ExperimentalExtract`](../03-ai-sdk-core/33-extractions.mdx). It wraps the Responses model with `providerutils.NewExtractionLanguageModel` and extracts every field in one structured-output call. The provider name is `openai.extraction` (or `<name>.extraction` when `Config.Name` is set); an empty model ID is rejected.
+
+```go
+model, err := p.ExtractionModel("gpt-5")
+if err != nil {
+    log.Fatal(err)
+}
+result, err := ai.ExperimentalExtract(ctx, ai.ExtractOptions{
+    Model:  model,
+    State:  "Invoice INV-2041, total due $1,250.00.",
+    Fields: map[string]provider.ExtractionField{"invoiceNumber": {Type: provider.ExtractionFieldText}},
+})
+```
+
 ## Decisions (experimental)
 
 `Provider.DecisionModel(id)` returns a decision model backed by the OpenAI Decisions API (`POST /decisions`) for [`ai.ExperimentalDecide`](../03-ai-sdk-core/32-decisions.mdx). The model reports its provider as `openai.decision` (or `<name>.decision` when `Config.Name` is set), accepts any model ID, and supports choice, score, and boolean questions, refusals, and image state parts.

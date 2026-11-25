@@ -112,6 +112,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (*GenerateTextR
 | FinalStep | types.StepResult | Last step, including `Performance` statistics |
 | FinishReason | types.FinishReason | Why generation finished |
 | StopReason | string | Reason string from the `StopCondition` that stopped the loop; empty if no condition fired |
+| StoppedBy | ai.StoppedBy | What ended the tool loop: `ai.StoppedByModel`, `StoppedByStopCondition`, `StoppedByToolWithoutExecute` or `StoppedByApproval` (TS `stoppedBy`). Always set |
 | Usage | types.Usage | Token usage information |
 | ContextManagement | interface{} | Context management info (Anthropic) |
 | Warnings | []types.Warning | Provider warnings |

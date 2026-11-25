@@ -888,8 +888,8 @@ Fireworks "should handle empty response body": the TS mock serves `new Response(
 
 Reason: S3 (the recording cannot carry the mock's null body on a 200).
 
-## Decision model serialization drops the API key
-The Liquid, ScaleDown and Baseten decision models serialize their base URL and static headers but no API key: the restored model reads `LIQUID_API_KEY`, `SCALEDOWN_API_KEY` or `BASETEN_API_KEY`. TS resolves the provider headers, `Authorization` / `x-api-key` included, into the workflow payload (S2: Go keeps credentials out of serialized state, as for TypeSafe AI and Perplexity; port wave 1).
+## Decision and extraction model serialization drops the API key
+The Liquid, ScaleDown and Baseten decision models and the ScaleDown extraction model serialize their base URL and static headers but no API key: the restored model reads `LIQUID_API_KEY`, `SCALEDOWN_API_KEY` or `BASETEN_API_KEY`. The Anthropic, OpenAI and Google extraction models serialize their wrapped language model the same way. TS resolves the provider headers, `Authorization` / `x-api-key` included, into the workflow payload (S2: Go keeps credentials out of serialized state, as for TypeSafe AI and Perplexity; port waves 1 and 2).
 
 ## Gateway BYOK redaction by body shape
 Telemetry copies redact every value under `providerOptions.gateway.byok` (and each batch request's `options.providerOptions.gateway.byok`) in any request body that has that key. TS redacts only bodies the Gateway provider annotates; Go request bodies carry no annotation, so the rule applies by shape, as the existing OpenAI tool rule does (S2; TS 83026e8e0f; port wave 1).
@@ -905,6 +905,18 @@ An error that wraps a `DownloadError` reaches telemetry as the redacted `Downloa
 
 ## TS test replays skipped in port wave 1
 The wire recordings were refreshed at `a457990a33`. Skipped, each with its reason in the suite: the Azure "keeps credentials off ... image downloads" tests and the Prodia img2vid public image download (TS downloads through the caller `fetch`; Go keeps the DNS-pinned transport, see "DNS protection on by default", S2); two Google batch tests whose display name comes from a random TS `generateId`; five fal speech tests where the TS test server doubles the JSON `content-type` header; the fal `doStatus` tests, whose operation has no `submitUrl`, so Go validates the replay server's `127.0.0.1` as an untrusted URL (TS validates the recorded host); two ScaleDown tests that set the API key as a setting or in the environment; and one Google Interactions case file "rejects" test the case runner does not replay. Informational: test-harness limits, each covered by a Go unit test named in the skip (port wave 1).
+
+## Steering messages given as a string
+`Steer("text")` and `Queue("text")` store one text part, so `ExperimentalSteeringMessages` and `SteeringOutcome.Message` report `Content: []ContentPart{TextContent{Text: "text"}}`. TS keeps `content: 'text'` as given. Delivery is the same: TS `isSent` also normalizes a string to one text part (S1: `types.Message.Content` is the v0.5.2 `[]ContentPart`; a string form would break every caller; port wave 2).
+
+## Gateway `ExperimentalRealtime` and Live model IDs
+`gateway.Provider.ExperimentalRealtime(id)` returns the turn-based `*RealtimeModel` for every model ID, Live IDs included. Use `ExperimentalRealtimeModel(id)` (or `ExperimentalLive`) for TS's routing of `openai/gpt-live-1` / `openai/gpt-live-1.1` to the Live model (S1: `ExperimentalRealtime` returns `*RealtimeModel` in v0.5.2; port wave 2, TS 7e55599fc7).
+
+## Realtime `BuildSessionConfig` cannot fail
+`RealtimeModel.BuildSessionConfig(config) any` returns no error, so the gateway Live model reports an invalid session config from `SerializeClientEvent` (session-start) and `BuildSessionConfigForIntent` instead; TS throws from `buildSessionConfig` (S1: the v0.5.2 `provider.RealtimeModel` interface method; port wave 2).
+
+## Steering interrupt and the cancelled stream reader
+When a steering interrupt cancels a `StreamText` model call, the goroutine reading the cancelled provider stream can outlive the redo until the provider stream's `Next` returns after `Close`, as for the chunk timeout. Its output is discarded. Informational: Go stream readers are goroutines, not cancellable promises; no caller-visible result differs (port wave 2).
 
 ## Features that are TypeScript-only (not ported)
 

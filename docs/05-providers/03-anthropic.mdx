@@ -872,6 +872,22 @@ non-`"other"` finish reasons, matching TS:
 `"pause_turn"`), so you can distinguish these cases from a plain `end_turn`
 even though they share the same normalized `FinishReason`.
 
+## Extraction models
+
+`Provider.ExtractionModel(id)` returns an extraction model for [`ai.ExperimentalExtract`](../03-ai-sdk-core/33-extractions.mdx). It wraps the Messages model with `providerutils.NewExtractionLanguageModel` and uses structured output. Anthropic limits union-typed parameters per schema, so more than 16 fields are split into parallel calls whose answers are merged (usage is summed; response and provider metadata come from the first call). The provider name is `anthropic.extraction`.
+
+```go
+model, err := p.ExtractionModel("claude-sonnet-4-6")
+if err != nil {
+    log.Fatal(err)
+}
+result, err := ai.ExperimentalExtract(ctx, ai.ExtractOptions{
+    Model:  model,
+    State:  "Invoice INV-2041, total due $1,250.00.",
+    Fields: map[string]provider.ExtractionField{"invoiceNumber": {Type: provider.ExtractionFieldText}},
+})
+```
+
 ## Workflow Serialization
 
 Anthropic language models can cross a workflow boundary with

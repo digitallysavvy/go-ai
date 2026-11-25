@@ -118,6 +118,7 @@ The result provides methods to consume the stream:
 | FullStream() | provider.TextStream | Every chunk type, including lifecycle chunks (see below) |
 | Text() | string | Accumulated text so far |
 | FinishReason() | types.FinishReason | Finish reason (after stream ends) |
+| StoppedBy() | ai.StoppedBy | What ended the tool loop (after stream ends); the call-level `finish` chunk carries it as `StreamChunk.StoppedBy` (TS `stoppedBy`) |
 | Usage() | types.Usage | Usage info (after stream ends) |
 | ContextManagement() | interface{} | Context management info |
 | Err() | error | Error that occurred during streaming |

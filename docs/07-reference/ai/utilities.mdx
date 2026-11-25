@@ -221,6 +221,74 @@ File parts of `State` that point to a URL are downloaded before the model call, 
 
 {/* /gen:fields */}
 
+## ExperimentalExtract
+
+`ai.ExperimentalExtract(ctx, ai.ExtractOptions) (*ai.ExtractResult, error)` extracts typed field values from shared state. See [Extractions](../../03-ai-sdk-core/33-extractions.mdx).
+
+### ExtractOptions
+
+{/* gen:fields ai.ExtractOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Model` | `interface{}` | Model is a provider.ExtractionModel instance, or a string ID resolved via ExtractionProvider, then the SetDefaultProvider provider, then the AI Gateway (TS `(globalThis.AI_SDK_DEFAULT_PROVIDER ?? gateway) .extractionModel(id)`). |
+| `ExtractionProvider` | `provider.ExtractionModelProvider` | ExtractionProvider resolves a string Model ID to an ExtractionModel. When nil and Model is a string, the SetDefaultProvider provider is used, then the AI Gateway. |
+| `State` | `interface{}` | State is the shared state: a string, a JSON object (map[string]interface\{\}), a JSON array ([]interface\{\}, sent as one json part), or an ordered []provider.DecisionStatePart of text, file, and json parts. |
+| `Fields` | `map[string]provider.ExtractionField` | Fields maps field ID -&gt; field. |
+| `FieldOrder` | `[]string` | FieldOrder optionally carries the insertion order of Fields (Go maps are unordered). IDs it omits follow, sorted. Nil keeps sorted order. |
+| `ReferenceDate` | `string` | ReferenceDate is a YYYY-MM-DD date that anchors relative dates and dates without a year. |
+| `MaxOutputTokens` | `*int` | MaxOutputTokens is the maximum number of output tokens for models that support it. Must be an integer &gt;= 1. |
+| `Reasoning` | `*types.ReasoningLevel` | Reasoning is the reasoning effort for models that support it. |
+| `MaxRetries` | `*int` | MaxRetries is the maximum number of retries for transient provider failures. Defaults to 2. |
+| `Headers` | `map[string]string` |  |
+| `ProviderOptions` | `map[string]interface{}` |  |
+| `ExperimentalDownload` | `DownloadFunction` | ExperimentalDownload downloads the URL-backed file parts of State. It is required for them: without it a remote file fails with a DownloadError and the call never falls back to the default downloader (TS experimental_download). Use CreateDownload with a DNS-protected transport for untrusted URLs. The model's own HTTP client is not used. |
+| `Telemetry` | `*TelemetrySettings` |  |
+| `ExperimentalTelemetry` | `*TelemetrySettings` |  |
+| `RuntimeContext` | `interface{}` | RuntimeContext is user-defined runtime context for this call. Treat as immutable. |
+| `OnStart` | `func(ExtractOnStartEvent)` | OnStart is called when the extract operation begins and gets the unredacted event. |
+| `OnEnd` | `func(ExtractOnEndEvent)` | OnEnd is called when the extract operation completes successfully and gets the unredacted event. |
+
+{/* /gen:fields */}
+
+### ExtractResult
+
+{/* gen:fields ai.ExtractResult */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Answers` | `map[string]provider.ExtractionAnswer` | Answers has exactly one typed answer per field, keyed by field ID. Empty strings and empty lists are normalized to a nil Value. |
+| `Usage` | `ExtractUsage` |  |
+| `Warnings` | `[]types.Warning` |  |
+| `ProviderMetadata` | `map[string]interface{}` |  |
+| `Response` | `ExtractResponse` |  |
+
+{/* /gen:fields */}
+
+{/* gen:fields ai.ExtractUsage */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `InputTokens` | `*int` |  |
+| `OutputTokens` | `*int` |  |
+| `TotalTokens` | `*int` |  |
+
+{/* /gen:fields */}
+
+{/* gen:fields ai.ExtractResponse */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `ID` | `string` |  |
+| `Timestamp` | `time.Time` |  |
+| `ModelID` | `string` |  |
+| `Headers` | `map[string]string` |  |
+| `Body` | `interface{}` |  |
+
+{/* /gen:fields */}
+
+`ai.ResolveExtractionModel(model)` resolves a model instance or string ID the way `ExperimentalExtract` does.
+
 ## Per-call diagnostics
 
 `GenerateImageResult.Calls` holds one `ai.GenerateImageCall` per provider call. Each step result from text generation carries an `ai.GenerateStepRequest` and an `ai.GenerateStepResponse`.

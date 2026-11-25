@@ -230,6 +230,16 @@ With the agent, set `ExperimentalSteering` on `agent.AgentGenerateOptions` (and 
 
 Pass `ai.WithSteerID(id)` to make retries safe: sending a message again with the same id returns the handle of the first message.
 
+### Interrupting the Model Call
+
+Pass `ai.WithSteerInterrupt()` to deliver a message without waiting for the step to finish. If the current model call has not produced any output yet (no text, reasoning or tool input), it is cancelled and made again in the same step with the message. Otherwise the message waits for the next step boundary as usual. Running tools are never interrupted. It works with `GenerateText`, `StreamText` and the agent:
+
+```go
+handle := steering.Steer("Answer in French instead.", ai.WithSteerInterrupt())
+```
+
+The redo runs `PrepareStep` again with the instructions and contexts the step started with, plus the steering message, and starts a second model call in the same step: `OnStepStart` is not called again, and the step timeout keeps running. The cancelled call gets no model-call end event and is not counted in the usage, although the provider can still bill it. The step is not counted again, so stop conditions do not limit how often a step is redone. A caller abort or timeout wins over an interrupt. In `StreamText`, text and reasoning blocks the UI already saw are closed before the redo, and the stream carries one `start-step`. `Queue` ignores the option.
+
 ### Queueing Messages
 
 `Steer` changes what the agent is doing right now. Use `Queue` for a follow-up that should wait until the agent has finished its current task:

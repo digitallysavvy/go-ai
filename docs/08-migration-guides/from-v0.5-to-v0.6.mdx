@@ -855,6 +855,12 @@ already, you can skip them.
 | Harness `allow-edits` writes to `.cursor`, `.grok`, `.github`, `.agents/skills`, `.fx` | Need approval | silent behavior change | Approve or use `allow-all` | [Harness writes to agent config directories need approval](#write-protected-paths) |
 | `pkg/tui` approval prompts and tool sections | Input always shown; Cf escaped; no markdown | silent behavior change | Update snapshots | [The terminal UI shows the input each approval applies to](#tui-approval-input) |
 | HarnessAgent tool-context validation failure text | "Tool context validation failed." | silent behavior change | Read `OnToolExecutionEnd` | [Harness port details](#harness-port1-details) |
+| `types.ToolApprovalOptions{` (unkeyed literal) | Struct gained an unexported field | compile error | Use keyed fields | [ToolApprovalOptions literals](#tool-approval-options-literals) |
+| `PrepareStep:` returning `Messages` with a system-role message, without `AllowSystemInMessages` | Accepted and sent; was an InvalidPromptError | silent behavior change | Filter system messages in the callback to keep the error | [PrepareStep system messages](#preparestep-system-messages) |
+| `ExperimentalDecide` / `ExperimentalEvaluate` without `ProviderOptions`; `DecideOnStartEvent.ProviderOptions` | Empty map, not nil; the gateway sends `"providerOptions":{}` | wire/protocol change | None | [Decide provider options default](#decide-empty-provider-options) |
+| `WorkflowAgent` `PrepareStep` returning instruction messages or `ProviderOptions`; stream `ResponseMessages()` after approvals | Instructions apply to every later streamed step; options merge in Generate; resumed tool message first | silent behavior change | None | [WorkflowAgent PrepareStep and approval resumes](#workflow-preparestep-instructions) |
+| Gateway `GetRealtimeToken` with `openai/gpt-live-1` / `openai/gpt-live-1.1` | Live-bound secret and `/live-model` URL | wire/protocol change | Pass `API: "realtime"` for the old route | [Gateway Live realtime tokens](#gateway-realtime-live-token) |
+| `GetAvailableModels` entries filtered by `ModelType` | `extraction` models are listed | silent behavior change | Filter by `ModelType` | [Gateway extraction models in listings](#gateway-extraction-model-type) |
 
 ## Compile-time changes {#compile-time-changes}
 
@@ -967,6 +973,23 @@ _ = end
 
 ```go
 block := acp.TextContentBlock{Type: "text", Text: "hello"}
+```
+
+### Unkeyed types.ToolApprovalOptions literals {#tool-approval-options-literals}
+
+- **What changed:** `types.ToolApprovalOptions` gained an unexported field
+  that carries the `policy.WrapMCPTools` fallback to the SDK's own approval
+  functions, so a custom approval function no longer sees an extra
+  `ToolsContext` key. Its exported fields are unchanged.
+- **Am I affected?** Unkeyed literals such as
+  `types.ToolApprovalOptions{call, tools, ctx, rc, msgs}`. Keyed literals and
+  field access keep working.
+- **What to do:** use keyed fields.
+- **Kind:** compile error
+
+```go
+opts := types.ToolApprovalOptions{ToolCall: types.ToolCall{ID: "call-1", ToolName: "search"}}
+_ = opts
 ```
 
 ### Some structs are no longer comparable {#non-comparable-structs}
@@ -1463,6 +1486,22 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   _ = opts
   ```
 
+- **Kind:** silent behavior change
+
+### PrepareStep messages may contain system messages {#preparestep-system-messages}
+
+- **What changed:** `GenerateText`, `StreamText`, `ToolLoopAgent` and
+  `WorkflowAgent` accept system-role messages in the `Messages` a
+  `PrepareStep` returns and send them to the model. v0.5 failed the step with
+  "System messages are not allowed in the prompt or messages fields" unless
+  `AllowSystemInMessages` was set. TS checks only the call's own prompt and
+  messages (`standardizePrompt`); prepareStep output goes straight to
+  `convertToLanguageModelPrompt`. The check on the caller's `Prompt` /
+  `Messages` is unchanged, and steering messages are user-role only.
+- **Am I affected?** `PrepareStep:` callbacks that return `Messages`
+  containing `types.RoleSystem` messages and relied on the error.
+- **What to do:** No action unless you relied on the error; drop system
+  messages in the callback to keep rejecting them.
 - **Kind:** silent behavior change
 
 ### ExperimentalStreamTranscribe reports the cancel reason after Close {#stream-transcribe-cancel-reason}
@@ -2523,6 +2562,20 @@ res, err := ai.StreamText(ctx, ai.StreamTextOptions{
 - **What to do:** No action, or switch to `types.FileContent{MediaType: "image/png",
   Data: ...}`; `ai.DisableLogWarnings()` silences it.
 - **Kind:** silent behavior change
+
+### Decide passes empty provider options as an empty map {#decide-empty-provider-options}
+
+- **What changed:** when `DecideOptions.ProviderOptions` is nil,
+  `ExperimentalDecide` (and the deprecated `ExperimentalEvaluate`) passes an
+  empty map to the decision model and the start and end events, as TS
+  defaults `providerOptions = {}`. The AI Gateway decision model therefore
+  sends `"providerOptions":{}` in its `/decision-model` request body, where
+  v0.5 sent no key. `ExperimentalExtract` behaves the same way.
+- **Am I affected?** Proxies or tests that match Gateway decision request
+  bodies, and `OnStart` / `OnEnd` code that checks
+  `ProviderOptions == nil`.
+- **What to do:** check `len(event.ProviderOptions) == 0` instead of `nil`.
+- **Kind:** wire/protocol change
 
 ### Decide rejects non-finite numbers and cycles first {#decide-serializable-json}
 
@@ -4287,6 +4340,22 @@ These entries apply to the `Execute`, `ExecuteWithMessages` and
   call the provider sends without streaming its input (TS 453d8804a7).
 - **Am I affected?** Code that counts warnings, or relied on the rejection of
   refined approved calls.
+- **What to do:** No action.
+- **Kind:** silent behavior change
+
+### WorkflowAgent PrepareStep instructions and approval resumes follow streamText {#workflow-preparestep-instructions}
+
+- **What changed:** three `WorkflowAgent` fixes (TS
+  workflow-agent-prepare-step and tool-approval tests). Instruction messages
+  a `PrepareStep` returns now apply to every later streamed step (the
+  persisted `System` text was kept beside them and the messages were dropped
+  on the next step). In `Generate`, a `PrepareStep`'s `ProviderOptions` merge
+  into the call's provider options instead of replacing them, as `Stream`
+  and TS `mergeObjects` do. The stream result's `ResponseMessages()` starts
+  with the tool message of resumed approvals, as `Generate` does.
+- **Am I affected?** `WorkflowAgent` with a `PrepareStep` that returns
+  `InstructionMessages` or `ProviderOptions`, or code reading
+  `ResponseMessages()` of a resumed stream.
 - **What to do:** No action.
 - **Kind:** silent behavior change
 
@@ -9517,6 +9586,33 @@ model, _ = google.New(google.Config{}).DecisionModel(google.ModelGeminiDecision1
   ```
 - **Kind:** silent behavior change
 
+
+### Gateway GetRealtimeToken routes Live model IDs to the Live API {#gateway-realtime-live-token}
+
+- **What changed:** `gateway.Provider.GetRealtimeToken` mints a Live-bound
+  client secret (`routeKind: "live"`) and returns the `/live-model` WebSocket
+  URL for `openai/gpt-live-1` and `openai/gpt-live-1.1`
+  (`gateway.GatewayLiveModelIDs`) or when `API` is `"live"`. v0.5 minted a
+  realtime-bound secret for every model. TS 7e55599fc7.
+- **Am I affected?** Calls to `GetRealtimeToken` with those model IDs.
+- **What to do:** pass `API` to keep the realtime route:
+
+  ```go
+  api := gateway.RealtimeAPIRealtime
+  opts := provider.RealtimeFactoryGetTokenOptions{Model: "openai/gpt-live-1", API: &api}
+  _ = opts
+  ```
+- **Kind:** wire/protocol change
+
+### Gateway model listings keep extraction models {#gateway-extraction-model-type}
+
+- **What changed:** `gateway.Provider.GetAvailableModels` keeps models whose
+  `modelType` is `extraction`; v0.5 dropped them as an unknown type. TS
+  f886264eb6.
+- **Am I affected?** Code that lists every Gateway model and expects only the
+  older types.
+- **What to do:** filter on `ModelType` if you need specific types.
+- **Kind:** silent behavior change
 
 ### Google Interactions sends tool results as top-level function results {#google-interactions-function-result}
 

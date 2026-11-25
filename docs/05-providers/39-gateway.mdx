@@ -360,6 +360,35 @@ base64url encoded `ai-gateway-team.<team>` entry. Realtime event parsing,
 client event serialization, and session config building are identity mappings
 for provider-native realtime payloads.
 
+### Live models
+
+The Gateway also serves the continuous OpenAI Live API. `GetRealtimeToken`
+routes by model ID: `openai/gpt-live-1` and `openai/gpt-live-1.1`
+(`gateway.GatewayLiveModelIDs`) get a Live-bound client secret
+(`routeKind: "live"`) and the `/live-model` WebSocket URL; every other ID gets
+the realtime route. Set `RealtimeFactoryGetTokenOptions.API` to `"live"` or
+`"realtime"` to choose explicitly (`gateway.RealtimeAPILive`,
+`gateway.RealtimeAPIRealtime`).
+
+`ExperimentalRealtimeModel(id, gateway.RealtimeModelOptions{API: ...})` returns
+the model for that route: `*gateway.RealtimeModelLive` (also from
+`ExperimentalLive(id)`) for Live, the turn-based model otherwise.
+`ExperimentalRealtime(id)` keeps returning the turn-based model for every ID.
+The Live model supports conversation sessions over a client-secret WebSocket
+or a server WebSocket. It validates client events, session settings, audio
+formats and the `openai` provider options it can forward, and rejects anything
+else before sending.
+
+```go
+live := gw.ExperimentalLive("openai/gpt-live-1")
+secret, err := gw.GetRealtimeToken(ctx, provider.RealtimeFactoryGetTokenOptions{Model: "openai/gpt-live-1"})
+if err != nil {
+    return err
+}
+ws := live.GetWebSocketConfig(secret.Token, secret.URL)
+fmt.Println(ws.URL)
+```
+
 ### Setting Timeouts
 
 ```go
@@ -475,6 +504,21 @@ fmt.Printf("Total Used: %s\n", credits.TotalUsed)
 ## Decision models
 
 `Provider.DecisionModel(id)` returns a decision model for [`ai.ExperimentalDecide`](../03-ai-sdk-core/32-decisions.mdx). It posts to `{baseURL}/decision-model` with the `ai-decision-model-specification-version: 4` header. The state is sent as ordered `stateParts`; image bytes are sent as base64, and URL, reference, or text file data is rejected before the request. `Provider.EvaluationModel(id)` and the other `Evaluation` names remain as deprecated aliases.
+
+## Extraction models
+
+`Provider.ExtractionModel(id)` (alias `Extraction(id)`) returns an extraction
+model for [`ai.ExperimentalExtract`](../03-ai-sdk-core/33-extractions.mdx), for
+example `scaledown/extract-1`. It posts to `{baseURL}/extraction-model` with
+the `ai-extraction-model-specification-version: 4` header. The state is sent
+as ordered `stateParts` (file bytes as base64; URL and text file data are
+rejected before the request) with `fields`, `referenceDate`,
+`maxOutputTokens`, `reasoning` and `providerOptions`. Supported field types
+depend on the model, so an unsupported field is reported as
+`*errors.ExtractionUnsupportedFieldTypeError` after the Gateway rejects it.
+`GetAvailableModels` keeps `extraction` model types. A string model ID passed
+to `ExperimentalExtract` without a default provider resolves through the
+Gateway. The extraction model is not serializable (as in TypeScript).
 
 ## Decision model fallbacks
 

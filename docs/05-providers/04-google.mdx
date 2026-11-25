@@ -593,6 +593,10 @@ Usage includes per-modality token details when the API returns them. Text, image
 
 Use the `"google"` provider key for AI Studio options. Vertex options use the `"googleVertex"` key (see the [Google Vertex AI provider](18-google-vertex.mdx#provider-specific-options) for its lookup order) — the hyphenated `"google-vertex"` string is only the Vertex model's `Provider()` identity, not a `ProviderOptions` key.
 
+## Extractions (experimental)
+
+`google.Provider.ExtractionModel(id)` returns an extraction model for [`ai.ExperimentalExtract`](../03-ai-sdk-core/33-extractions.mdx): it wraps the Gemini language model with `providerutils.NewExtractionLanguageModel` and extracts every field in one structured-output call. The provider name is `google.extraction`. Use a Gemini language model ID such as `gemini-2.5-flash`.
+
 ## Decisions (experimental)
 
 `google.Provider.DecisionModel(id)` calls the Gemini Decisions API (`POST {baseURL}/decisions`, `v1beta`; not on Vertex AI) for choice, score and boolean questions (TS f70336158e). Use a decision model ID such as `google.ModelGeminiDecision1` (`"gemini-decision-1"`); Gemini language model IDs do not work here.

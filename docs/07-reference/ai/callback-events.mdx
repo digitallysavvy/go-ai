@@ -294,6 +294,47 @@ These events wrap each provider call inside a step.
 
 {/* /gen:fields */}
 
+## Extract events
+
+`ai.ExperimentalExtract` emits `ai.ExtractOnStartEvent` and `ai.ExtractOnEndEvent`, with the caller's unredacted state, headers and provider options.
+
+### ExtractOnStartEvent
+
+{/* gen:fields ai.ExtractOnStartEvent */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `CallID` | `string` | CallID is a unique identifier for this extract call. |
+| `OperationID` | `string` | OperationID is the canonical operation name ("ai.extract"). |
+| `RuntimeContext` | `interface{}` | RuntimeContext is the user-defined runtime context passed via options. |
+| `Provider` | `string` |  |
+| `ModelID` | `string` |  |
+| `State` | `interface{}` | State is the shared state exactly as the caller passed it. |
+| `Fields` | `map[string]provider.ExtractionField` |  |
+| `ReferenceDate` | `string` | ReferenceDate is the YYYY-MM-DD reference date, or "". |
+| `MaxOutputTokens` | `*int` |  |
+| `Reasoning` | `*types.ReasoningLevel` |  |
+| `MaxRetries` | `int` |  |
+| `Headers` | `map[string]string` |  |
+| `ProviderOptions` | `map[string]interface{}` |  |
+
+{/* /gen:fields */}
+
+### ExtractOnEndEvent
+
+{/* gen:fields ai.ExtractOnEndEvent */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| (embedded) | `ExtractOnStartEvent` | Embedded. |
+| `Answers` | `map[string]provider.ExtractionAnswer` |  |
+| `Usage` | `ExtractUsage` |  |
+| `Warnings` | `[]types.Warning` |  |
+| `ProviderMetadata` | `map[string]interface{}` |  |
+| `Response` | `ExtractResponse` |  |
+
+{/* /gen:fields */}
+
 ## Notify Utility
 
 The SDK exposes the `Notify` function used internally for safe event dispatch:
