@@ -435,6 +435,36 @@ func SerializeDecisionModel(model DecisionModel) (SerializedModel, error) {
 	return serializeTypedModel(model)
 }
 
+var extractionModelDeserializers = newTypedModelRegistry[ExtractionModel]()
+
+// RegisterExtractionModelDeserializer registers a model factory for
+// DeserializeExtractionModel.
+func RegisterExtractionModelDeserializer(providerName string, fn func(SerializedModel) (ExtractionModel, error)) {
+	extractionModelDeserializers.register(providerName, fn)
+}
+
+// DeserializeExtractionModel reconstructs a serialized extraction model
+// using a registered provider factory.
+func DeserializeExtractionModel(serialized SerializedModel) (ExtractionModel, error) {
+	return extractionModelDeserializers.deserialize("extraction", serialized)
+}
+
+// RegisteredExtractionModelDeserializerKeys returns every provider name
+// currently registered with RegisterExtractionModelDeserializer. See
+// RegisteredModelDeserializerKeys's doc comment.
+func RegisteredExtractionModelDeserializerKeys() []string {
+	return extractionModelDeserializers.keys()
+}
+
+// SerializeExtractionModel returns a JSON-friendly serialized extraction
+// model representation.
+func SerializeExtractionModel(model ExtractionModel) (SerializedModel, error) {
+	if model == nil {
+		return SerializedModel{}, providererrors.NewSerializationError("provider: model is nil", nil)
+	}
+	return serializeTypedModel(model)
+}
+
 // SerializableConfig returns a JSON-compatible copy of config for workflow
 // boundaries. It mirrors the TypeScript SDK's serializeModelOptions behavior:
 // JSON-serializable values, including static headers, are preserved while
