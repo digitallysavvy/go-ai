@@ -1144,8 +1144,11 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 
 	stopConditions := resolveStopConditions(opts.StopWhen, opts.MaxSteps)
 
-	// Current messages for conversation history
-	currentMessages := prompt.Messages
+	// Current messages for conversation history. Every step gets a messages
+	// slice of its own (TS 0b8cbfadb8), also the first one, so approval
+	// functions can tell the tool calls of one response from those of another
+	// by the slice they receive.
+	currentMessages := append([]types.Message(nil), prompt.Messages...)
 	initialMessages := append([]types.Message(nil), prompt.Messages...)
 
 	// Resume tool approvals from the input messages (TS collectToolApprovals
@@ -1315,7 +1318,12 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				stepInstructionMessages = nil
 			}
 			if prepared.Messages != nil {
-				stepMessages = prepared.Messages
+				// PrepareStep can return the same slice for several steps
+				// or calls, so its messages are copied (TS 0b8cbfadb8): a
+				// step's tools and approval functions all get this step's
+				// slice, and no other step's.
+				stepMessages = make([]types.Message, len(prepared.Messages))
+				copy(stepMessages, prepared.Messages)
 			}
 			stepTools, stepActiveTools = applyPreparedTools(opts.Tools, stepTools, stepActiveTools, prepared)
 			if prepared.ToolChoice.Type != "" {

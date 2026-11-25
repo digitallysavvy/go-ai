@@ -357,3 +357,86 @@ func TestPortgenGenerateTextAutomaticDenialReplay(t *testing.T) {
 		}
 	})
 }
+
+// Port of generate-text.test.ts 'messages array passed to the approval
+// function' (TS 0b8cbfadb8): the approval function gets one messages slice
+// per step, shared by every tool call of that step and never reused by
+// another step, also when PrepareStep returns the same slice every time.
+func portgenCollectApprovalMessages(t *testing.T, prepare func(context.Context, PrepareStepOptions) PrepareStepOptions) [][]types.Message {
+	t.Helper()
+	var collected [][]types.Message
+	responses := 0
+	model := &testutil.MockLanguageModel{
+		ToolSupport: true,
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			step := responses
+			responses++
+			if step < 2 {
+				calls := make([]types.ToolCall, 0, 2)
+				for _, index := range []string{"1", "2"} {
+					calls = append(calls, types.ToolCall{ID: "call-" + string(rune('0'+step)) + "-" + index, ToolName: "tool1", Arguments: map[string]interface{}{"value": "value"}})
+				}
+				return &types.GenerateResult{FinishReason: types.FinishReasonToolCalls, ToolCalls: calls}, nil
+			}
+			return &types.GenerateResult{Text: "done", Content: []types.ContentPart{types.TextContent{Text: "done"}}, FinishReason: types.FinishReasonStop}, nil
+		},
+	}
+	_, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: model,
+		Tools: []types.Tool{{
+			Name:       "tool1",
+			Parameters: valueStringSchema(),
+			Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+				return "result1", nil
+			},
+		}},
+		ToolApproval: types.GenericToolApprovalFunc(func(o types.ToolApprovalOptions) types.ToolApprovalResult {
+			collected = append(collected, o.Messages)
+			return types.ToolApprovalResult{Status: types.ToolApprovalStatusApproved}
+		}),
+		PrepareStep: prepare,
+		StopWhen:    []StopCondition{StepCountIs(3)},
+		Prompt:      "test-input",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return collected
+}
+
+func portgenSameSlice(a, b []types.Message) bool {
+	return len(a) > 0 && len(b) > 0 && &a[0] == &b[0]
+}
+
+func TestPortgenApprovalMessagesSliceIsPerStep(t *testing.T) {
+	t.Run("same for the calls of a step and new for every step", func(t *testing.T) {
+		got := portgenCollectApprovalMessages(t, nil)
+		if len(got) != 4 {
+			t.Fatalf("approval calls = %d, want 4", len(got))
+		}
+		if !portgenSameSlice(got[0], got[1]) || !portgenSameSlice(got[2], got[3]) || portgenSameSlice(got[0], got[2]) {
+			t.Fatalf("identity: 0=1 %v, 2=3 %v, 0=2 %v", portgenSameSlice(got[0], got[1]), portgenSameSlice(got[2], got[3]), portgenSameSlice(got[0], got[2]))
+		}
+	})
+	t.Run("new for every step when PrepareStep returns the same slice", func(t *testing.T) {
+		prepared := []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "prepared-input"}}}}
+		got := portgenCollectApprovalMessages(t, func(_ context.Context, step PrepareStepOptions) PrepareStepOptions {
+			step.Messages = prepared
+			return step
+		})
+		if len(got) != 4 {
+			t.Fatalf("approval calls = %d, want 4", len(got))
+		}
+		for i, msgs := range got {
+			if !reflect.DeepEqual(msgs, prepared) {
+				t.Errorf("call %d messages = %+v, want the prepared messages", i, msgs)
+			}
+			if portgenSameSlice(msgs, prepared) {
+				t.Errorf("call %d got the slice PrepareStep returned", i)
+			}
+		}
+		if !portgenSameSlice(got[0], got[1]) || !portgenSameSlice(got[2], got[3]) || portgenSameSlice(got[0], got[2]) {
+			t.Fatalf("identity: 0=1 %v, 2=3 %v, 0=2 %v", portgenSameSlice(got[0], got[1]), portgenSameSlice(got[2], got[3]), portgenSameSlice(got[0], got[2]))
+		}
+	})
+}
