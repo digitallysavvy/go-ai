@@ -101,6 +101,7 @@ func BuildConfig(settings Settings) acp.Settings {
 	}
 	cfg := acp.Settings{
 		NonTextContentTypes:              []acp.NonTextContentType{acp.NonTextContentImage},
+		WriteProtectedPaths:              []string{".cursor"},
 		HarnessID:                        HarnessID,
 		ClientApp:                        acp.ClientApp{Name: ClientAppName, Version: ClientAppVersion},
 		Auth:                             settings.Auth,

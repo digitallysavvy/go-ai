@@ -18,6 +18,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/harness/fx/internal/libfx"
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
 	"github.com/digitallysavvy/go-ai/pkg/harness/internal/jsstr"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/posixpath"
 	"github.com/digitallysavvy/go-ai/pkg/harness/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 )
@@ -44,10 +45,84 @@ type libfxSession struct {
 
 	saveMu sync.Mutex // orders snapshots with their writes
 
+	// approvalRequirements is decided once per tool call and shared by the
+	// batch publication and the execution callback (TS approvalRequirements).
+	approvalMu           sync.Mutex
+	approvalRequirements map[string]*approvalRequirement
+
 	mu      sync.Mutex // guards everything below and every turn's state
 	state   *fxStoredState
 	stopped bool
 	active  *activeTurn
+}
+
+// approvalRequirement is one tool call's decided approval requirement.
+type approvalRequirement struct {
+	once  sync.Once
+	value bool
+}
+
+// fxWriteProtectedPaths are the workspace paths that hold fx configuration or
+// skills, which can run code or change the agent's behavior in later sessions.
+// Writes to them always require host approval unless the permission mode is
+// allow-all (TS FX_WRITE_PROTECTED_PATHS, 71bef690f9).
+var fxWriteProtectedPaths = []string{".agents/skills", ".fx"}
+
+// toolRequiresApprovalFor reports whether a tool call needs approval: the
+// permission mode decides, and under allow-edits an edit tool still needs it
+// for a write-protected path. A recorded approval ID means approval was already
+// requested, including in a previous process. It runs a sandbox command for a
+// protected-path check, so the caller must not hold s.mu. Mirrors TS
+// toolRequiresApproval in fx-session.ts.
+func (a *activeTurn) toolRequiresApprovalFor(recordID, approvalID string, input json.RawMessage, providerExecuted bool, kind harness.BuiltinToolUseKind) bool {
+	if !providerExecuted {
+		return false
+	}
+	if approvalID != "" {
+		return true
+	}
+	s := a.s
+	s.approvalMu.Lock()
+	if s.approvalRequirements == nil {
+		s.approvalRequirements = map[string]*approvalRequirement{}
+	}
+	requirement := s.approvalRequirements[recordID]
+	if requirement == nil {
+		requirement = &approvalRequirement{}
+		s.approvalRequirements[recordID] = requirement
+	}
+	s.approvalMu.Unlock()
+	requirement.once.Do(func() {
+		mode := a.permissionMode()
+		switch {
+		case toolRequiresApproval(mode, kind):
+			requirement.value = true
+		case mode == harness.PermissionModeAllowEdits && kind == harness.BuiltinToolUseKindEdit:
+			requirement.value = a.isFxWriteProtected(input)
+		}
+	})
+	return requirement.value
+}
+
+// isFxWriteProtected is TS isFxWriteProtected: an edit tool call whose
+// file_path is not a string, or that touches a write-protected path, needs
+// approval.
+func (a *activeTurn) isFxWriteProtected(input json.RawMessage) bool {
+	var fields struct {
+		FilePath json.RawMessage `json:"file_path"`
+	}
+	var filePath string
+	if json.Unmarshal(input, &fields) != nil || json.Unmarshal(fields.FilePath, &filePath) != nil {
+		return true
+	}
+	workDir := a.s.start.SessionWorkDir
+	protected, err := harnessutil.IsSandboxWriteProtectedPath(a.ctx, harnessutil.IsSandboxWriteProtectedPathOptions{
+		Sandbox:             a.s.remote.sandbox,
+		WorkDir:             workDir,
+		Paths:               []string{posixpath.Resolve(workDir, filePath)},
+		WriteProtectedPaths: fxWriteProtectedPaths,
+	})
+	return err != nil || protected
 }
 
 func newPlaceholderCredential() string {
@@ -818,10 +893,32 @@ func (a *activeTurn) publishToolBatch(ctx context.Context, requestIndex int) err
 	if err := a.abortErr(); err != nil {
 		return err
 	}
+	// The requirement may run a sandbox command, so it is decided before the
+	// state lock is taken again.
+	type snapshot struct {
+		id, approvalID string
+		input          json.RawMessage
+		completed      bool
+	}
 	s.mu.Lock()
-	for _, e := range batch {
+	snapshots := make([]snapshot, len(batch))
+	for i, e := range batch {
+		snapshots[i] = snapshot{e.record.ID, e.record.ApprovalID, e.record.Input, e.record.Status == toolCompleted}
+	}
+	s.mu.Unlock()
+	requires := make([]bool, len(batch))
+	for i, e := range batch {
+		if !snapshots[i].completed {
+			requires[i] = a.toolRequiresApprovalFor(snapshots[i].id, snapshots[i].approvalID, snapshots[i].input, e.tool.providerExecuted, e.tool.kind)
+		}
+	}
+	if err := a.abortErr(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	for i, e := range batch {
 		a.emitToolCallLocked(e.record, e.tool.providerExecuted)
-		if e.record.Status != toolCompleted && e.tool.providerExecuted && toolRequiresApproval(a.permissionMode(), e.tool.kind) {
+		if e.record.Status != toolCompleted && requires[i] {
 			a.emitToolApprovalLocked(e.record)
 		}
 	}
@@ -891,7 +988,11 @@ func (a *activeTurn) executeTool(name string, impl func(ctx context.Context, inp
 				current.Output = jsonValue(submission.Output)
 			}
 		default:
-			if toolRequiresApproval(a.permissionMode(), kind) {
+			recordID, approvalID, recordInput := current.ID, current.ApprovalID, current.Input
+			s.mu.Unlock()
+			needsApproval := a.toolRequiresApprovalFor(recordID, approvalID, recordInput, providerExecuted, kind)
+			s.mu.Lock()
+			if needsApproval {
 				a.emitToolApprovalLocked(current)
 				if current.Approval == nil {
 					if ap, ok := a.approvals[current.ApprovalID]; ok {

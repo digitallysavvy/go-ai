@@ -57,6 +57,11 @@ func CreateACP(settings Settings) (harness.Harness, error) {
 	if settings.ResolveHostToolCall == nil {
 		return nil, errors.New("ACP resolveHostToolCall must be a function.") //nolint:staticcheck // matches TS SDK exact error text
 	}
+	for _, entry := range settings.WriteProtectedPaths {
+		if err := validateWriteProtectedPath(entry); err != nil {
+			return nil, err
+		}
+	}
 	impl := newImplementation(settings)
 	if err := validateImplementation(impl); err != nil {
 		return nil, err
@@ -700,6 +705,7 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 		ProviderEnvironment: providerEnvironment, SessionMeta: settings.SessionMeta,
 		ClientCapabilities: settings.ClientCapabilities, AskUserQuestionsRequestMethod: askUserQuestionsRequestMethod(settings.AskUserQuestions),
 		HostToolMCPTransport: settings.HostToolMCPTransport, NonTextContentTypes: settings.NonTextContentTypes,
+		WriteProtectedPaths: settings.WriteProtectedPaths,
 	}) {
 		env[k] = v
 	}
@@ -898,4 +904,23 @@ func serializeBuiltinTools(tools map[string]harness.BuiltinTool) []BuiltinToolMa
 		out = append(out, m)
 	}
 	return out
+}
+
+// validateWriteProtectedPath is TS validateWriteProtectedPath (6f9d73fd19): an
+// entry is a non-blank relative path with no NUL and no empty, "." or ".."
+// segment.
+func validateWriteProtectedPath(entry string) error {
+	invalid := providerutils.JSTrim(entry) == "" || strings.ContainsRune(entry, 0) || strings.HasPrefix(entry, "/")
+	if !invalid {
+		for _, segment := range strings.Split(entry, "/") {
+			if segment == "" || segment == "." || segment == ".." {
+				invalid = true
+				break
+			}
+		}
+	}
+	if invalid {
+		return fmt.Errorf("ACP writeProtectedPaths entries must be relative paths inside the working directory without \".\" or \"..\" segments; received %s.", jsonString(entry)) //nolint:staticcheck // matches TS SDK's exact error text
+	}
+	return nil
 }

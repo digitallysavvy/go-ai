@@ -1,10 +1,13 @@
 package mcp
 
 import (
+	"context"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 type staticSSEClient struct {
@@ -21,24 +24,39 @@ func (c *staticSSEClient) Do(*http.Request) (*http.Response, error) {
 	}, nil
 }
 
-// TS send(): a failed HTTP response to a request whose body is a JSON-RPC
-// error is delivered as that request's response (missing id -> request id).
-func TestHTTPTransportDeliversJSONRPCErrorFromFailedResponse(t *testing.T) {
+// TS send() (d55f3cfc45): a failed HTTP response to a request whose body is a
+// JSON-RPC error rejects the send with an MCPClientError carrying the error,
+// the HTTP status, URL and body; it is not reported through OnError and
+// nothing is queued as a response.
+func TestHTTPTransportRejectsWithJSONRPCErrorFromFailedResponse(t *testing.T) {
+	body := `{"jsonrpc":"2.0","id":7,"error":{"code":-32602,"message":"bad params","data":{"reason":"x"}}}`
+	reported := 0
 	transport := NewHTTPTransport(HTTPTransportConfig{
 		URL:       "http://localhost:9999/mcp",
-		SSEClient: &staticSSEClient{status: 400, contentType: "application/json", body: strings.NewReader(`{"jsonrpc":"2.0","error":{"code":-32602,"message":"bad params"}}`)},
+		OnError:   func(error) { reported++ },
+		SSEClient: &staticSSEClient{status: 400, contentType: "application/json", body: strings.NewReader(body)},
 	})
 	transport.connected = true
 	msg, _ := CreateRequest(7, "tools/call", nil)
-	if err := transport.Send(t.Context(), msg); err != nil {
-		t.Fatalf("Send returned %v, want the JSON-RPC error delivered as a response", err)
+	err := transport.Send(t.Context(), msg)
+	var ce *MCPClientError
+	if !errors.As(err, &ce) {
+		t.Fatalf("Send returned %v, want an MCPClientError", err)
 	}
-	got, err := transport.Receive(t.Context())
-	if err != nil {
-		t.Fatal(err)
+	if ce.Message != "bad params" || ce.Code != -32602 || ce.StatusCode != 400 || ce.URL != "http://localhost:9999/mcp" || ce.ResponseBody != body {
+		t.Fatalf("error = %+v", ce)
 	}
-	if got.Error == nil || got.Error.Code != -32602 || got.ID != 7 {
-		t.Fatalf("received %+v", got)
+	var cause *MCPError
+	if !errors.As(ce.Cause, &cause) || cause.Code != -32602 {
+		t.Fatalf("cause = %#v", ce.Cause)
+	}
+	if reported != 0 {
+		t.Fatalf("OnError called %d times, want 0", reported)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	defer cancel()
+	if got, _ := transport.Receive(ctx); got != nil {
+		t.Fatalf("queued %+v", got)
 	}
 
 	// A plain-text failure body is still a transport error.

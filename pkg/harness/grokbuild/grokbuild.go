@@ -103,6 +103,7 @@ func BuildConfig(settings Settings) (acp.Settings, error) {
 
 	cfg := acp.Settings{
 		NonTextContentTypes: []acp.NonTextContentType{acp.NonTextContentImage},
+		WriteProtectedPaths: []string{".grok"},
 		HarnessID:           HarnessID,
 		ClientApp:           acp.ClientApp{Name: ClientAppName, Version: ClientAppVersion},
 		Source: acp.Source{

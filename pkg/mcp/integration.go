@@ -92,11 +92,19 @@ func (c *MCPToolConverter) ToolsFromDefinitions(mcpTools []MCPTool, schemas map[
 
 // convertTool converts a single MCP tool to a Go-AI tool
 func (c *MCPToolConverter) convertTool(mcpTool MCPTool, toolSchema *MCPToolSchema) (types.Tool, error) {
+	return c.buildTool(mcpTool, toolSchema, true)
+}
+
+// buildTool is TS createMCPToolDefinition plus, for a connected client, the
+// execute function (93c63f71a1). A converter with no client (CreateMCPTools)
+// leaves out the clientName metadata and Execute.
+func (c *MCPToolConverter) buildTool(mcpTool MCPTool, toolSchema *MCPToolSchema, connected bool) (types.Tool, error) {
 	resolvedTitle, hasResolvedTitle := resolveMCPToolTitle(mcpTool)
-	mcpMetadata := map[string]interface{}{
-		"clientName": c.client.clientInfo.Name,
-		"toolName":   mcpTool.Name,
+	mcpMetadata := map[string]interface{}{}
+	if connected {
+		mcpMetadata["clientName"] = c.client.clientInfo.Name
 	}
+	mcpMetadata["toolName"] = mcpTool.Name
 	if hasResolvedTitle {
 		mcpMetadata["title"] = resolvedTitle
 	}
@@ -134,7 +142,7 @@ func (c *MCPToolConverter) convertTool(mcpTool MCPTool, toolSchema *MCPToolSchem
 		}
 	}
 
-	return types.Tool{
+	tool := types.Tool{
 		Name:              mcpTool.Name,
 		Description:       mcpTool.Description,
 		Title:             resolvedTitle,
@@ -146,7 +154,16 @@ func (c *MCPToolConverter) convertTool(mcpTool MCPTool, toolSchema *MCPToolSchem
 		Metadata:          mcpMetadata,
 		Meta:              copyMap(mcpTool.Meta),
 		Type:              toolType,
-		Execute: func(ctx context.Context, input map[string]interface{}, options types.ToolExecutionOptions) (interface{}, error) {
+		// Mark this as provider-executed since it's executed via MCP
+		ToModelOutput: func(ctx context.Context, options types.ToModelOutputOptions) (*types.ToolResultOutput, error) {
+			_ = ctx
+			// Convert MCP result to model-readable format
+			output := c.convertToModelOutput(options.Output)
+			return &output, nil
+		},
+	}
+	if connected {
+		tool.Execute = func(ctx context.Context, input map[string]interface{}, options types.ToolExecutionOptions) (interface{}, error) {
 			// Call MCP tool. TS execute lets the callTool error propagate
 			// unchanged, so the tool-error text the model sees is the
 			// MCPClientError message itself (no Go-only prefix).
@@ -158,15 +175,9 @@ func (c *MCPToolConverter) convertTool(mcpTool MCPTool, toolSchema *MCPToolSchem
 				return extractMCPStructuredOutput(*result, outputSchema, mcpTool.Name)
 			}
 			return result, nil
-		},
-		// Mark this as provider-executed since it's executed via MCP
-		ToModelOutput: func(ctx context.Context, options types.ToModelOutputOptions) (*types.ToolResultOutput, error) {
-			_ = ctx
-			// Convert MCP result to model-readable format
-			output := c.convertToModelOutput(options.Output)
-			return &output, nil
-		},
-	}, nil
+		}
+	}
+	return tool, nil
 }
 
 func resolveMCPToolTitle(tool MCPTool) (string, bool) {

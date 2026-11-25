@@ -897,18 +897,23 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 			defer resp.Body.Close() //nolint:errcheck
 			body = readErrorBody(resp.Body)
 		}
-		// Matches TS send(): when the failed response to a request carries a
-		// JSON-RPC error, deliver it as the request's response (a null id is
-		// filled in with the request id) instead of an HTTP transport error.
-		// TS parses the body as one JSON-RPC message (parseJSONRPCMessage), so
-		// an array body is an HTTP error.
+		// Matches TS send() (d55f3cfc45): when the failed response to a
+		// request carries a JSON-RPC error, the send rejects with an
+		// MCPClientError carrying that error (code, data, cause) and the HTTP
+		// status, URL and body. It is the caller's rejection, so it is not
+		// reported through OnError. TS parses the body as one JSON-RPC message
+		// (parseJSONRPCMessage), so an array body is an HTTP error.
 		if message.ID != nil && len(body) > 0 {
 			if msg, perr := parseMCPMessage(bytes.TrimSpace(body)); perr == nil && msg.Error != nil {
-				if msg.ID == nil {
-					msg.ID = message.ID
+				return &MCPClientError{
+					Message:      msg.Error.Message,
+					Code:         msg.Error.Code,
+					Data:         msg.Error.Data,
+					StatusCode:   resp.StatusCode,
+					URL:          t.url,
+					ResponseBody: string(body),
+					Cause:        msg.Error,
 				}
-				t.queueReceivedMessages([]*MCPMessage{msg})
-				return nil
 			}
 		}
 		errMessage := fmt.Sprintf("MCP HTTP Transport Error: POSTing to endpoint (HTTP %d): %s", resp.StatusCode, string(body))
@@ -1020,7 +1025,7 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 		}
 		go func() {
 			defer t.bg.done()
-			t.readMCPHTTPSSEMessages(reqCtx, lifecycleCtx, release, resp.Body)
+			t.readMCPHTTPSSEMessages(reqCtx, lifecycleCtx, release, resp.Body, mcpSSERequestID(message))
 		}()
 		return nil
 
@@ -1135,8 +1140,21 @@ func closeBodyWhenDone(ctx context.Context, body io.Closer) func() {
 // close() and a caller abort cancel the reader, which discards the events
 // still buffered. lifecycleCtx is checked as well because ctx follows it only
 // asynchronously, and an OnError that calls Close resumes this loop at once.
-func (t *HTTPTransport) readMCPHTTPSSEMessages(ctx, lifecycleCtx context.Context, release context.CancelFunc, body io.ReadCloser) {
+func (t *HTTPTransport) readMCPHTTPSSEMessages(ctx, lifecycleCtx context.Context, release context.CancelFunc, body io.ReadCloser, requestID interface{}) {
 	defer release()
+	// TS (95b78c93e7): a request whose SSE response ends (cleanly or with a
+	// read error) before its own JSON-RPC response arrives gets a
+	// request-specific error, so the client rejects and cleans up the pending
+	// call instead of waiting forever. Not for an aborted request.
+	receivedResponse := false
+	defer func() {
+		aborted := ctx.Err() != nil || (lifecycleCtx != nil && lifecycleCtx.Err() != nil)
+		if requestID == nil || receivedResponse || aborted {
+			return
+		}
+		t.queueReceivedMessages([]*MCPMessage{CreateErrorResponse(requestID, -32000,
+			fmt.Sprintf("MCP HTTP Transport Error: SSE stream ended before the response for request %s", mcpSSERequestIDText(requestID)), nil)})
+	}()
 	// TS close() cancels the reader, which cancels the body. A body from a
 	// custom SSEClient may not watch the request context, so close it when
 	// ctx ends; otherwise Close would wait on this goroutine forever.
@@ -1169,8 +1187,50 @@ func (t *HTTPTransport) readMCPHTTPSSEMessages(ctx, lifecycleCtx context.Context
 			t.bgReportError(&MCPClientError{Message: "MCP HTTP Transport Error: Failed to parse message", Cause: err})
 			continue
 		}
+		if msg.Method == "" && (msg.Result != nil || msg.Error != nil) && requestID != nil && mcpSSEIDsEqual(msg.ID, requestID) {
+			receivedResponse = true
+		}
 		t.queueReceivedMessages([]*MCPMessage{msg})
 	}
+}
+
+// mcpSSERequestID is TS `'method' in message ? message.id : undefined`: the
+// id of a request being sent, nil for a notification or a response.
+func mcpSSERequestID(message *MCPMessage) interface{} {
+	if message == nil || message.Method == "" {
+		return nil
+	}
+	return message.ID
+}
+
+// mcpSSENormalizeID folds the numeric id types into float64, the way JSON
+// numbers compare in TS, and leaves strings alone.
+func mcpSSENormalizeID(id interface{}) interface{} {
+	switch v := id.(type) {
+	case int:
+		return float64(v)
+	case int64:
+		return float64(v)
+	case uint64:
+		return float64(v)
+	case json.Number:
+		if f, err := v.Float64(); err == nil {
+			return f
+		}
+	}
+	return id
+}
+
+// mcpSSEIDsEqual is TS `===` on two JSON-RPC ids (number or string).
+func mcpSSEIDsEqual(a, b interface{}) bool {
+	return mcpSSENormalizeID(a) == mcpSSENormalizeID(b)
+}
+
+func mcpSSERequestIDText(id interface{}) string {
+	if f, ok := mcpSSENormalizeID(id).(float64); ok {
+		return strconv.FormatFloat(f, 'f', -1, 64)
+	}
+	return fmt.Sprint(id)
 }
 
 // ---- Inbound SSE (legacy protocol era) ----
