@@ -557,3 +557,25 @@ func TestPortprovgExtractionRejectsMalformedAnswer(t *testing.T) {
 		t.Fatal("mixed list must fail")
 	}
 }
+
+// TS: gateway-fetch-metadata.test.ts 'should preserve all known modelType values'
+// (extraction added by f886264eb6).
+func TestPortprovgGetAvailableModelsKeepsAllKnownModelTypes(t *testing.T) {
+	known := []string{"embedding", "decision", "evaluation", "extraction", "image", "language", "realtime", "reranking", "speech", "transcription", "video"}
+	var entries []string
+	for _, ty := range known {
+		entries = append(entries, `{"id":"model-`+ty+`","name":"Model `+ty+`","specification":{"specificationVersion":"v4","provider":"p","modelId":"m"},"modelType":"`+ty+`"}`)
+	}
+	s := newPort2provgServer(t, `{"models":[`+strings.Join(entries, ",")+`]}`)
+	p, err := New(Config{APIKey: "k", BaseURL: s.srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	md, err := p.GetAvailableModels(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(md.Models) != len(known) {
+		t.Fatalf("kept %d of %d model types", len(md.Models), len(known))
+	}
+}
