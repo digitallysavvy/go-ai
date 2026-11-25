@@ -170,6 +170,12 @@ func ExperimentalDecide(ctx context.Context, opts DecideOptions) (*DecideResult,
 	// TS takes any JSON array or object: typed Go containers ([]string
 	// score levels, map[string]string options) are read as their JSON form.
 	opts.Questions = provider.DecisionQuestionsJSON(opts.Questions)
+	// TS decide destructures `providerOptions = {}`: the model and the
+	// lifecycle events see an empty object, so the gateway sends
+	// `"providerOptions":{}` when the caller passed none.
+	if opts.ProviderOptions == nil {
+		opts.ProviderOptions = map[string]interface{}{}
+	}
 	if err := validateDecisionInput(opts.State, opts.Questions, opts.QuestionOrder); err != nil {
 		return nil, err
 	}

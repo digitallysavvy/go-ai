@@ -180,6 +180,12 @@ func ExperimentalExtract(ctx context.Context, opts ExtractOptions) (*ExtractResu
 		return nil, err
 	}
 	resolvedMaxRetries := preparedMaxRetries(opts.MaxRetries)
+	// TS extract destructures `providerOptions = {}`: the model and the
+	// lifecycle events see an empty object, so the gateway sends
+	// `"providerOptions":{}` when the caller passed none.
+	if opts.ProviderOptions == nil {
+		opts.ProviderOptions = map[string]interface{}{}
+	}
 	telemetrySettings := effectiveTelemetrySettings(opts.Telemetry, opts.ExperimentalTelemetry)
 
 	callID := newCallID()
