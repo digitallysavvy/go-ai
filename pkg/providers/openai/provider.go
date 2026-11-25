@@ -528,6 +528,21 @@ func (p *Provider) DecisionModel(modelID string) (provider.DecisionModel, error)
 	return NewDecisionModel(p, modelID), nil
 }
 
+// ExtractionModel returns an experimental typed field extraction model backed
+// by the Responses API structured output. Mirrors TypeScript's
+// OpenAIProvider.extractionModel (6d5094711e): the Responses language model
+// wrapped in ExtractionLanguageModel, reported as "<name>.extraction".
+func (p *Provider) ExtractionModel(modelID string) (provider.ExtractionModel, error) {
+	lm, err := p.LanguageModel(modelID)
+	if err != nil {
+		return nil, err
+	}
+	return providerutils.NewExtractionLanguageModel(providerutils.ExtractionLanguageModelOptions{
+		Model:    lm,
+		Provider: p.Name() + ".extraction",
+	})
+}
+
 // EvaluationModel is the deprecated form of DecisionModel.
 //
 // Deprecated: Use DecisionModel instead.
