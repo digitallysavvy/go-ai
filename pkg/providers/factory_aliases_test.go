@@ -15,11 +15,13 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providers/google"
 	"github.com/digitallysavvy/go-ai/pkg/providers/googlevertex"
 	"github.com/digitallysavvy/go-ai/pkg/providers/groq"
+	"github.com/digitallysavvy/go-ai/pkg/providers/liquid"
 	"github.com/digitallysavvy/go-ai/pkg/providers/minimax"
 	"github.com/digitallysavvy/go-ai/pkg/providers/mistral"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
 	"github.com/digitallysavvy/go-ai/pkg/providers/perplexity"
 	"github.com/digitallysavvy/go-ai/pkg/providers/quiverai"
+	"github.com/digitallysavvy/go-ai/pkg/providers/scaledown"
 	"github.com/digitallysavvy/go-ai/pkg/providers/together"
 	"github.com/digitallysavvy/go-ai/pkg/providers/typesafeai"
 	"github.com/digitallysavvy/go-ai/pkg/providers/xai"
@@ -86,6 +88,12 @@ func TestProviderFactoryAliasesMirrorTypeScriptCreateExports(t *testing.T) {
 	}
 	if typesafeai.CreateTypeSafeAI(typesafeai.Config{}) == nil {
 		t.Fatal("CreateTypeSafeAI returned nil")
+	}
+	if liquid.CreateLiquid(liquid.Config{}) == nil {
+		t.Fatal("CreateLiquid returned nil")
+	}
+	if scaledown.CreateScaleDown(scaledown.Config{}) == nil {
+		t.Fatal("CreateScaleDown returned nil")
 	}
 
 	vertexCfg := googlevertex.Config{

@@ -26,6 +26,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providers/huggingface"
 	"github.com/digitallysavvy/go-ai/pkg/providers/hume"
 	"github.com/digitallysavvy/go-ai/pkg/providers/klingai"
+	"github.com/digitallysavvy/go-ai/pkg/providers/liquid"
 	"github.com/digitallysavvy/go-ai/pkg/providers/lmnt"
 	"github.com/digitallysavvy/go-ai/pkg/providers/luma"
 	"github.com/digitallysavvy/go-ai/pkg/providers/mistral"
@@ -38,6 +39,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providers/quiverai"
 	"github.com/digitallysavvy/go-ai/pkg/providers/replicate"
 	"github.com/digitallysavvy/go-ai/pkg/providers/revai"
+	"github.com/digitallysavvy/go-ai/pkg/providers/scaledown"
 	"github.com/digitallysavvy/go-ai/pkg/providers/stability"
 	"github.com/digitallysavvy/go-ai/pkg/providers/tencent"
 	"github.com/digitallysavvy/go-ai/pkg/providers/together"
@@ -192,6 +194,14 @@ func TestUnsupportedModelKindsReturnNoSuchModelError(t *testing.T) {
 			{"TranscriptionModel", "transcriptionModel", "m1", ""},
 			{"RerankingModel", "rerankingModel", "m1", ""},
 		}},
+		{"liquid", func() any { return liquid.New(liquid.Config{APIKey: "k"}) }, []kind{
+			{"LanguageModel", "languageModel", "m1", ""},
+			{"EmbeddingModel", "embeddingModel", "m1", ""},
+			{"ImageModel", "imageModel", "m1", ""},
+			{"SpeechModel", "speechModel", "m1", ""},
+			{"TranscriptionModel", "transcriptionModel", "m1", ""},
+			{"RerankingModel", "rerankingModel", "m1", ""},
+		}},
 		{"lmnt", func() any { return lmnt.New(lmnt.Config{APIKey: "k"}) }, []kind{
 			{"LanguageModel", "languageModel", "m1", ""},
 			{"EmbeddingModel", "embeddingModel", "m1", ""},
@@ -262,6 +272,14 @@ func TestUnsupportedModelKindsReturnNoSuchModelError(t *testing.T) {
 			{"EmbeddingModel", "embeddingModel", "unknown", "Rev.ai does not provide text embedding models"},
 			{"ImageModel", "imageModel", "unknown", "Rev.ai does not provide image models"},
 			{"SpeechModel", "speechModel", "m1", ""},
+			{"RerankingModel", "rerankingModel", "m1", ""},
+		}},
+		{"scaledown", func() any { return scaledown.New(scaledown.Config{APIKey: "k"}) }, []kind{
+			{"LanguageModel", "languageModel", "m1", ""},
+			{"EmbeddingModel", "embeddingModel", "m1", ""},
+			{"ImageModel", "imageModel", "m1", ""},
+			{"SpeechModel", "speechModel", "m1", ""},
+			{"TranscriptionModel", "transcriptionModel", "m1", ""},
 			{"RerankingModel", "rerankingModel", "m1", ""},
 		}},
 		{"stability", func() any { return stability.New(stability.Config{APIKey: "k"}) }, []kind{

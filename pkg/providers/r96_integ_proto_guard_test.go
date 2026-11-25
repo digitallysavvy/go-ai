@@ -95,8 +95,10 @@ var r97integResponseJSONDecodes = map[string]struct {
 	"pkg/harness/sandbox/vercel/stdin.go|stdinTimeoutBytesWritten":  {1, "@vercel/sandbox 3.9.0 api-client.js:60 readStdinTimeout JSON.parse(text)"},
 	// Round 98 (provg CR): caller-value validations (schema.parse on objects
 	// TS already holds).
-	"pkg/providerutils/prompt/google.go|*googleConverter.googleVideoMetadata": {1, "convert-to-google-messages.ts:381 googleVideoMetadataSchema.parse of the caller's providerOptions object (no JSON parse, no secureJsonParse)"},
-	"pkg/providerutils/prompt/google.go|googleParseCodeExecution":             {1, "convert-to-google-messages.ts:576 / 644 codeExecutionInput/OutputSchema.parse of the prompt's tool input / output value (no JSON parse)"},
+	"pkg/providerutils/prompt/google.go|*googleConverter.googleFilePartOptions": {1, "convert-to-google-messages.ts getGoogleFilePartOptions: googleFilePartOptionsSchema.parse of the caller's providerOptions object (no JSON parse, no secureJsonParse)"},
+	// Port wave 1 (provg CR, TS afb4e69924): same caller-value rule.
+	"google/interactions_file_options.go|parseInteractionsFileOptions": {1, "convert-to-google-interactions-input.ts googleInteractionsFileOptionsSchema.parse of the caller's providerOptions.google (no JSON parse)"},
+	"pkg/providerutils/prompt/google.go|googleParseCodeExecution":      {1, "convert-to-google-messages.ts:576 / 644 codeExecutionInput/OutputSchema.parse of the prompt's tool input / output value (no JSON parse)"},
 	// Caller-value sites (round 98): TS validateTypes on an object the caller
 	// built, no JSON parse at all, so zod sees a __proto__ key as an ordinary
 	// own property and strips it.

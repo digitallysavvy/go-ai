@@ -49,7 +49,6 @@ var r94integDirectDecodes = map[string]struct {
 	"minimax/video_model.go|*VideoModel.DoGenerate":                           {1, "operation reference the SDK built"},
 	"minimax/video_model.go|*VideoModel.getStatus":                            {1, "operation reference the SDK built"},
 	"mistral/conversation_inputs.go|convertToMistralConversationInputs":       {1, "prompt tool-call input"},
-	"openai/responses/convert.go|appendAdditionalTools":                       {1, "caller option (additional tool definitions)"},
 	"openai/responses/provider_tool_args.go|openAICustomToolConfig":           {1, "caller tool args (custom tool definition, through toolConfig)"},
 	"topaz/video_model.go|*VideoModel.DoGenerate":                             {1, "operation reference the SDK built"},
 	"topaz/video_model.go|*VideoModel.DoStatus":                               {1, "operation reference the SDK built"},
