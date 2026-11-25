@@ -295,6 +295,15 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 		}); sess != nil {
 			return sess, nil
 		}
+		// Not reachable: respawning below. A bridge that is only too slow to
+		// answer still holds its port and runs its turn, so stop it and the
+		// processes it started, by the pid bridge-meta.json records, before
+		// MarkBridgeStarting overwrites that record (TS d84bf245a0).
+		if err := bridge.StopPreviousBridge(ctx, bridge.StopPreviousBridgeOptions{
+			Sandbox: restricted, BridgeStateDir: bridgeStateDir, BridgeType: HarnessID,
+		}); err != nil {
+			return nil, err
+		}
 	}
 
 	// Rungs 2/3 — REPLAY vs RERUN. Respawn the bridge. `replay` is only

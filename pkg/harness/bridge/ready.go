@@ -221,28 +221,59 @@ func isEOF(err error) bool {
 	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrClosedPipe) || errors.Is(err, os.ErrClosed)
 }
 
-type bridgeMeta struct {
-	Type  *string  `json:"type"`
-	Port  *float64 `json:"port"`
-	State *string  `json:"state"`
-	PID   *float64 `json:"pid"`
+// BridgeMeta is the content of bridge-meta.json (TS bridgeMetaSchema: every
+// key optional, a present key must have its type, `null` is not a value).
+type BridgeMeta struct {
+	Type  *string
+	Port  *float64
+	State *string
+	PID   *float64
+}
+
+// ReadBridgeMeta reads bridge-meta.json. It returns nil when the file is
+// missing, unreadable, malformed, or written by a bridge of another type.
+// Mirrors TS `readBridgeMeta` (d84bf245a0).
+func ReadBridgeMeta(ctx context.Context, sandbox providerutils.SandboxSession, bridgeStateDir, bridgeType string) *BridgeMeta {
+	if sandbox == nil {
+		return nil
+	}
+	raw, err := sandbox.ReadTextFile(ctx, providerutils.SandboxReadTextFileOptions{Path: BridgeMetaPath(bridgeStateDir)})
+	if err != nil || raw == nil {
+		return nil
+	}
+	var fields struct {
+		Type  json.RawMessage `json:"type"`
+		Port  json.RawMessage `json:"port"`
+		State json.RawMessage `json:"state"`
+		PID   json.RawMessage `json:"pid"`
+	}
+	if securejson.Unmarshal([]byte(*raw), &fields) != nil {
+		return nil
+	}
+	var meta BridgeMeta
+	for _, f := range []struct {
+		raw json.RawMessage
+		dst any
+	}{{fields.Type, &meta.Type}, {fields.Port, &meta.Port}, {fields.State, &meta.State}, {fields.PID, &meta.PID}} {
+		if f.raw == nil {
+			continue
+		}
+		// zod: an optional key may be absent but not null or mistyped.
+		if string(f.raw) == "null" || json.Unmarshal(f.raw, f.dst) != nil {
+			return nil
+		}
+	}
+	if meta.Type == nil || *meta.Type != bridgeType {
+		return nil
+	}
+	return &meta
 }
 
 // readBridgeMetaReady returns the port from bridge-meta.json when it is in
 // state "waiting" for bridgeType, else 0.
 func readBridgeMetaReady(ctx context.Context, sandbox providerutils.SandboxSession, bridgeStateDir, bridgeType string) int {
-	if sandbox == nil {
-		return 0
-	}
-	raw, err := sandbox.ReadTextFile(ctx, providerutils.SandboxReadTextFileOptions{Path: BridgeMetaPath(bridgeStateDir)})
-	if err != nil || raw == nil {
-		return 0
-	}
-	var meta bridgeMeta
-	if securejson.Unmarshal([]byte(*raw), &meta) != nil {
-		return 0
-	}
-	if meta.Type == nil || *meta.Type != bridgeType {
+	meta := ReadBridgeMeta(ctx, sandbox, bridgeStateDir, bridgeType)
+	if meta == nil {
 		return 0
 	}
 	if meta.State == nil || *meta.State != "waiting" {
