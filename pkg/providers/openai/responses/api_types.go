@@ -331,14 +331,14 @@ type FunctionToolDef struct {
 // [] (TS forwards `options.allowedCallers` whenever it is not null); nil is
 // omitted.
 func (d FunctionToolDef) MarshalJSON() ([]byte, error) {
-	type Plain FunctionToolDef
+	type plain FunctionToolDef
 	if d.AllowedCallers == nil || len(d.AllowedCallers) > 0 {
-		return jsonstr.Marshal(Plain(d))
+		return jsonstr.Marshal(plain(d))
 	}
 	return jsonstr.Marshal(struct {
-		Plain
+		plain
 		AllowedCallers []string `json:"allowed_callers"`
-	}{Plain(d), d.AllowedCallers})
+	}{plain(d), d.AllowedCallers})
 }
 
 // NamespaceToolDef groups function tools under an OpenAI Responses namespace.

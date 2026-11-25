@@ -76,17 +76,14 @@ func (t TextContent) ContentType() string {
 }
 
 // MarshalJSON emits the TypeScript SDK discriminated content-part shape.
-// The embedded aliases of the content parts have exported names: jsonstr
-// writes a non-finite number as null (JSON.stringify) only in fields it can
-// set, and an unexported embedded struct is not one.
 func (t TextContent) MarshalJSON() ([]byte, error) {
-	type TextContentAlias TextContent
+	type textContentAlias TextContent
 	return jsonstr.Marshal(struct {
 		Type string `json:"type"`
-		TextContentAlias
+		textContentAlias
 	}{
 		Type:             t.ContentType(),
-		TextContentAlias: TextContentAlias(t),
+		textContentAlias: textContentAlias(t),
 	})
 }
 
@@ -130,13 +127,13 @@ func (r ReasoningContent) ContentType() string {
 
 // MarshalJSON emits the TypeScript SDK discriminated content-part shape.
 func (r ReasoningContent) MarshalJSON() ([]byte, error) {
-	type ReasoningContentAlias ReasoningContent
+	type reasoningContentAlias ReasoningContent
 	return jsonstr.Marshal(struct {
 		Type string `json:"type"`
-		ReasoningContentAlias
+		reasoningContentAlias
 	}{
 		Type:                  r.ContentType(),
-		ReasoningContentAlias: ReasoningContentAlias(r),
+		reasoningContentAlias: reasoningContentAlias(r),
 	})
 }
 
@@ -162,13 +159,13 @@ func (i ImageContent) ContentType() string {
 
 // MarshalJSON emits the TypeScript SDK discriminated content-part shape.
 func (i ImageContent) MarshalJSON() ([]byte, error) {
-	type ImageContentAlias ImageContent
+	type imageContentAlias ImageContent
 	return jsonstr.Marshal(struct {
 		Type string `json:"type"`
-		ImageContentAlias
+		imageContentAlias
 	}{
 		Type:              i.ContentType(),
-		ImageContentAlias: ImageContentAlias(i),
+		imageContentAlias: imageContentAlias(i),
 	})
 }
 
@@ -215,13 +212,13 @@ func (f FileContent) ContentType() string {
 
 // MarshalJSON emits the TypeScript SDK discriminated content-part shape.
 func (f FileContent) MarshalJSON() ([]byte, error) {
-	type FileContentAlias FileContent
+	type fileContentAlias FileContent
 	return jsonstr.Marshal(struct {
 		Type string `json:"type"`
-		FileContentAlias
+		fileContentAlias
 	}{
 		Type:             f.ContentType(),
-		FileContentAlias: FileContentAlias(f),
+		fileContentAlias: fileContentAlias(f),
 	})
 }
 
@@ -262,13 +259,13 @@ func (s SourceContent) ContentType() string {
 
 // MarshalJSON emits the TypeScript SDK discriminated content-part shape.
 func (s SourceContent) MarshalJSON() ([]byte, error) {
-	type SourceContentAlias SourceContent
+	type sourceContentAlias SourceContent
 	return jsonstr.Marshal(struct {
 		Type string `json:"type"`
-		SourceContentAlias
+		sourceContentAlias
 	}{
 		Type:               s.ContentType(),
-		SourceContentAlias: SourceContentAlias(s),
+		sourceContentAlias: sourceContentAlias(s),
 	})
 }
 
@@ -508,13 +505,13 @@ func (c CustomContent) ContentType() string {
 
 // MarshalJSON emits the TypeScript SDK discriminated content-part shape.
 func (c CustomContent) MarshalJSON() ([]byte, error) {
-	type CustomContentAlias CustomContent
+	type customContentAlias CustomContent
 	return jsonstr.Marshal(struct {
 		Type string `json:"type"`
-		CustomContentAlias
+		customContentAlias
 	}{
 		Type:               c.ContentType(),
-		CustomContentAlias: CustomContentAlias(c),
+		customContentAlias: customContentAlias(c),
 	})
 }
 
@@ -784,13 +781,13 @@ func (t ToolErrorContent) ContentType() string {
 // MarshalJSON emits the TypeScript SDK discriminated content-part shape
 // (`type: "tool-error"`), like every other content part.
 func (t ToolErrorContent) MarshalJSON() ([]byte, error) {
-	type ToolErrorContentAlias ToolErrorContent
+	type toolErrorContentAlias ToolErrorContent
 	return jsonstr.Marshal(struct {
 		Type string `json:"type"`
-		ToolErrorContentAlias
+		toolErrorContentAlias
 	}{
 		Type:                  t.ContentType(),
-		ToolErrorContentAlias: ToolErrorContentAlias(t),
+		toolErrorContentAlias: toolErrorContentAlias(t),
 	})
 }
 
@@ -1434,13 +1431,13 @@ func (t TextContentBlock) ToolResultContentType() string {
 
 // MarshalJSON emits the TypeScript SDK discriminated tool-result content shape.
 func (t TextContentBlock) MarshalJSON() ([]byte, error) {
-	type TextContentBlockAlias TextContentBlock
+	type textContentBlockAlias TextContentBlock
 	return jsonstr.Marshal(struct {
 		Type string `json:"type"`
-		TextContentBlockAlias
+		textContentBlockAlias
 	}{
 		Type:                  t.ToolResultContentType(),
-		TextContentBlockAlias: TextContentBlockAlias(t),
+		textContentBlockAlias: textContentBlockAlias(t),
 	})
 }
 

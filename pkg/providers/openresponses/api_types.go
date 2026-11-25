@@ -176,14 +176,14 @@ type MessageItem struct {
 // MarshalJSON writes the item as its struct tags do, plus `"id": ""` when an
 // empty id was set explicitly (TS `itemId != null && {id}`).
 func (m MessageItem) MarshalJSON() ([]byte, error) {
-	type Plain MessageItem
+	type plain MessageItem
 	if m.ID != "" || !m.idSet {
-		return jsonstr.Marshal(Plain(m))
+		return jsonstr.Marshal(plain(m))
 	}
 	return jsonstr.Marshal(struct {
-		Plain
+		plain
 		ID *string `json:"id"`
-	}{Plain: Plain(m), ID: &m.ID})
+	}{plain: plain(m), ID: &m.ID})
 }
 
 // InputTextContent represents text input
