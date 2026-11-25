@@ -17,6 +17,38 @@ type ShadowOptions struct {
 // Shadow wraps approval in audit mode. By default the wrapped policy is
 // evaluated and reported, but the effective decision is approved.
 func Shadow(approval types.ToolApprovalConfig, opts ...ShadowOptions) types.GenericToolApprovalFunc {
+	return NewShadow(approval, opts...).Func()
+}
+
+// ShadowApproval is Shadow with the WrapMCPTools fallback hook (TS fac1d6a588:
+// shadow passes the hook of the policy it wraps on). Shadow itself returns
+// the plain function.
+type ShadowApproval struct {
+	approval types.ToolApprovalConfig
+	opts     []ShadowOptions
+}
+
+// NewShadow is Shadow returning the approval object.
+func NewShadow(approval types.ToolApprovalConfig, opts ...ShadowOptions) *ShadowApproval {
+	return &ShadowApproval{approval: approval, opts: opts}
+}
+
+// ApplyApprovalFallback implements FallbackApproval when the wrapped approval
+// does; it returns nil otherwise (see CanApplyApprovalFallback).
+func (s *ShadowApproval) ApplyApprovalFallback(fallback types.ToolApprovalStatus) types.GenericToolApprovalFunc {
+	inner, ok := s.approval.(FallbackApproval)
+	if !ok {
+		return s.Func()
+	}
+	return NewShadow(inner.ApplyApprovalFallback(fallback), s.opts...).Func()
+}
+
+// Func returns the shadow as a GenericToolApprovalFunc.
+func (s *ShadowApproval) Func() types.GenericToolApprovalFunc {
+	return shadowFunc(s.approval, s.opts...)
+}
+
+func shadowFunc(approval types.ToolApprovalConfig, opts ...ShadowOptions) types.GenericToolApprovalFunc {
 	cfg := ShadowOptions{}
 	if len(opts) > 0 {
 		cfg = opts[0]
@@ -53,6 +85,10 @@ func evaluateApprovalConfig(approval types.ToolApprovalConfig, args types.ToolAp
 	switch v := approval.(type) {
 	case nil:
 		return nil
+	case *OPAApproval:
+		return v.Func()(args)
+	case *ShadowApproval:
+		return v.Func()(args)
 	case types.GenericToolApprovalFunc:
 		return v(args)
 	case types.ToolApprovalFunc: //nolint:staticcheck // legacy function type still accepted for backward compatibility

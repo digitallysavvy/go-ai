@@ -95,8 +95,8 @@ func TestWorkflowPrepareStepHeadersReachModelCall(t *testing.T) {
 			}
 			m.mu.Lock()
 			defer m.mu.Unlock()
-			if len(m.headers) != 2 || m.headers[0] != "1/" || m.headers[1] != "1/" {
-				t.Fatalf("model call headers = %q, want [1/ 1/]", m.headers)
+			if len(m.headers) != 2 || m.headers[0] != "1/" || m.headers[1] != "/" {
+				t.Fatalf("model call headers = %q, want [1/ /]; the override applies to step 0 only (TS ec23d2d15c)", m.headers)
 			}
 		})
 	}
