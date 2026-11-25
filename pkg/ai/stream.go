@@ -655,6 +655,9 @@ type StreamTextResult struct {
 	// rawFinishReason is the raw finish reason string from the provider.
 	rawFinishReason string
 
+	// stoppedBy is why the tool loop stopped (TS stoppedBy).
+	stoppedBy StoppedBy
+
 	// stepRequest holds the last request metadata for the Request() accessor.
 	stepRequest types.StepRequest
 
@@ -2053,6 +2056,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	// steeringEndReason says why waiting steering messages are not delivered
 	// when the loop ends.
 	steeringEndReason := SteeringFinished
+	stoppedBy := StoppedByModel
 	// currentToolChoice tracks the tool choice actually used to open each
 	// step's stream (bootstrapAndStream's resolved value, including any
 	// PrepareStep override, for step 1; then whatever PrepareStep resolves
@@ -4133,6 +4137,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		}
 		if hasUserApproval || skipStepTools {
 			steeringEndReason = SteeringWaitingForToolResults
+			stoppedBy = pendingToolCallStoppedBy(allSteps[len(allSteps)-1])
 			break
 		}
 
@@ -4148,6 +4153,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// Tool calls left unexecuted (unsafe finish reason) stop the loop.
 		if hasUnresolvedLocalToolCalls(stepToolCalls, toolsByName, stepToolResults) {
 			steeringEndReason = SteeringWaitingForToolResults
+			stoppedBy = pendingToolCallStoppedBy(allSteps[len(allSteps)-1])
 			break
 		}
 		if !hasLocalToolCalls && len(pendingDeferredToolCalls) == 0 {
@@ -4156,6 +4162,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			// that was not cut off (TS stream-text.ts 3392-3400).
 			truncated := r.finishReason == types.FinishReasonLength || r.finishReason == types.FinishReasonContentFilter
 			if !r.steering.hasPendingMessages() && (truncated || !r.steering.promoteQueuedMessage()) {
+				stoppedBy = modelStoppedBy(allSteps[len(allSteps)-1])
 				break
 			}
 			if r.finishReason == types.FinishReasonError {
@@ -4175,6 +4182,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			if reason := EvaluateStopConditions(stopConditions, state); reason != "" {
 				r.stopReason = reason
 				steeringEndReason = SteeringStopCondition
+				stoppedBy = StoppedByStopCondition
 				break
 			}
 		}
@@ -4559,6 +4567,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		r.steering.end(steeringEndReasonFor(ctx, r.err))
 	} else {
 		r.steering.end(steeringEndReason)
+		r.mu.Lock()
+		r.stoppedBy = stoppedBy
+		r.mu.Unlock()
 	}
 
 	// notifyOpenStepError reports a step that started without producing a
@@ -4893,6 +4904,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		StaticToolResults:  lastStep.StaticToolResults,
 		DynamicToolResults: lastStep.DynamicToolResults,
 		FinishReason:       endFinishReason,
+		StoppedBy:          r.stoppedBy,
 		RawFinishReason:    lastStep.RawFinishReason,
 		Usage:              lastStep.Usage,
 		Steps:              stepsForEvent,
@@ -5405,6 +5417,18 @@ func (r *StreamTextResult) RawFinishReason() string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.rawFinishReason
+}
+
+// StoppedBy returns why the tool loop stopped: the model, a stop condition, a
+// tool without Execute, or a tool approval. Unlike FinishReason, which
+// describes the last model call, it tells what ended the loop. Empty when the
+// run failed or was aborted. Only available after stream completes (TS
+// result.stoppedBy).
+func (r *StreamTextResult) StoppedBy() StoppedBy {
+	_ = r.ensureConsumed()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.stoppedBy
 }
 
 // ResponseHeaders returns the raw HTTP response headers from the provider.

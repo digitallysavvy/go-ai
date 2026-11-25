@@ -487,6 +487,11 @@ type OnFinishEvent struct {
 	// FinishReason of the last step
 	FinishReason types.FinishReason
 
+	// StoppedBy says why the tool loop stopped: the model, a stop condition,
+	// a tool without Execute, or a tool approval. Empty when the run ended
+	// without a loop decision (an error end). Mirrors TS onEnd `stoppedBy`.
+	StoppedBy StoppedBy
+
 	// Usage is the token usage summed across all steps (TS onEnd:
 	// `usage: totalUsage`); it equals TotalUsage. The final step's own usage
 	// is FinalStep.Usage.

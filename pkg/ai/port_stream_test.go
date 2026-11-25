@@ -366,3 +366,72 @@ func TestPortStreamApprovalMessagesSliceWithPrepareStepResult(t *testing.T) {
 		t.Fatal("messages slices must be shared within a step and new for every step")
 	}
 }
+
+// TS 7760e33531 stoppedBy: why the tool loop stopped, on the result and the
+// onEnd event.
+func TestPortStreamStoppedBy(t *testing.T) {
+	t.Parallel()
+	call := func(id string) provider.StreamChunk {
+		return provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: id, ToolName: "tool1", Arguments: map[string]interface{}{"value": "v"}}}
+	}
+	withExec := types.Tool{Name: "tool1", Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+		return "r", nil
+	}}
+	noExec := types.Tool{Name: "tool1"}
+	toolStep := func() []provider.StreamChunk {
+		return []provider.StreamChunk{call("c1"), {Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls}}
+	}
+	textStep := func(reason types.FinishReason) []provider.StreamChunk {
+		return []provider.StreamChunk{{Type: provider.ChunkTypeText, Text: "hi"}, {Type: provider.ChunkTypeFinish, FinishReason: reason}}
+	}
+	cases := []struct {
+		name  string
+		steps [][]provider.StreamChunk
+		tool  types.Tool
+		opts  func(*StreamTextOptions)
+		want  StoppedBy
+	}{
+		{"final answer", [][]provider.StreamChunk{textStep(types.FinishReasonStop)}, withExec, nil, StoppedByModel},
+		{"cut off by length", [][]provider.StreamChunk{textStep(types.FinishReasonLength)}, withExec, nil, StoppedByModel},
+		{"step limit", [][]provider.StreamChunk{toolStep(), toolStep()}, withExec, func(o *StreamTextOptions) { o.StopWhen = []StopCondition{StepCountIs(1)} }, StoppedByStopCondition},
+		{"tool without execute", [][]provider.StreamChunk{toolStep()}, noExec, nil, StoppedByToolWithoutExecute},
+		{"needs approval", [][]provider.StreamChunk{toolStep()}, withExec, func(o *StreamTextOptions) {
+			o.ToolApproval = map[string]types.ToolApprovalValue{"tool1": types.ToolApprovalStatusUserApproval}
+		}, StoppedByApproval},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var n int32
+			model := &testutil.MockLanguageModel{DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+				i := int(atomic.AddInt32(&n, 1)) - 1
+				if i >= len(tc.steps) {
+					i = len(tc.steps) - 1
+				}
+				return testutil.NewMockTextStream(tc.steps[i]), nil
+			}}
+			var mu sync.Mutex
+			var onEnd StoppedBy
+			opts := StreamTextOptions{Model: model, Prompt: "x", Tools: []types.Tool{tc.tool},
+				OnEndEvent: func(_ context.Context, e OnFinishEvent) { mu.Lock(); onEnd = e.StoppedBy; mu.Unlock() }}
+			if tc.opts != nil {
+				tc.opts(&opts)
+			}
+			res, err := StreamText(context.Background(), opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := res.ConsumeStream(); err != nil {
+				t.Fatal(err)
+			}
+			if got := res.StoppedBy(); got != tc.want {
+				t.Fatalf("StoppedBy() = %q, want %q", got, tc.want)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if onEnd != tc.want {
+				t.Fatalf("onEnd StoppedBy = %q, want %q", onEnd, tc.want)
+			}
+		})
+	}
+}
