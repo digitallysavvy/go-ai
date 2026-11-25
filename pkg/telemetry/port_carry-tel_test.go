@@ -340,3 +340,24 @@ func TestPortcarrytelExtractStateStripsPartProviderOptions(t *testing.T) {
 		t.Errorf("input modified")
 	}
 }
+
+// TS open-telemetry.ts: only onLanguageModelCallStart (text calls) ends an
+// open chat span when a new model call starts; onObjectStepStart does not.
+// Without the object guard the second start would end the first chat span.
+func TestPortcarrytelObjectCallRepeatedModelCallStartKeepsOpenChatSpan(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	set := &Settings{Integrations: []TelemetryIntegration{NewOpenTelemetry(OpenTelemetryOptions{Tracer: tp.Tracer("t")})}}
+	id := t.Name()
+	ctx := FireOnStart(context.Background(), TelemetryStartEvent{Settings: set, CallID: id, OperationType: "ai.generateObject", ModelID: "m", ModelProvider: "openai.chat"})
+	ctx = FireOnStepStart(ctx, TelemetryStepStartEvent{Settings: set, CallID: id, OperationType: "ai.generateObject"})
+	start := LanguageModelCallStartEvent{Settings: set, CallID: id, ModelID: "m", ModelProvider: "openai.chat"}
+	FireOnLanguageModelCallStart(ctx, start)
+	ctx2 := FireOnLanguageModelCallStart(ctx, start)
+	for _, s := range rec.Ended() {
+		if s.Name() == "chat m" {
+			t.Fatalf("an object call's repeated model-call start ended the open chat span (status %v)", s.Status().Code)
+		}
+	}
+	FireOnLanguageModelCallEnd(ctx2, LanguageModelCallEndEvent{Settings: set, CallID: id, ModelID: "m", ModelProvider: "openai.chat", FinishReason: "stop"})
+}
