@@ -266,6 +266,12 @@ type StreamChunk struct {
 	// event it carries the failure's raw reason, or "error" if none was given.
 	RawFinishReason string
 
+	// StoppedBy says why the tool loop stopped, on the call-level finish
+	// chunk that StreamText emits (TS finish part `stoppedBy`, 7760e33531):
+	// "model", "stop-condition", "tool-without-execute" or "approval". Empty
+	// on provider chunks and on chunks that carry no finish.
+	StoppedBy string
+
 	// Context management information (Anthropic-specific)
 	// Contains statistics about automatic conversation history cleanup
 	// Available when Type is ChunkTypeFinish or ChunkTypeMetadata

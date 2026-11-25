@@ -357,7 +357,7 @@ func TestPortcarrywfStepsReportTheConfiguredModel(t *testing.T) {
 
 // portcarrywfStreamCRApplied is false until cr-port-carry-wf-to-stream.md is
 // applied to pkg/ai/stream.go (owned by stream); the integrator flips it.
-const portcarrywfStreamCRApplied = false
+const portcarrywfStreamCRApplied = true
 
 // TS 453d8804a7 (workflow-agent-tool-input-hooks.test.ts): the tool input
 // callbacks of stream() match the generic stream loop.

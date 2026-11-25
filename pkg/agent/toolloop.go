@@ -554,6 +554,7 @@ func (a *ToolLoopAgent) Stream(ctx context.Context, opts AgentStreamOptions) (*a
 		OnStart:                        cbs.onStart,
 		OnStepStart:                    cbs.onStepStart,
 		OnStepError:                    config.OnStepError,
+		OnWarning:                      config.OnWarning,
 		ExperimentalSteering:           opts.ExperimentalSteering,
 		OnToolExecutionStart:           cbs.onToolCallStart,
 		OnToolExecutionEnd:             cbs.onToolCallFinish,

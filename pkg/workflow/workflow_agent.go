@@ -2742,16 +2742,10 @@ func workflowDefaultStopCondition(stepCount int) ai.StopCondition {
 			return ""
 		}
 		model := state.Steps[len(state.Steps)-1].Model
-		ai.LogWarnings(ai.LogWarningsOptions{
-			Provider: model.Provider,
-			Model:    model.ModelID,
-			Warnings: []types.Warning{{
-				Type: "other",
-				Message: fmt.Sprintf("The tool loop stopped because it reached the default stopWhen condition, IsStepCount(%d). ", stepCount) +
-					"To allow more steps, set StopWhen to IsStepCount(...) with a higher limit or provide a custom stop condition. " +
-					"Learn more: https://ai-sdk.dev/docs/agents/loop-control",
-			}},
-		})
+		// Same warning as the ToolLoopAgent default limit (TS f43ee39373
+		// shares createDefaultStopCondition); WorkflowAgent has no OnWarning,
+		// so it goes to the global logger.
+		agent.LogDefaultStopConditionWarning(stepCount, model.Provider, model.ModelID, nil)
 		return reason
 	}
 }

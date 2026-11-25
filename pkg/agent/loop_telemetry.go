@@ -468,7 +468,10 @@ func (a *ToolLoopAgent) endLoopRoot(ctx context.Context, root loopRoot, result *
 	var allToolCalls []types.ToolCall
 	var allToolResults []types.ToolResult
 	var allFiles []types.GeneratedFileContent
+	// TS onEndEvent.content: every step's content in order (71410a4755).
+	allContent := make([]types.ContentPart, 0)
 	for _, step := range result.Steps {
+		allContent = append(allContent, step.Content...)
 		allToolCalls = append(allToolCalls, step.ToolCalls...)
 		allToolResults = append(allToolResults, step.ToolResults...)
 		allFiles = append(allFiles, step.Files...)
@@ -488,6 +491,7 @@ func (a *ToolLoopAgent) endLoopRoot(ctx context.Context, root loopRoot, result *
 		OperationType:  "ai.generateText",
 		FinishReason:   string(result.FinishReason),
 		Usage:          telemetryUsage(result.Usage),
+		Content:        allContent,
 		ModelProvider:  provider,
 		ModelID:        modelID,
 		Text:           result.Text,

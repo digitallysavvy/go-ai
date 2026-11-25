@@ -409,7 +409,10 @@ func (d *turnDriver) telEnd(steps []types.StepResult, totalUsage types.Usage) {
 	var toolCalls []types.ToolCall
 	var toolResults []types.ToolResult
 	var files []types.GeneratedFileContent
+	// TS lifecycle.end content: every step's content in order (71410a4755).
+	content := make([]types.ContentPart, 0)
 	for _, st := range steps {
+		content = append(content, st.Content...)
 		toolCalls = append(toolCalls, st.ToolCalls...)
 		toolResults = append(toolResults, st.ToolResults...)
 		files = append(files, st.Files...)
@@ -446,6 +449,7 @@ func (d *turnDriver) telEnd(steps []types.StepResult, totalUsage types.Usage) {
 		OperationType: "ai.harness",
 		FinishReason:  string(finalStep.FinishReason),
 		Usage:         telemetryUsageFromTypesUsage(totalUsage),
+		Content:       content,
 		ModelProvider: "harness:" + d.in.Harness.HarnessID(),
 		ModelID:       d.modelID,
 		Text:          finalStep.Text,

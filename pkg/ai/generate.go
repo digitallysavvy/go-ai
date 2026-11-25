@@ -1931,12 +1931,11 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			// An approved local call that did not run (no Execute, or a finish
 			// reason that blocks execution) still records its approval
 			// request and response, as TS does.
-			attachSignaturesToIssuedApprovals(toolResults, opts.ExperimentalToolApprovalSecret)
+			// attachToolApprovalSignatures leaves an automatic denial unsigned
+			// (TS 63593a7f6a).
+			attachToolApprovalSignatures(toolResults, opts.ExperimentalToolApprovalSecret)
 			contentResults := invalidToolErrorsFirst(withApprovedUnexecutedCalls(toolResults, toolsToExecute, stepExecutionTools, preApprovals), toolsToExecute)
-			// Signed here, not by toolResultsToContentParts, so that an
-			// automatic denial stays unsigned (TS 63593a7f6a).
-			attachSignaturesToIssuedApprovals(contentResults, opts.ExperimentalToolApprovalSecret)
-			stepResult.Content = append(stepResult.Content, attachInputSchemaInputs(toolResultsToContentParts(contentResults), inputSchemaInputs(preRefinementCalls, genResult.ToolCalls))...)
+			stepResult.Content = append(stepResult.Content, attachInputSchemaInputs(toolResultsToContentParts(contentResults, opts.ExperimentalToolApprovalSecret), inputSchemaInputs(preRefinementCalls, genResult.ToolCalls))...)
 			stepResult.Performance = finishStepPerformance(stepResult.Performance, stepStart, toolCallbacks.toolExecutionMs)
 			result.ToolResults = append(result.ToolResults, publicResults...)
 			result.StaticToolResults = filterStaticToolResults(result.ToolResults)
@@ -2359,6 +2358,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		OperationType:    "ai.generateText",
 		FinishReason:     string(result.FinishReason),
 		Usage:            telUsage,
+		Content:          allStepsContent(result.Steps),
 		ModelProvider:    endProvider,
 		ModelID:          endModelID,
 		Text:             result.Text,
@@ -2433,6 +2433,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		Steps:              result.Steps,
 		TotalUsage:         result.Usage,
 		Warnings:           result.Warnings,
+		StoppedBy:          result.StoppedBy,
 		Sources:            lastSources,
 		Files:              result.Files,
 		ProviderMetadata:   result.ProviderMetadata,

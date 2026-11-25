@@ -151,6 +151,18 @@ func reasoningFilesOf(content []types.ContentPart) []types.ReasoningFileContent 
 	return out
 }
 
+// allStepsContent is TS `steps.flatMap(step => step.content)`: the content of
+// every step in order, for TelemetryFinishEvent.Content (TS 71410a4755). The
+// result is never nil, so the telemetry integration always formats the root
+// span's output from it.
+func allStepsContent(steps []types.StepResult) []types.ContentPart {
+	out := make([]types.ContentPart, 0)
+	for _, step := range steps {
+		out = append(out, step.Content...)
+	}
+	return out
+}
+
 func generateResultContentParts(result *types.GenerateResult) []types.ContentPart {
 	if result == nil {
 		return nil
