@@ -1185,6 +1185,7 @@ func attachToRunningBridge(ctx context.Context, sandboxSession providerutils.San
 		Connect:                bridge.NewBridgeConnectFunc(endpoint, bridge.BridgeConnectOptions{Name: settings.HarnessID + " ACP bridge", AuthPrivateKey: coords.PrivateKey}),
 		Decode:                 decodeOutbound,
 		InitialLastSeenEventID: coords.LastSeenEventID, OnBridgeError: onBridgeErr, OnDiagnostic: onDiagnostic, Reconnect: settings.Reconnect,
+		KeepAlive: settings.KeepAlive,
 	})
 	if err := channel.Open(ctx, isContinue); err != nil {
 		return nil, err

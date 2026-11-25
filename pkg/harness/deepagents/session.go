@@ -359,6 +359,7 @@ func attachToRunningBridge(ctx context.Context, sandboxSession providerutils.San
 		OnBridgeError:          onBridgeErr,
 		OnDiagnostic:           onDiagnostic,
 		Reconnect:              settings.Reconnect,
+		KeepAlive:              settings.KeepAlive,
 	})
 	if err := channel.Open(ctx, isContinue); err != nil {
 		return nil, false

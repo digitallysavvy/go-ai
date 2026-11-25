@@ -44,6 +44,11 @@ type Settings struct {
 	// finishes. Mirrors TS `hostDisconnectTimeoutMs` (a54f0fd8c6).
 	HostDisconnectTimeout time.Duration
 	Reconnect             bridge.ReconnectOptions
+	// KeepAlive is the WebSocket ping interval (TS `keepAliveMs`, 04a8f3837e).
+	// Zero uses the default of 20s; a negative value disables the heartbeat
+	// (TS `keepAliveMs: 0`). Two unanswered pings with no inbound bytes
+	// terminate the socket and trigger the bounded reconnect.
+	KeepAlive time.Duration
 	// MintBridgeToken is ignored; CreateOpenCode logs a warning when it is
 	// set.
 	//
@@ -363,7 +368,7 @@ func (h *openCodeHarness) DoStart(ctx context.Context, opts harness.StartOptions
 			Name: "OpenCode bridge", OpenRetryTimeout: timeout, StartContext: ctx, AuthPrivateKey: bridgeAuth.PrivateKey,
 			OnHello: trackUserMessageResponses(&supportsUserMessageResponses),
 		}),
-		Reconnect: settings.Reconnect, OnBridgeError: onBridgeErr, OnDiagnostic: onDiagnostic,
+		Reconnect: settings.Reconnect, KeepAlive: settings.KeepAlive, OnBridgeError: onBridgeErr, OnDiagnostic: onDiagnostic,
 	}
 	if respawnStrategy == "replay" && coords != nil {
 		channelOpts.InitialLastSeenEventID = coords.LastSeenEventID

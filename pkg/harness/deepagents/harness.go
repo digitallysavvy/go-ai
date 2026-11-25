@@ -54,6 +54,11 @@ type Settings struct {
 	// Reconnect configures reconnection after an established bridge
 	// connection drops.
 	Reconnect bridge.ReconnectOptions
+	// KeepAlive is the WebSocket ping interval (TS `keepAliveMs`, 04a8f3837e).
+	// Zero uses the default of 20s; a negative value disables the heartbeat
+	// (TS `keepAliveMs: 0`). Two unanswered pings with no inbound bytes
+	// terminate the socket and trigger the bounded reconnect.
+	KeepAlive time.Duration
 	// MintBridgeToken is ignored; CreateDeepAgents logs a warning when it is
 	// set.
 	//
@@ -293,6 +298,7 @@ func (h *deepAgentsHarness) DoStart(ctx context.Context, opts harness.StartOptio
 	channel := bridge.NewChannel(bridge.ChannelOptions{
 		Connect:       bridge.NewBridgeConnectFunc(launched.Endpoint, bridge.BridgeConnectOptions{Name: "deepagents bridge", OpenRetryTimeout: timeout, StartContext: ctx, AuthPrivateKey: bridgeAuth.PrivateKey}),
 		Reconnect:     settings.Reconnect,
+		KeepAlive:     settings.KeepAlive,
 		OnBridgeError: onBridgeErr,
 		OnDiagnostic:  onDiagnostic,
 	})
