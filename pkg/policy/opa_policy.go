@@ -56,14 +56,77 @@ func OPAPolicy(client PolicyClient, opts OPAPolicyOptions) types.GenericToolAppr
 // symbol-keyed function on the approval function opaPolicy returns; a Go func
 // value cannot carry one, so the hook is a method here. WrapMCPTools,
 // NewShadow and OptionalOPAPolicy-style helpers recognize it through
-// FallbackApproval. Passing the plain Func() result to WrapMCPTools applies the
-// fallback to the combined decision only (TS: a custom wrapper function does
-// the same).
+// FallbackApproval. The plain function OPAPolicy returns takes the fallback
+// from the options WrapMCPTools passes it, so it applies the fallback to every
+// evaluation as well.
 type OPAApproval struct {
 	client   PolicyClient
 	opts     OPAPolicyOptions
 	fallback types.ToolApprovalStatus
 	state    *opaState
+
+	mu       sync.Mutex
+	variants map[types.ToolApprovalStatus]*OPAApproval
+}
+
+// approvalFallbackKey is the ToolsContext key under which WrapMCPTools hands
+// its fallback to a plain approval function. A Go func value carries no hidden
+// property the way TS's symbol-keyed hook does, so the fallback travels in the
+// options of the call instead: only the functions OPAPolicy and Shadow return
+// read it, and they remove it before anything else (the policy input, a custom
+// ToInput, the wrapped approval of a Shadow that is not OPA) sees the options.
+const approvalFallbackKey = "\x00go-ai/policy.approvalFallback"
+
+type approvalFallbackCarrier struct{ fallback types.ToolApprovalStatus }
+
+// withApprovalFallback returns args carrying fallback; the caller's
+// ToolsContext map is not modified.
+func withApprovalFallback(args types.ToolApprovalOptions, fallback types.ToolApprovalStatus) types.ToolApprovalOptions {
+	ctx := make(map[string]interface{}, len(args.ToolsContext)+1)
+	for k, v := range args.ToolsContext {
+		ctx[k] = v
+	}
+	ctx[approvalFallbackKey] = approvalFallbackCarrier{fallback: fallback}
+	args.ToolsContext = ctx
+	return args
+}
+
+// takeApprovalFallback removes the carrier from args.
+func takeApprovalFallback(args types.ToolApprovalOptions) (types.ToolApprovalOptions, types.ToolApprovalStatus, bool) {
+	c, ok := args.ToolsContext[approvalFallbackKey].(approvalFallbackCarrier)
+	if !ok {
+		return args, "", false
+	}
+	ctx := make(map[string]interface{}, len(args.ToolsContext))
+	for k, v := range args.ToolsContext {
+		if k != approvalFallbackKey {
+			ctx[k] = v
+		}
+	}
+	if len(ctx) == 0 {
+		ctx = nil
+	}
+	args.ToolsContext = ctx
+	return args, c.fallback, true
+}
+
+// forFallback is the approval that applies fallback to every evaluation. Each
+// fallback has its own evaluation history (TS createApproval(fallback)).
+func (a *OPAApproval) forFallback(fallback types.ToolApprovalStatus) *OPAApproval {
+	if fallback == a.fallback {
+		return a
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if v, ok := a.variants[fallback]; ok {
+		return v
+	}
+	if a.variants == nil {
+		a.variants = map[types.ToolApprovalStatus]*OPAApproval{}
+	}
+	v := &OPAApproval{client: a.client, opts: a.opts, fallback: fallback, state: newOPAState()}
+	a.variants[fallback] = v
+	return v
 }
 
 // FallbackApproval is an approval that can apply a WrapMCPTools fallback to
@@ -83,6 +146,9 @@ func NewOPAPolicy(client PolicyClient, opts OPAPolicyOptions) *OPAApproval {
 // Func returns the approval as a GenericToolApprovalFunc.
 func (a *OPAApproval) Func() types.GenericToolApprovalFunc {
 	return func(approval types.ToolApprovalOptions) types.ToolApprovalResult {
+		if stripped, fallback, ok := takeApprovalFallback(approval); ok {
+			return a.forFallback(fallback).approve(stripped)
+		}
 		return a.approve(approval)
 	}
 }
