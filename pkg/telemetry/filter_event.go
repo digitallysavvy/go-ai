@@ -48,7 +48,7 @@ func isHiddenToolError(err error) bool {
 //     non-string Output are cleared; Messages, PromptMessages,
 //     ExperimentalSteeringMessages, Values, Documents and ProviderOptions
 //     become empty; Value and Query become empty; State becomes an empty
-//     list, "" or an empty object by its kind; Questions an empty object;
+//     list, "" or an empty object by its kind; Questions and Fields an empty object, ReferenceDate cleared;
 //     Text only for "ai.generateSpeech"; the Document of each Ranking entry
 //     becomes "" or an empty object.
 //   - outputs hidden: Content, Files, Sources, the tool call and tool result
@@ -246,6 +246,11 @@ func filterStruct(s reflect.Value, hideInputs, hideOutputs bool) {
 		if f, ok := settableField(s, "Questions"); ok {
 			f.Set(emptyObjectLike(f, false))
 		}
+		// TS 15bfd6b262: extraction `fields: {}`, `referenceDate: undefined`.
+		if f, ok := settableField(s, "Fields"); ok {
+			f.Set(emptyObjectLike(f, false))
+		}
+		clearFields(s, "ReferenceDate")
 		if isSpeech {
 			clearFields(s, "Text")
 		}

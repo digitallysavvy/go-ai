@@ -205,3 +205,29 @@ func TestPortcarrytelSteeringInterruptEndsCancelledModelCallSpan(t *testing.T) {
 		}
 	}
 }
+
+// TS fab74785e6 (redaction keeps a stream a subscriber replaced): Go events
+// are values handed to subscribers, with no stream to forward. The matching
+// guarantee here is that redaction copies only along a changed path and
+// leaves a body that holds no credential as the very same value, with the
+// caller's event untouched.
+func TestPortcarrytelRedactionKeepsBodyWithoutCredentials(t *testing.T) {
+	type resp struct {
+		Body interface{}
+	}
+	type event struct {
+		Response *resp
+		Other    string
+	}
+	body := map[string]interface{}{"id": "r1"}
+	in := event{Response: &resp{Body: body}, Other: "x"}
+	out := redactCredentials(in)
+	if out.Response != in.Response {
+		t.Errorf("response copied although nothing was redacted")
+	}
+	got, _ := out.Response.Body.(map[string]interface{})
+	got["id"] = "replaced"
+	if body["id"] != "replaced" {
+		t.Errorf("body is not the caller's value")
+	}
+}

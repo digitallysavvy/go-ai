@@ -3,9 +3,11 @@ package telemetry
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"reflect"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -95,6 +97,10 @@ func redactStructValue(s reflect.Value) (reflect.Value, bool) {
 			out, ok = redactStepsValue(f)
 		case "FinalStep":
 			out, ok = redactAnyValue(f)
+		default:
+			if sf.Type == errorInterface {
+				out, ok = redactErrorValue(f)
+			}
 		}
 		if ok {
 			changes = append(changes, replacement{i, out})
@@ -646,4 +652,38 @@ func redactOpenAIToolArgs(kind string, args map[string]interface{}, wire bool) (
 	out := copyRecord(args)
 	out[containerKey] = newContainer
 	return out, true
+}
+
+// redactErrorValue is TS redactDownloadError (15bfd6b262): an error that is
+// or wraps a download error becomes a telemetry-only *DownloadError with the
+// URL "[redacted]", the status kept, no cause, and the message "Failed to
+// download a file." A file URL can carry credentials (a signed query
+// string), and the original message and cause print it. Wrapping errors
+// around the download error are dropped with it, since their text repeats
+// the URL; errors.As still finds the *DownloadError. Other errors are left
+// as they are.
+func redactErrorValue(f reflect.Value) (reflect.Value, bool) {
+	if f.IsNil() {
+		return f, false
+	}
+	err, ok := f.Interface().(error)
+	if !ok {
+		return f, false
+	}
+	var download *providererrors.DownloadError
+	if !errors.As(err, &download) || download == nil {
+		return f, false
+	}
+	out := reflect.New(f.Type()).Elem()
+	out.Set(reflect.ValueOf(error(redactDownloadError(download))))
+	return out, true
+}
+
+func redactDownloadError(e *providererrors.DownloadError) *providererrors.DownloadError {
+	return &providererrors.DownloadError{
+		URL:        redactedToolValue,
+		StatusCode: e.StatusCode,
+		StatusText: e.StatusText,
+		Message:    "Failed to download a file.",
+	}
 }

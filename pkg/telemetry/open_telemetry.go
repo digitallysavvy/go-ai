@@ -79,6 +79,9 @@ type OpenTelemetryOptions struct {
 	//
 	// Deprecated: Use ExperimentalDecision instead.
 	ExperimentalEvaluation bool
+	// ExperimentalExtraction emits ai.extraction.* attributes (state, fields,
+	// reference date and answers; TS experimental_extraction).
+	ExperimentalExtraction bool
 	// RuntimeContext emits flattened ai.settings.context.* attributes.
 	RuntimeContext bool
 	// Headers emits ai.request.headers.* attributes.
@@ -1849,6 +1852,7 @@ func (i OpenTelemetry) closeOpenChildSpans(callID string, err error) {
 	}
 	end(rerankSpan)
 	end(takeEntry("decision"))
+	end(takeEntry("extraction"))
 }
 
 // OnStepError closes a still-open step span and the nested model-call

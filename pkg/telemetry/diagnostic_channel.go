@@ -37,9 +37,14 @@ const (
 	DiagnosticEventOnDecideEnd              DiagnosticEventType = "experimental_onDecideEnd"
 	DiagnosticEventOnDecisionModelCallStart DiagnosticEventType = "experimental_onDecisionModelCallStart"
 	DiagnosticEventOnDecisionModelCallEnd   DiagnosticEventType = "experimental_onDecisionModelCallEnd"
-	DiagnosticEventOnEnd                    DiagnosticEventType = "onEnd"
-	DiagnosticEventOnError                  DiagnosticEventType = "onError"
-	DiagnosticEventOnAbort                  DiagnosticEventType = "onAbort"
+
+	DiagnosticEventOnExtractStart             DiagnosticEventType = "experimental_onExtractStart"
+	DiagnosticEventOnExtractEnd               DiagnosticEventType = "experimental_onExtractEnd"
+	DiagnosticEventOnExtractionModelCallStart DiagnosticEventType = "experimental_onExtractionModelCallStart"
+	DiagnosticEventOnExtractionModelCallEnd   DiagnosticEventType = "experimental_onExtractionModelCallEnd"
+	DiagnosticEventOnEnd                      DiagnosticEventType = "onEnd"
+	DiagnosticEventOnError                    DiagnosticEventType = "onError"
+	DiagnosticEventOnAbort                    DiagnosticEventType = "onAbort"
 
 	// Deprecated compatibility aliases.
 	DiagnosticEventOnEmbedFinish  DiagnosticEventType = DiagnosticEventOnEmbedEnd
