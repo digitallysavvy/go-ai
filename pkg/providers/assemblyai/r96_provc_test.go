@@ -11,9 +11,10 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 )
 
-// TestR96provcUploadBase64AudioAsGiven: TS postToApi sends options.audio as
-// the upload content, so a base64 string audio is uploaded as that string.
-// Before, Go uploaded an empty body when only AudioBase64 was set.
+// TestR96provcUploadBase64AudioAsGiven: TS postToApi sends the upload
+// content, and since dd89e17ab2 a base64 string audio is decoded first (the
+// r96 form of this test expected the string itself; superseded). Before r96,
+// Go uploaded an empty body when only AudioBase64 was set.
 func TestR96provcUploadBase64AudioAsGiven(t *testing.T) {
 	var mu sync.Mutex
 	var uploaded string
@@ -33,13 +34,13 @@ func TestR96provcUploadBase64AudioAsGiven(t *testing.T) {
 	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
-	m := NewTranscriptionModel(New(Config{APIKey: "k", BaseURL: srv.URL}), "universal-3-5-pro")
+	m := NewTranscriptionModel(New(Config{APIKey: "k", BaseURL: srv.URL}), "assemblyai-stt-3-7")
 	if _, err := m.DoTranscribe(context.Background(), &provider.TranscriptionOptions{AudioBase64: "QUJD", MimeType: "audio/wav"}); err != nil {
 		t.Fatal(err)
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if uploaded != "QUJD" {
-		t.Fatalf("uploaded %q, want the base64 string as given", uploaded)
+	if uploaded != "ABC" {
+		t.Fatalf("uploaded %q, want the decoded bytes of the base64 string", uploaded)
 	}
 }

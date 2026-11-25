@@ -519,3 +519,28 @@ func TestPortProvcTranscriptionEmptyModelIDDefault(t *testing.T) {
 		t.Fatalf("model ID = %q", m.ModelID())
 	}
 }
+
+// 'should upload base64 audio as binary data' (dd89e17ab2)
+func TestPortProvcTranscriptionUploadsBase64AudioDecoded(t *testing.T) {
+	s := portprovcTranscriptionSetup(t)
+	raw := []byte{0x00, 0xff, 0x10, 0x80, 'I', 'D', '3'}
+	portprovcTranscribe(t, s, "assemblyai-stt-3-7", &provider.TranscriptionOptions{
+		AudioBase64: "AP8QgElEMw==", MimeType: "audio/mpeg",
+	})
+	if !reflect.DeepEqual(s.upload, raw) {
+		t.Fatalf("upload = %v, want the decoded bytes %v", s.upload, raw)
+	}
+}
+
+// A malformed base64 string fails before any request (TS atob throws).
+func TestPortProvcTranscriptionInvalidBase64FailsBeforeUpload(t *testing.T) {
+	s := portprovcTranscriptionSetup(t)
+	m, _ := s.provider.TranscriptionModel("assemblyai-stt-3-7")
+	_, err := m.DoTranscribe(context.Background(), &provider.TranscriptionOptions{AudioBase64: "a", MimeType: "audio/mpeg"})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if s.upload != nil {
+		t.Fatalf("upload happened: %v", s.upload)
+	}
+}

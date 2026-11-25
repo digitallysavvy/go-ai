@@ -285,15 +285,22 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	// TS: currentDate is taken before the upload.
 	currentDate := time.Now()
 
+	// TS: the upload endpoint takes the raw file, so a base64 string audio is
+	// decoded (a malformed string fails before any request).
+	audio, err := uploadContent(opts)
+	if err != nil {
+		return nil, err
+	}
+
 	// Step 1: Upload audio.
 	var uploadResult struct {
 		UploadURL string `json:"upload_url"`
 	}
-	_, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
+	_, err = m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
 		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaAssemblyAIUpload),
 		Method:           http.MethodPost,
 		Path:             "/upload",
-		Body:             uploadContent(opts),
+		Body:             audio,
 		// TS: { 'Content-Type': ..., ...combineHeaders(config, options.headers) },
 		// so a provider or call Content-Type wins over octet-stream.
 		Headers: internalhttp.MergeHeaders(map[string]string{
@@ -348,13 +355,15 @@ func (m *TranscriptionModel) uploadContentType() string {
 	return contentType
 }
 
-// uploadContent is TS postToApi's body.content (options.audio): the audio
-// bytes, or a base64 string audio as given (TS sends the string itself).
-func uploadContent(opts *provider.TranscriptionOptions) []byte {
+// uploadContent is TS doGenerate's upload content: the audio bytes, or the
+// decoded bytes of a base64 string audio (convertBase64ToUint8Array, so
+// base64url and unpadded input decode and a malformed string is the atob
+// error).
+func uploadContent(opts *provider.TranscriptionOptions) ([]byte, error) {
 	if len(opts.Audio) == 0 && opts.AudioBase64 != "" {
-		return []byte(opts.AudioBase64)
+		return fileutil.ConvertBase64ToBytes(opts.AudioBase64)
 	}
-	return opts.Audio
+	return opts.Audio, nil
 }
 
 // waitForCompletion polls the given transcript until it reaches a terminal
