@@ -8,7 +8,7 @@ import (
 )
 
 // TS elevenlabs-transcription-model.ts: a committed transcript's text goes
-// through `(raw.text ?? '').trim()` and the timestamped words through
+// through `(raw.text ?? "").trim()` and the timestamped words through
 // `words.filter(word => typeof word.start ...)`. A non-string text, a
 // non-array words value or a null word throws a TypeError, which fails the
 // stream (onProcessingError). Go read them as empty and went on.
