@@ -873,6 +873,21 @@ A LangGraph tool call chunk, tool call or action request whose id, name or args 
 ## Anthropic provider tool calls without an input
 An Anthropic `server_tool_use` or `mcp_tool_use` block that has no `input` key is reported with the input `{}`. TS reports `JSON.stringify(undefined)` (undefined), which the core turns into an invalid tool call (S1: `ToolCallContent.Input` is a v0.5.2 string where an empty value already means an empty object; an absent state needs a new exported field; review round 98).
 
+## WorkflowChatTransport dot-segment chat IDs
+`WorkflowChatTransport.ReconnectToStream` (and a recovery reconnect that uses the default URL) rejects a run or chat ID of `.` or `..` with an `InvalidArgumentError` (`Chat IDs must not be "." or ".." when using the default reconnect URL.`), as TS `HttpChatTransport` does since #21649. TS `WorkflowChatTransport` sends the request, and URL dot-segment normalization then sends it to another route (S2: path confusion with the configured credentials; review round 99).
+
+## Bedrock SigV4 credential fallbacks
+Without credentials in the options or the environment, Bedrock and Bedrock Converse read the shared credentials file (`SharedCredentialsFile` / `AWS_SHARED_CREDENTIALS_FILE`, else `~/.aws/credentials`; profile `Profile` / `AWS_PROFILE`, else `default`) and then the EC2 instance role (IMDSv2). TS fails with its missing-credentials error (S6: shipped and documented in v0.5.2, `bedrock.Config.SharedCredentialsFile` / `Profile`; review round 99).
+
+## ElevenLabs realtime transcription field types
+ElevenLabs realtime transcription reads a partial transcript's `text`, a timestamped event's `language_code` and a word's `text` only as strings (another value reads as empty or keeps the earlier language). TS passes a number or other value through as the partial text, the detected language or a segment text (S1: `TranscriptionStreamPart.Text`, the result `Language` and `TranscriptSegment.Text` are v0.5.2 strings). Where TS `trim` / `filter` throw a TypeError, Go fails the stream too, with the V8 text (review round 99).
+
+## TS test replays skipped in round 99
+
+Fireworks "should handle empty response body": the TS mock serves `new Response(null)` with status 200, a null body that real `fetch` gives only to a 204 / 205 (an empty 200 body is an empty stream, so TS returns an empty image, as Go does). The null-body case is covered at 204 by `TestR89provbEmptyImageBodyKeepsHeaders` and `TestR99provbSyncImageEmptyBody` (review round 99).
+
+Reason: S3 (the recording cannot carry the mock's null body on a 200).
+
 ## Features that are TypeScript-only (not ported)
 
 - **OpenAI Live over WebRTC** — the browser transport for OpenAI's realtime

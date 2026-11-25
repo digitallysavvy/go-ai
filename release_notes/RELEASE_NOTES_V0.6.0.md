@@ -371,6 +371,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **Numbers beyond the double range read as Infinity and are written as null** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#out-of-range-numbers)
 - **Output and LangGraph round 97 details** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#gen-r97-details)
 - **Tool errors, LangGraph events and object metadata round 98 details** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#gen-r98-details)
+- **Tool-call replay, approvals and LangGraph round 99 details** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#gen-r99-details)
 
 #### Prompts and validation
 
@@ -540,6 +541,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **ValidateUIMessages part type, state and invalid-value errors match TS** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#validate-ui-messages-selector)
 - **UI message stream round 97 details** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#stream-r97-details)
 - **StreamText provider metadata round 98 details** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#stream-r98-details)
+- **External streams and UI message stream round 99 details** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#stream-r99-details)
 
 #### Telemetry and events
 
@@ -624,6 +626,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **A cancel during a retry backoff returns the context error** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#retry-abort-during-backoff)
 - **JSON payloads with `__proto__` keys fail like TS** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#json-proto-payloads-fail)
 - **One JSONParseError with the SyntaxError cause text** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#json-parse-error-single)
+- **Successful 204 / 205 responses fail as in TS** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#null-body-204-205)
 
 #### Providers
 
@@ -962,6 +965,15 @@ search for and ends with a checklist for coding agents. Entries marked
 - **OpenAI, Azure, xAI and OpenAI-compatible round 98 details** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#provb-r98-details)
 - **Media provider round 98 details** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#provc-r98-details)
 - **Google and Groq round 98 details** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#provg-r98-details)
+- **Status polls and downloads carry the TS user agent** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#poll-download-user-agent)
+- **Per-call headers win over provider headers of any spelling on more request paths** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#header-precedence-r99)
+- **Bedrock Anthropic streams report the SSE content type** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#bedrock-anthropic-stream-content-type)
+- **Video status operations decode with exact key names** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#video-status-operation-exact-keys)
+- **Invalid base64 data fails with the atob error text** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#base64-atob-error-text)
+- **Anthropic, Bedrock and ElevenLabs round 99 details** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#prova-r99-details)
+- **OpenAI, Azure, xAI and OpenAI-compatible round 99 details** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#provb-r99-details)
+- **Media provider round 99 details** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#provc-r99-details)
+- **Google, Gateway, Groq and Mistral round 99 details** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#provg-r99-details)
 
 #### MCP
 
@@ -986,6 +998,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **MCP, harness adapter and tools-provider round 97 details** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#tools-r97-details)
 - **MCP OAuth discovery sends the latest protocol version** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#mcp-oauth-latest-protocol-version)
 - **MCP, Vercel Sandbox and Prodia round 98 details** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#tools-r98-details)
+- **MCP, Vercel Sandbox and tool-area provider round 99 details** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#tools-r99-details)
 
 #### Code mode
 
@@ -1071,6 +1084,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **askUserQuestions input and output follow the TS schema** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#harness-questions-tool-schema)
 - **Workflow, harness and schema round 97 details** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#carry-r97-details)
 - **Harness, bridge and workflow round 98 details** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#carry-r98-details)
+- **Harness and bridge round 99 details** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#carry-r99-details)
 
 #### Policy
 
@@ -2157,6 +2171,10 @@ Notable ones:
 - **UI message chunk validation on client reads**: a chunk that is not a JSON object (`null` included) is rejected with Go's issue text (S3) (round 97).
 - **Anthropic provider tool calls without an input**: a `server_tool_use` or `mcp_tool_use` block with no `input` key is reported with the input `{}`; TS reports undefined, which its core turns into an invalid tool call (S1) (round 98).
 - **Accept header**: the Bedrock Converse event stream sends none, and the Bedrock Anthropic invoke stream sends `application/vnd.amazon.eventstream` (S3) (round 98).
+- **WorkflowChatTransport dot-segment chat IDs**: a run or chat ID of `.` or `..` is rejected before the default reconnect URL is built, as TS `HttpChatTransport`; TS `WorkflowChatTransport` sends it (S2) (round 99).
+- **Bedrock SigV4 credential fallbacks**: without credentials in the options or environment, Bedrock reads the shared credentials file and then IMDSv2, as v0.5.2; TS fails (S6) (round 99).
+- **ElevenLabs realtime transcription field types**: a non-string partial text, language code or word text reads as a string; TS passes the value through (S1) (round 99).
+- **TS test replays skipped in round 99**: the Fireworks mock null-body 200 case (S3) (round 99).
 - **Realtime transcription WebSocket hint**: widened to ElevenLabs, xAI, Vertex Gemini and the AI Gateway (S3) (round 91).
 - **TS test replays skipped in round 91**: the Google Decisions warnings order (Go map order) and the Vertex caller-fetch download tests (DNS protection stays on) (round 91).
 - **TS test replays skipped in round 88**: Replicate cancel timing, a Gladia pre-aborted call, DeepInfra and Google tests with injected functions (round 88).
