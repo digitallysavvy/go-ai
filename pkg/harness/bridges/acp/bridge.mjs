@@ -1,9 +1,10 @@
-import { appendFile, lstat, mkdir, realpath, writeFile } from "node:fs/promises";
+import { appendFile, lstat, mkdir, readdir, realpath, writeFile } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
 import { createPublicKey, randomBytes, randomUUID, timingSafeEqual, verify } from "node:crypto";
 import { argv, env, execPath, pid, stdout } from "node:process";
 import { WebSocketServer } from "ws";
 import { Buffer as Buffer$1 } from "node:buffer";
+import path from "node:path";
 import * as acp from "@agentclientprotocol/sdk";
 import { spawn } from "node:child_process";
 import { Readable, Writable } from "node:stream";
@@ -14,7 +15,6 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { CallToolRequestSchema, ErrorCode, ListToolsRequestSchema, McpError, isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { fileURLToPath } from "node:url";
-import path from "node:path";
 //#region ../harness/dist/bridge/index.js
 const BRIDGE_AUTH_TIMEOUT_MS = 1e4;
 const BRIDGE_AUTH_MESSAGE_PREFIX = "ai-sdk-harness-bridge-auth-v1\0";
@@ -94,6 +94,132 @@ var HarnessBridgeCapabilityUnsupportedError = class extends Error {
 		return error != null && typeof error === "object" && "name" in error && error.name === name && "message" in error && typeof error.message === "string";
 	}
 };
+function assertWriteProtectedPathEntries(entries) {
+	for (const entry of entries) if (typeof entry !== "string" || entry.length === 0 || path.posix.isAbsolute(entry) || entry.split("/").some((segment) => segment === "" || segment === "." || segment === "..")) throw new TypeError(`Write-protected path entries must be relative paths without empty, "." or ".." segments; received ${JSON.stringify(entry)}.`);
+}
+function isInsideWriteProtectionPath({ parent, candidate }) {
+	const relative = path.posix.relative(parent, candidate);
+	return relative === "" || relative !== ".." && !relative.startsWith("../") && !path.posix.isAbsolute(relative);
+}
+function matchesWriteProtectedPath({ targets, protectedPaths, anyProtectedPathExists }) {
+	return targets.some((target) => protectedPaths.some((protectedPath) => isInsideWriteProtectionPath({
+		parent: protectedPath,
+		candidate: target.path
+	}) || isInsideWriteProtectionPath({
+		parent: target.path,
+		candidate: protectedPath
+	})) || anyProtectedPathExists && target.isMultiLinkFile);
+}
+/**
+* Returns whether writing to any of `paths` touches a write-protected path and
+* therefore requires the host's approval. Runs inside the sandbox, next to the
+* files it checks.
+*
+* `writeProtectedPaths` entries are relative to `workDir` and must not contain
+* empty, `.`, or `..` segments. Relative `paths` resolve against `cwd`, which
+* defaults to `workDir`.
+*
+* A path matches when its canonical location is a protected path, lies inside
+* one, or is a parent of one. Each protected entry is protected both at its
+* literal location below the canonical working directory and at its canonical
+* location. The literal location covers parents of a protected path that is
+* itself a symlink, whose canonical location lies elsewhere.
+*
+* Protected paths are resolved on every call because the filesystem can change
+* during a session. Symlinks inside protected directories protect their
+* targets as well, so files reachable through a protected path cannot be
+* written through an unprotected alias. While any protected path exists,
+* writes to files with more than one link match too. Any resolution failure,
+* including dangling or looping symlinks, reports the write as protected.
+*/
+async function isWriteProtectedPath({ workDir, cwd = workDir, paths, writeProtectedPaths }) {
+	assertWriteProtectedPathEntries(writeProtectedPaths);
+	if (paths.length === 0) return true;
+	try {
+		const canonicalWorkDir = await realpath(workDir);
+		const protection = await collectWriteProtectedPaths({
+			canonicalWorkDir,
+			protectedRoots: await Promise.all(writeProtectedPaths.map((entry) => resolveExistingPrefix(`${workDir}/${entry}`)))
+		});
+		if (protection == null) return true;
+		const targets = [];
+		for (const filePath of paths) {
+			if (typeof filePath !== "string" || filePath.trim().length === 0) return true;
+			if (!path.posix.isAbsolute(filePath) && !path.posix.isAbsolute(cwd)) return true;
+			const absolutePath = path.posix.isAbsolute(filePath) ? filePath : `${cwd}/${filePath}`;
+			for (const candidatePath of /* @__PURE__ */ new Set([absolutePath, path.posix.normalize(absolutePath)])) {
+				const target = await resolveExistingPrefix(candidatePath);
+				const stats = protection.anyRootExists ? await lstatIfExists(target) : void 0;
+				targets.push({
+					path: target,
+					isMultiLinkFile: stats?.isFile() === true && stats.nlink > 1
+				});
+			}
+		}
+		return matchesWriteProtectedPath({
+			targets,
+			protectedPaths: [...writeProtectedPaths.map((entry) => path.posix.join(canonicalWorkDir, entry)), ...protection.paths],
+			anyProtectedPathExists: protection.anyRootExists
+		});
+	} catch {
+		return true;
+	}
+}
+async function collectWriteProtectedPaths({ canonicalWorkDir, protectedRoots }) {
+	const paths = [...protectedRoots];
+	const queue = [];
+	let anyRootExists = false;
+	for (const root of protectedRoots) {
+		const stats = await lstatIfExists(root);
+		if (stats == null) continue;
+		anyRootExists = true;
+		if (stats.isDirectory()) queue.push(root);
+	}
+	const scanned = /* @__PURE__ */ new Set();
+	let entryCount = 0;
+	while (queue.length > 0) {
+		const directory = queue.shift();
+		if (scanned.has(directory)) continue;
+		scanned.add(directory);
+		for (const entry of await readdir(directory, { withFileTypes: true })) {
+			entryCount += 1;
+			if (entryCount > 2e3) return void 0;
+			const entryPath = path.posix.join(directory, entry.name);
+			if (entry.isSymbolicLink()) {
+				const target = await realpath(entryPath);
+				paths.push(target);
+				if (isInsideWriteProtectionPath({
+					parent: canonicalWorkDir,
+					candidate: target
+				}) && (await lstat(target)).isDirectory()) queue.push(target);
+			} else if (entry.isDirectory()) queue.push(entryPath);
+		}
+	}
+	return {
+		paths,
+		anyRootExists
+	};
+}
+async function resolveExistingPrefix(inputPath) {
+	let existingPath = inputPath;
+	const missingSegments = [];
+	while (await lstatIfExists(existingPath) == null) {
+		const parent = path.posix.dirname(existingPath);
+		const segment = path.posix.basename(existingPath);
+		if (parent === existingPath || segment === ".." || segment === ".") throw new Error(`Unable to resolve path ${JSON.stringify(inputPath)}.`);
+		missingSegments.unshift(segment);
+		existingPath = parent;
+	}
+	return path.posix.join(await realpath(existingPath), ...missingSegments);
+}
+async function lstatIfExists(entryPath) {
+	try {
+		return await lstat(entryPath);
+	} catch (error) {
+		if (error != null && typeof error === "object" && "code" in error && error.code === "ENOENT") return;
+		throw error;
+	}
+}
 function getNormalizedInlineImage(part) {
 	if (part.type === "file" && part.mediaType.startsWith("image/") && part.mediaType !== "image/*" && part.data.type === "data" && typeof part.data.data === "string") return {
 		data: part.data.data,
@@ -791,7 +917,8 @@ const bridgeConfigurationSchema = z.object({
 	clientCapabilities: serializableRecordSchema$1.optional(),
 	askUserQuestionsRequestMethod: z.string().optional(),
 	hostToolMcpTransport: hostToolMcpTransportSchema.optional(),
-	nonTextContentTypes: z.array(z.literal("image")).optional()
+	nonTextContentTypes: z.array(z.literal("image")).optional(),
+	writeProtectedPaths: z.array(z.string()).optional()
 });
 async function readACPBridgeEnvironment({ env }) {
 	try {
@@ -2336,7 +2463,7 @@ function isRecord$3(value) {
 }
 //#endregion
 //#region src/v1/bridge/host-tool-mcp-server.ts
-const VERSION = "1.0.121";
+const VERSION = "1.0.133";
 function createHostToolMCPServer({ tools, revision = 1, invoke, onListTools }) {
 	let catalog = createCatalog({
 		revision,
@@ -3089,13 +3216,23 @@ async function areACPToolLocationsTrusted({ toolCall, workDir }) {
 	try {
 		const canonicalWorkDir = await realpath(workDir);
 		for (const location of locations) {
-			if (typeof location.path !== "string" || location.path.trim().length === 0) return false;
-			if (!isInsidePath(canonicalWorkDir, await resolvePermissionPath(path.posix.isAbsolute(location.path) ? location.path : `${workDir}/${location.path}`))) return false;
+			if (typeof location.path !== "string" || location.path.length === 0 || location.path !== location.path.trim() || location.path === "~" || location.path.startsWith("~/")) return false;
+			const absolutePath = path.posix.isAbsolute(location.path) ? location.path : `${workDir}/${location.path}`;
+			for (const candidatePath of [absolutePath, path.posix.normalize(absolutePath)]) if (!isInsidePath(canonicalWorkDir, await resolvePermissionPath(candidatePath))) return false;
 		}
 		return true;
 	} catch {
 		return false;
 	}
+}
+async function areACPToolWriteLocationsProtected({ toolCall, workDir, writeProtectedPaths }) {
+	const paths = (toolCall.locations ?? []).map((location) => location.path);
+	if (paths.length === 0 || !paths.every((value) => typeof value === "string" && value.trim().length > 0)) return true;
+	return isWriteProtectedPath({
+		workDir,
+		paths,
+		writeProtectedPaths
+	});
 }
 async function resolvePermissionPath(inputPath) {
 	let existingPath = inputPath;
@@ -3124,10 +3261,12 @@ function isInsidePath(parent, candidate) {
 }
 //#endregion
 //#region src/v1/bridge/permission-controller.ts
+const ACP_BUILTIN_WRITE_PROTECTED_PATHS = [".agents/skills"];
 let permissionRequestCounter = 0;
-function createACPPermissionController({ turn, sessionId, workDir, permissionMode, hasPermissionModeMapping, emitToolCall, claimHostToolPermission, onHostToolPermissionAllowed }) {
+function createACPPermissionController({ turn, sessionId, workDir, permissionMode, hasPermissionModeMapping, writeProtectedPaths, emitToolCall, claimHostToolPermission, onHostToolPermissionAllowed }) {
 	const pendingPermissions = /* @__PURE__ */ new Map();
 	let cancellationGeneration = 0;
+	const effectiveWriteProtectedPaths = [...ACP_BUILTIN_WRITE_PROTECTED_PATHS, ...writeProtectedPaths ?? []];
 	return {
 		async requestPermission(request) {
 			if (request.sessionId !== sessionId) {
@@ -3160,7 +3299,11 @@ function createACPPermissionController({ turn, sessionId, workDir, permissionMod
 			}) && (permissionMode === "allow-all" || await areACPToolLocationsTrusted({
 				toolCall: request.toolCall,
 				workDir
-			}));
+			}) && !(isWriteKind({ kind: request.toolCall.kind }) && await areACPToolWriteLocationsProtected({
+				toolCall: request.toolCall,
+				workDir,
+				writeProtectedPaths: effectiveWriteProtectedPaths
+			})));
 			if (generation !== cancellationGeneration) return cancelled();
 			if (autoApprove) return { outcome: {
 				outcome: "selected",
@@ -3210,6 +3353,9 @@ function shouldAutoApprove({ permissionMode, kind }) {
 	if (permissionMode === "allow-all") return true;
 	if (kind === "read" || kind === "search" || kind === "think" || kind === "fetch") return true;
 	return permissionMode === "allow-edits" && (kind === "edit" || kind === "delete" || kind === "move");
+}
+function isWriteKind({ kind }) {
+	return kind === "edit" || kind === "delete" || kind === "move";
 }
 function cancelled() {
 	return { outcome: { outcome: "cancelled" } };
@@ -3531,6 +3677,7 @@ let streamCapture;
 let initializationDiagnostic;
 let hostToolRelay;
 let catalogRefreshError;
+let sessionPrompted = false;
 let sessionConfigurationFailure;
 let historicalUpdatesSuppressed = false;
 let coldRestorationMethod;
@@ -3713,6 +3860,7 @@ async function runTurn(start, turn) {
 		workDir,
 		permissionMode: start.permissionMode ?? "allow-all",
 		hasPermissionModeMapping: start.permissionModeMapping != null,
+		writeProtectedPaths: bridgeConfiguration.writeProtectedPaths,
 		emitToolCall: emitStreamEvent.permissionToolCall,
 		claimHostToolPermission: emitStreamEvent.claimHostToolPermission,
 		onHostToolPermissionAllowed: hostToolAuthorization.authorizePermission
@@ -3730,12 +3878,15 @@ async function runTurn(start, turn) {
 	activeHostToolRelay.bindTurn({ turn: relayTurn });
 	try {
 		const promptMeta = createOutputSchemaPromptMeta({ start });
-		const startPrompt = () => promptActiveSession({
-			session: activeSession,
-			agent: connection.agent,
-			prompt: start.prompt,
-			meta: promptMeta
-		});
+		const startPrompt = () => {
+			sessionPrompted = true;
+			return promptActiveSession({
+				session: activeSession,
+				agent: connection.agent,
+				prompt: start.prompt,
+				meta: promptMeta
+			});
+		};
 		if (initialHostToolCatalogRefreshRequired) try {
 			await promptAndRefreshInitialHostToolCatalog({
 				startPrompt,
@@ -3835,6 +3986,7 @@ async function ensureSession({ start, turn }) {
 		if (sessionConfigurationFingerprint !== fingerprint) throw new Error("ACP authentication and session profile settings cannot change after the ACP session has started.");
 		const relay = hostToolRelay;
 		if (relay == null) throw new Error("The host tool MCP relay is unavailable.");
+		if (!sessionPrompted) return { initialHostToolCatalogRefreshRequired: true };
 		try {
 			await refreshHostToolCatalog({
 				relay,

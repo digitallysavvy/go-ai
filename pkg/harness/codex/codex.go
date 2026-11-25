@@ -21,7 +21,7 @@ const HarnessID = "codex"
 
 // version is used in the client-app attribution string, mirroring TS
 // `VERSION` pinned to the embedded bridge's source package version (VERSIONS.json).
-const version = "1.0.183"
+const version = "1.0.195"
 
 var _ harness.Harness = (*Harness)(nil)
 var _ harness.BootstrapProvider = (*Harness)(nil)

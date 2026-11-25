@@ -2,7 +2,7 @@ import { createPublicKey, randomBytes, randomUUID, verify } from "node:crypto";
 import path, { dirname } from "node:path";
 import { argv, env, pid, stdout } from "node:process";
 import { rgPath } from "@vscode/ripgrep";
-import { appendFile, lstat, mkdir, open, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { appendFile, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
 import { WebSocketServer } from "ws";
 import { Buffer as Buffer$1 } from "node:buffer";
@@ -93,6 +93,132 @@ var HarnessBridgeCapabilityUnsupportedError = class extends Error {
 		return error != null && typeof error === "object" && "name" in error && error.name === name && "message" in error && typeof error.message === "string";
 	}
 };
+function assertWriteProtectedPathEntries(entries) {
+	for (const entry of entries) if (typeof entry !== "string" || entry.length === 0 || path.posix.isAbsolute(entry) || entry.split("/").some((segment) => segment === "" || segment === "." || segment === "..")) throw new TypeError(`Write-protected path entries must be relative paths without empty, "." or ".." segments; received ${JSON.stringify(entry)}.`);
+}
+function isInsideWriteProtectionPath({ parent, candidate }) {
+	const relative = path.posix.relative(parent, candidate);
+	return relative === "" || relative !== ".." && !relative.startsWith("../") && !path.posix.isAbsolute(relative);
+}
+function matchesWriteProtectedPath({ targets, protectedPaths, anyProtectedPathExists }) {
+	return targets.some((target) => protectedPaths.some((protectedPath) => isInsideWriteProtectionPath({
+		parent: protectedPath,
+		candidate: target.path
+	}) || isInsideWriteProtectionPath({
+		parent: target.path,
+		candidate: protectedPath
+	})) || anyProtectedPathExists && target.isMultiLinkFile);
+}
+/**
+* Returns whether writing to any of `paths` touches a write-protected path and
+* therefore requires the host's approval. Runs inside the sandbox, next to the
+* files it checks.
+*
+* `writeProtectedPaths` entries are relative to `workDir` and must not contain
+* empty, `.`, or `..` segments. Relative `paths` resolve against `cwd`, which
+* defaults to `workDir`.
+*
+* A path matches when its canonical location is a protected path, lies inside
+* one, or is a parent of one. Each protected entry is protected both at its
+* literal location below the canonical working directory and at its canonical
+* location. The literal location covers parents of a protected path that is
+* itself a symlink, whose canonical location lies elsewhere.
+*
+* Protected paths are resolved on every call because the filesystem can change
+* during a session. Symlinks inside protected directories protect their
+* targets as well, so files reachable through a protected path cannot be
+* written through an unprotected alias. While any protected path exists,
+* writes to files with more than one link match too. Any resolution failure,
+* including dangling or looping symlinks, reports the write as protected.
+*/
+async function isWriteProtectedPath({ workDir, cwd = workDir, paths, writeProtectedPaths }) {
+	assertWriteProtectedPathEntries(writeProtectedPaths);
+	if (paths.length === 0) return true;
+	try {
+		const canonicalWorkDir = await realpath(workDir);
+		const protection = await collectWriteProtectedPaths({
+			canonicalWorkDir,
+			protectedRoots: await Promise.all(writeProtectedPaths.map((entry) => resolveExistingPrefix(`${workDir}/${entry}`)))
+		});
+		if (protection == null) return true;
+		const targets = [];
+		for (const filePath of paths) {
+			if (typeof filePath !== "string" || filePath.trim().length === 0) return true;
+			if (!path.posix.isAbsolute(filePath) && !path.posix.isAbsolute(cwd)) return true;
+			const absolutePath = path.posix.isAbsolute(filePath) ? filePath : `${cwd}/${filePath}`;
+			for (const candidatePath of /* @__PURE__ */ new Set([absolutePath, path.posix.normalize(absolutePath)])) {
+				const target = await resolveExistingPrefix(candidatePath);
+				const stats = protection.anyRootExists ? await lstatIfExists(target) : void 0;
+				targets.push({
+					path: target,
+					isMultiLinkFile: stats?.isFile() === true && stats.nlink > 1
+				});
+			}
+		}
+		return matchesWriteProtectedPath({
+			targets,
+			protectedPaths: [...writeProtectedPaths.map((entry) => path.posix.join(canonicalWorkDir, entry)), ...protection.paths],
+			anyProtectedPathExists: protection.anyRootExists
+		});
+	} catch {
+		return true;
+	}
+}
+async function collectWriteProtectedPaths({ canonicalWorkDir, protectedRoots }) {
+	const paths = [...protectedRoots];
+	const queue = [];
+	let anyRootExists = false;
+	for (const root of protectedRoots) {
+		const stats = await lstatIfExists(root);
+		if (stats == null) continue;
+		anyRootExists = true;
+		if (stats.isDirectory()) queue.push(root);
+	}
+	const scanned = /* @__PURE__ */ new Set();
+	let entryCount = 0;
+	while (queue.length > 0) {
+		const directory = queue.shift();
+		if (scanned.has(directory)) continue;
+		scanned.add(directory);
+		for (const entry of await readdir(directory, { withFileTypes: true })) {
+			entryCount += 1;
+			if (entryCount > 2e3) return void 0;
+			const entryPath = path.posix.join(directory, entry.name);
+			if (entry.isSymbolicLink()) {
+				const target = await realpath(entryPath);
+				paths.push(target);
+				if (isInsideWriteProtectionPath({
+					parent: canonicalWorkDir,
+					candidate: target
+				}) && (await lstat(target)).isDirectory()) queue.push(target);
+			} else if (entry.isDirectory()) queue.push(entryPath);
+		}
+	}
+	return {
+		paths,
+		anyRootExists
+	};
+}
+async function resolveExistingPrefix(inputPath) {
+	let existingPath = inputPath;
+	const missingSegments = [];
+	while (await lstatIfExists(existingPath) == null) {
+		const parent = path.posix.dirname(existingPath);
+		const segment = path.posix.basename(existingPath);
+		if (parent === existingPath || segment === ".." || segment === ".") throw new Error(`Unable to resolve path ${JSON.stringify(inputPath)}.`);
+		missingSegments.unshift(segment);
+		existingPath = parent;
+	}
+	return path.posix.join(await realpath(existingPath), ...missingSegments);
+}
+async function lstatIfExists(entryPath) {
+	try {
+		return await lstat(entryPath);
+	} catch (error) {
+		if (error != null && typeof error === "object" && "code" in error && error.code === "ENOENT") return;
+		throw error;
+	}
+}
 function getNormalizedInlineImage(part) {
 	if (part.type === "file" && part.mediaType.startsWith("image/") && part.mediaType !== "image/*" && part.data.type === "data" && typeof part.data.data === "string") return {
 		data: part.data.data,
@@ -788,6 +914,7 @@ async function resolvePermissionPath(options) {
 }
 //#endregion
 //#region src/bridge/approvals.ts
+const DEEPAGENTS_WRITE_PROTECTED_PATHS = [".agents/skills", ".deepagents"];
 const NATIVE_TOOL_KIND = {
 	read_file: "readonly",
 	write_file: "edit",
@@ -854,12 +981,17 @@ function buildInterruptOn(options) {
 				if (typeof target !== "string") return true;
 				const paths = [target];
 				if (globPrefix) paths.push(`${path.posix.resolve(options.workDir, target)}/${globPrefix}`);
-				return !await areFileToolPathsTrusted({
+				if (!await areFileToolPathsTrusted({
 					workDir: options.workDir,
 					cwd: options.workDir,
 					paths,
 					access,
 					readableSkillRoots: options.readableSkillRoots
+				})) return true;
+				return access === "write" && await isWriteProtectedPath({
+					workDir: options.workDir,
+					paths,
+					writeProtectedPaths: DEEPAGENTS_WRITE_PROTECTED_PATHS
 				});
 			}
 		};

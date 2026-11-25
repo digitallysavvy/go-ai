@@ -4,10 +4,10 @@ import { createHash, createPublicKey, randomBytes, randomUUID, verify } from "no
 import { argv, env, pid, stdout } from "node:process";
 import { WebSocketServer } from "ws";
 import { Buffer as Buffer$1 } from "node:buffer";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { isDeepStrictEqual } from "node:util";
-import path from "node:path";
 //#region ../harness/dist/bridge/index.js
 const BRIDGE_AUTH_TIMEOUT_MS = 1e4;
 const BRIDGE_AUTH_MESSAGE_PREFIX = "ai-sdk-harness-bridge-auth-v1\0";
@@ -1430,6 +1430,7 @@ function asRecord$1(value) {
 //#endregion
 //#region src/bridge/codex-app-server-driver.ts
 const CODEX_CLI_PATH = fileURLToPath(new URL("./node_modules/@openai/codex/bin/codex.js", import.meta.url));
+const BACKGROUND_TERMINAL_POLL_INTERVAL_MS = 1e3;
 function createCodexAppServerRuntime() {
 	let client;
 	let loadedThreadId;
@@ -1562,6 +1563,27 @@ function createCodexAppServerRuntime() {
 			clientFailure,
 			exitFailure
 		]);
+		const waitForBackgroundTerminals = async () => {
+			while (true) {
+				const terminals = asRecord(await raceWithProcess({ operation: runningClient.request({
+					method: "thread/backgroundTerminals/list",
+					params: {
+						threadId: currentTurn.threadId,
+						limit: 1
+					}
+				}) }))?.data;
+				if (!Array.isArray(terminals)) throw new Error("Codex app-server thread/backgroundTerminals/list returned an invalid response.");
+				if (terminals.length === 0) return;
+				let timer;
+				try {
+					await raceWithProcess({ operation: new Promise((resolve) => {
+						timer = setTimeout(resolve, BACKGROUND_TERMINAL_POLL_INTERVAL_MS);
+					}) });
+				} finally {
+					clearTimeout(timer);
+				}
+			}
+		};
 		let stopSteering = () => {};
 		const steeringStopped = new Promise((resolve) => {
 			stopSteering = resolve;
@@ -1671,8 +1693,12 @@ function createCodexAppServerRuntime() {
 			handler.setTurnId(currentTurn.turnId);
 			userMessageLoop();
 			const result = await raceWithProcess({ operation: handler.waitForCompletion() });
+			if (result.status !== "completed") {
+				keepClient = true;
+				assertSuccessfulTurn(result);
+			}
+			await waitForBackgroundTerminals();
 			keepClient = true;
-			assertSuccessfulTurn(result);
 		} catch (error) {
 			if (turn.abortSignal.aborted && currentTurn.turnId != null) {
 				let timer;

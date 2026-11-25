@@ -1,12 +1,13 @@
-import { appendFile, lstat, mkdir, realpath, writeFile } from "node:fs/promises";
-import { existsSync, globSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { appendFile, lstat, mkdir, readdir, realpath, writeFile } from "node:fs/promises";
+import { closeSync, constants, existsSync, fstatSync, globSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createPublicKey, randomBytes, randomUUID, verify } from "node:crypto";
 import { argv, env, pid, stdout } from "node:process";
 import { WebSocketServer } from "ws";
 import { Buffer as Buffer$1 } from "node:buffer";
-import { homedir } from "node:os";
 import path from "node:path";
+import { homedir } from "node:os";
 import { isDeepStrictEqual } from "node:util";
+import { pathToFileURL } from "node:url";
 import { createOpencodeClient, createOpencodeServer } from "@opencode-ai/sdk/v2";
 import { rgPath } from "@vscode/ripgrep";
 import { createServer } from "node:http";
@@ -71,6 +72,132 @@ function rawDataToString(raw) {
 	const buffer = Array.isArray(raw) ? Buffer$1.concat(raw) : Buffer$1.isBuffer(raw) ? raw : Buffer$1.from(raw);
 	if (buffer.byteLength > 1024) return void 0;
 	return buffer.toString("utf8");
+}
+function assertWriteProtectedPathEntries(entries) {
+	for (const entry of entries) if (typeof entry !== "string" || entry.length === 0 || path.posix.isAbsolute(entry) || entry.split("/").some((segment) => segment === "" || segment === "." || segment === "..")) throw new TypeError(`Write-protected path entries must be relative paths without empty, "." or ".." segments; received ${JSON.stringify(entry)}.`);
+}
+function isInsideWriteProtectionPath({ parent, candidate }) {
+	const relative = path.posix.relative(parent, candidate);
+	return relative === "" || relative !== ".." && !relative.startsWith("../") && !path.posix.isAbsolute(relative);
+}
+function matchesWriteProtectedPath({ targets, protectedPaths, anyProtectedPathExists }) {
+	return targets.some((target) => protectedPaths.some((protectedPath) => isInsideWriteProtectionPath({
+		parent: protectedPath,
+		candidate: target.path
+	}) || isInsideWriteProtectionPath({
+		parent: target.path,
+		candidate: protectedPath
+	})) || anyProtectedPathExists && target.isMultiLinkFile);
+}
+/**
+* Returns whether writing to any of `paths` touches a write-protected path and
+* therefore requires the host's approval. Runs inside the sandbox, next to the
+* files it checks.
+*
+* `writeProtectedPaths` entries are relative to `workDir` and must not contain
+* empty, `.`, or `..` segments. Relative `paths` resolve against `cwd`, which
+* defaults to `workDir`.
+*
+* A path matches when its canonical location is a protected path, lies inside
+* one, or is a parent of one. Each protected entry is protected both at its
+* literal location below the canonical working directory and at its canonical
+* location. The literal location covers parents of a protected path that is
+* itself a symlink, whose canonical location lies elsewhere.
+*
+* Protected paths are resolved on every call because the filesystem can change
+* during a session. Symlinks inside protected directories protect their
+* targets as well, so files reachable through a protected path cannot be
+* written through an unprotected alias. While any protected path exists,
+* writes to files with more than one link match too. Any resolution failure,
+* including dangling or looping symlinks, reports the write as protected.
+*/
+async function isWriteProtectedPath({ workDir, cwd = workDir, paths, writeProtectedPaths }) {
+	assertWriteProtectedPathEntries(writeProtectedPaths);
+	if (paths.length === 0) return true;
+	try {
+		const canonicalWorkDir = await realpath(workDir);
+		const protection = await collectWriteProtectedPaths({
+			canonicalWorkDir,
+			protectedRoots: await Promise.all(writeProtectedPaths.map((entry) => resolveExistingPrefix(`${workDir}/${entry}`)))
+		});
+		if (protection == null) return true;
+		const targets = [];
+		for (const filePath of paths) {
+			if (typeof filePath !== "string" || filePath.trim().length === 0) return true;
+			if (!path.posix.isAbsolute(filePath) && !path.posix.isAbsolute(cwd)) return true;
+			const absolutePath = path.posix.isAbsolute(filePath) ? filePath : `${cwd}/${filePath}`;
+			for (const candidatePath of /* @__PURE__ */ new Set([absolutePath, path.posix.normalize(absolutePath)])) {
+				const target = await resolveExistingPrefix(candidatePath);
+				const stats = protection.anyRootExists ? await lstatIfExists(target) : void 0;
+				targets.push({
+					path: target,
+					isMultiLinkFile: stats?.isFile() === true && stats.nlink > 1
+				});
+			}
+		}
+		return matchesWriteProtectedPath({
+			targets,
+			protectedPaths: [...writeProtectedPaths.map((entry) => path.posix.join(canonicalWorkDir, entry)), ...protection.paths],
+			anyProtectedPathExists: protection.anyRootExists
+		});
+	} catch {
+		return true;
+	}
+}
+async function collectWriteProtectedPaths({ canonicalWorkDir, protectedRoots }) {
+	const paths = [...protectedRoots];
+	const queue = [];
+	let anyRootExists = false;
+	for (const root of protectedRoots) {
+		const stats = await lstatIfExists(root);
+		if (stats == null) continue;
+		anyRootExists = true;
+		if (stats.isDirectory()) queue.push(root);
+	}
+	const scanned = /* @__PURE__ */ new Set();
+	let entryCount = 0;
+	while (queue.length > 0) {
+		const directory = queue.shift();
+		if (scanned.has(directory)) continue;
+		scanned.add(directory);
+		for (const entry of await readdir(directory, { withFileTypes: true })) {
+			entryCount += 1;
+			if (entryCount > 2e3) return void 0;
+			const entryPath = path.posix.join(directory, entry.name);
+			if (entry.isSymbolicLink()) {
+				const target = await realpath(entryPath);
+				paths.push(target);
+				if (isInsideWriteProtectionPath({
+					parent: canonicalWorkDir,
+					candidate: target
+				}) && (await lstat(target)).isDirectory()) queue.push(target);
+			} else if (entry.isDirectory()) queue.push(entryPath);
+		}
+	}
+	return {
+		paths,
+		anyRootExists
+	};
+}
+async function resolveExistingPrefix(inputPath) {
+	let existingPath = inputPath;
+	const missingSegments = [];
+	while (await lstatIfExists(existingPath) == null) {
+		const parent = path.posix.dirname(existingPath);
+		const segment = path.posix.basename(existingPath);
+		if (parent === existingPath || segment === ".." || segment === ".") throw new Error(`Unable to resolve path ${JSON.stringify(inputPath)}.`);
+		missingSegments.unshift(segment);
+		existingPath = parent;
+	}
+	return path.posix.join(await realpath(existingPath), ...missingSegments);
+}
+async function lstatIfExists(entryPath) {
+	try {
+		return await lstat(entryPath);
+	} catch (error) {
+		if (error != null && typeof error === "object" && "code" in error && error.code === "ENOENT") return;
+		throw error;
+	}
 }
 const DEBUG_LEVEL_WEIGHT = {
 	error: 0,
@@ -1668,11 +1795,16 @@ function configureOpenCodePath({ bootstrapDir, env }) {
 //#endregion
 //#region src/bridge/opencode-project-isolation.ts
 const GLOB_CHARACTERS = /[*?[\]{}]/;
-function resolveOpenCodeInstructions({ workdir, hostInstructions }) {
+function resolveOpenCodeInstructions({ workdir, hostInstructions, mirrorDir }) {
 	if (hostInstructions !== void 0 && !(Array.isArray(hostInstructions) && hostInstructions.every((entry) => typeof entry === "string"))) return;
+	if (mirrorDir !== void 0) return mirrorOpenCodeInstructions({
+		workdir,
+		hostInstructions: hostInstructions ?? [],
+		mirrorDir
+	});
 	const directory = resolveRealPath(workdir);
 	return [path.join(directory, "AGENTS.md"), ...(hostInstructions ?? []).flatMap((entry) => {
-		if (entry.startsWith("http://") || entry.startsWith("https://") || entry.startsWith("~/") || path.isAbsolute(entry)) return [entry];
+		if (isExplicitHostInstruction(entry)) return [entry];
 		if (!GLOB_CHARACTERS.test(path.dirname(entry))) return [path.join(directory, entry)];
 		return globSync(entry, {
 			cwd: directory,
@@ -1688,6 +1820,168 @@ function resolveRealPath(file) {
 		if (error instanceof Error && "code" in error && error.code === "ENOENT") return resolved;
 		throw error;
 	}
+}
+function isExplicitHostInstruction(entry) {
+	return entry.startsWith("http://") || entry.startsWith("https://") || entry.startsWith("~/") || path.isAbsolute(entry);
+}
+function mirrorOpenCodeInstructions({ workdir, hostInstructions, mirrorDir }) {
+	mkdirSync(mirrorDir, {
+		recursive: true,
+		mode: 448
+	});
+	const canonicalMirrorDir = realpathSync(mirrorDir);
+	const canonicalWorkdir = resolveRealPath(workdir);
+	const agentsMirrorPath = path.join(canonicalMirrorDir, "AGENTS.md");
+	syncMirrorFile({
+		targetPath: agentsMirrorPath,
+		content: readContainedWorkdirFile({
+			canonicalWorkdir,
+			candidatePath: path.join(canonicalWorkdir, "AGENTS.md")
+		})?.content
+	});
+	const keepTopLevelNames = /* @__PURE__ */ new Set(["AGENTS.md"]);
+	const instructions = [agentsMirrorPath];
+	hostInstructions.forEach((entry, index) => {
+		if (isExplicitHostInstruction(entry)) {
+			instructions.push(entry);
+			return;
+		}
+		const slotName = `host-${index}`;
+		const slotDir = path.join(canonicalMirrorDir, slotName);
+		keepTopLevelNames.add(slotName);
+		mkdirSync(slotDir, {
+			recursive: true,
+			mode: 448
+		});
+		if (!GLOB_CHARACTERS.test(entry)) {
+			const fileName = sanitizeMirrorFileName(path.basename(entry));
+			pruneDirectoryEntries({
+				directory: slotDir,
+				keepNames: /* @__PURE__ */ new Set([fileName])
+			});
+			syncMirrorFile({
+				targetPath: path.join(slotDir, fileName),
+				content: readContainedWorkdirFile({
+					canonicalWorkdir,
+					candidatePath: path.resolve(canonicalWorkdir, entry)
+				})?.content
+			});
+			instructions.push(path.join(slotDir, fileName));
+			return;
+		}
+		const keepSlotFiles = /* @__PURE__ */ new Set();
+		const seenCanonicalPaths = /* @__PURE__ */ new Set();
+		for (const match of globSafely({
+			pattern: entry,
+			cwd: canonicalWorkdir
+		}).sort()) {
+			const file = readContainedWorkdirFile({
+				canonicalWorkdir,
+				candidatePath: path.resolve(canonicalWorkdir, match)
+			});
+			if (!file || seenCanonicalPaths.has(file.canonicalPath)) continue;
+			seenCanonicalPaths.add(file.canonicalPath);
+			const fileName = `${String(keepSlotFiles.size).padStart(4, "0")}-${sanitizeMirrorFileName(path.basename(match))}`;
+			keepSlotFiles.add(fileName);
+			writeMirrorFileAtomic({
+				targetPath: path.join(slotDir, fileName),
+				content: file.content
+			});
+		}
+		pruneDirectoryEntries({
+			directory: slotDir,
+			keepNames: keepSlotFiles
+		});
+		instructions.push(path.join(slotDir, "*"));
+	});
+	pruneDirectoryEntries({
+		directory: canonicalMirrorDir,
+		keepNames: keepTopLevelNames
+	});
+	return instructions;
+}
+function globSafely({ pattern, cwd }) {
+	try {
+		return globSync(pattern, { cwd });
+	} catch {
+		return [];
+	}
+}
+function readContainedWorkdirFile({ canonicalWorkdir, candidatePath }) {
+	let canonicalTarget;
+	try {
+		canonicalTarget = realpathSync(candidatePath);
+	} catch {
+		return;
+	}
+	if (!isStrictlyInsideDirectory({
+		filePath: canonicalTarget,
+		rootDir: canonicalWorkdir
+	})) return;
+	let fd;
+	try {
+		fd = openSync(canonicalTarget, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+	} catch {
+		return;
+	}
+	try {
+		const descriptorStat = fstatSync(fd);
+		if (!descriptorStat.isFile()) return void 0;
+		const verifiedPath = realpathSync(canonicalTarget);
+		if (!isStrictlyInsideDirectory({
+			filePath: verifiedPath,
+			rootDir: canonicalWorkdir
+		})) return;
+		const pathStat = lstatSync(verifiedPath);
+		if (!pathStat.isFile() || pathStat.dev !== descriptorStat.dev || pathStat.ino !== descriptorStat.ino) return;
+		return {
+			canonicalPath: verifiedPath,
+			content: readFileSync(fd)
+		};
+	} catch {
+		return;
+	} finally {
+		closeSync(fd);
+	}
+}
+function isStrictlyInsideDirectory({ filePath, rootDir }) {
+	const relative = path.relative(rootDir, filePath);
+	return relative !== "" && relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
+function syncMirrorFile({ targetPath, content }) {
+	if (content === void 0) {
+		rmSync(targetPath, {
+			recursive: true,
+			force: true
+		});
+		return;
+	}
+	writeMirrorFileAtomic({
+		targetPath,
+		content
+	});
+}
+function writeMirrorFileAtomic({ targetPath, content }) {
+	const tempPath = path.join(path.dirname(targetPath), `.${path.basename(targetPath)}.${randomUUID()}.tmp`);
+	try {
+		writeFileSync(tempPath, content, {
+			mode: 384,
+			flag: "wx"
+		});
+		renameSync(tempPath, targetPath);
+	} catch (error) {
+		rmSync(tempPath, { force: true });
+		throw error;
+	}
+}
+function pruneDirectoryEntries({ directory, keepNames }) {
+	for (const name of readdirSync(directory)) if (!keepNames.has(name)) rmSync(path.join(directory, name), {
+		recursive: true,
+		force: true
+	});
+}
+function sanitizeMirrorFileName(name) {
+	return name.replace(/[*?[\]{}\\/]/g, "_").replace(/^\.+/, "") || "instruction.md";
 }
 //#endregion
 //#region src/bridge/opencode-server-auth.ts
@@ -1917,7 +2211,35 @@ function toOpenCodePromptParts(prompt) {
 }
 //#endregion
 //#region src/bridge/permission-paths.ts
+const OPENCODE_WRITE_PROTECTED_PATHS = [
+	".agents/skills",
+	".opencode",
+	"opencode.json",
+	"opencode.jsonc",
+	".claude/skills"
+];
 async function areOpenCodePermissionPathsTrusted(options) {
+	const resolved = resolveOpenCodePermissionTargets(options);
+	if (resolved == null) return false;
+	return areFileToolPathsTrusted({
+		workDir: options.workDir,
+		cwd: options.workDir,
+		paths: resolved.targets,
+		access: resolved.access,
+		readableSkillRoots: options.readableSkillRoots
+	});
+}
+async function areOpenCodePermissionPathsWriteProtected(options) {
+	const resolved = resolveOpenCodePermissionTargets(options);
+	if (resolved == null) return true;
+	if (resolved.access !== "write") return false;
+	return isWriteProtectedPath({
+		workDir: options.workDir,
+		paths: resolved.targets,
+		writeProtectedPaths: OPENCODE_WRITE_PROTECTED_PATHS
+	});
+}
+function resolveOpenCodePermissionTargets(options) {
 	const args = options.toolCall?.input;
 	const nativeName = options.toolCall?.nativeName;
 	const access = ["edit", "write"].includes(options.action) || [
@@ -1927,7 +2249,7 @@ async function areOpenCodePermissionPathsTrusted(options) {
 	].includes(nativeName ?? "") ? "write" : "read";
 	let targets;
 	if (Array.isArray(options.metadata?.files)) {
-		if (options.metadata.files.length === 0) return false;
+		if (options.metadata.files.length === 0) return void 0;
 		targets = options.metadata.files.flatMap((value) => {
 			if (value == null || typeof value !== "object") return [void 0];
 			const file = value;
@@ -1948,15 +2270,12 @@ async function areOpenCodePermissionPathsTrusted(options) {
 	else if (typeof options.metadata?.filepath === "string" && options.action !== "edit") targets = [options.metadata.filepath];
 	else if (options.action === "edit" && typeof options.metadata?.filepath === "string" && path.posix.isAbsolute(options.metadata.filepath)) targets = [options.metadata.filepath];
 	else if (options.action === "read" && options.resources.length > 0 && options.resources.every((value) => path.posix.isAbsolute(value))) targets = options.resources;
-	else return false;
-	if (!targets.every((value) => typeof value === "string")) return false;
-	return areFileToolPathsTrusted({
-		workDir: options.workDir,
-		cwd: options.workDir,
-		paths: targets,
+	else return;
+	if (!targets.every((value) => typeof value === "string")) return void 0;
+	return {
 		access,
-		readableSkillRoots: options.readableSkillRoots
-	});
+		targets
+	};
 }
 async function areFileToolPathsTrusted(options) {
 	if (options.paths.length === 0) return false;
@@ -2056,6 +2375,7 @@ const HARNESS_CLIENT_APP = env.AI_SDK_HARNESS_CLIENT_APP;
 const args = parseArgs(argv.slice(2));
 const workdir = args.workdir ?? emitFatal("Missing --workdir argument.");
 const bridgeStateDir = args.bridgeStateDir ?? emitFatal("Missing --bridge-state-dir argument.");
+const instructionMirrorDir = path.resolve(bridgeStateDir, "instructions");
 const bootstrapDir = args.bootstrapDir ?? workdir;
 const skillsDir = args.skillsDir;
 const runtime = {
@@ -2138,11 +2458,19 @@ async function switchSessionModel({ client, sessionId, start }) {
 	if (response.error != null) throw response.error;
 }
 async function ensureRuntime({ start }) {
-	if (runtime.client && isDeepStrictEqual(runtime.openCodeConfig, start.openCodeConfig) && isDeepStrictEqual(runtime.inactiveBuiltinToolNames, start.inactiveBuiltinToolNames)) return;
+	if (runtime.client && runtime.permissionMode === start.permissionMode && isDeepStrictEqual(runtime.openCodeConfig, start.openCodeConfig) && isDeepStrictEqual(runtime.inactiveBuiltinToolNames, start.inactiveBuiltinToolNames)) {
+		if (isRestrictivePermissionMode(start.permissionMode)) resolveOpenCodeInstructions({
+			workdir,
+			hostInstructions: start.openCodeConfig?.instructions,
+			mirrorDir: instructionMirrorDir
+		});
+		return;
+	}
 	closeRuntime();
 	try {
 		const homeDirectory = homedir();
 		for (const protectedPath of [homeDirectory, path.join(env.XDG_CONFIG_HOME || path.join(homeDirectory, ".config"), "opencode")]) if (isPathInsideOrEqual(protectedPath, workdir)) throw new Error(`OpenCode session working directory "${workdir}" must not be or contain the sandbox home directory or OpenCode's global config directory, because OpenCode always loads configuration from those locations.`);
+		if (isRestrictivePermissionMode(start.permissionMode) && isPathInsideOrEqual(bridgeStateDir, workdir)) throw new Error(`OpenCode session working directory "${workdir}" must not contain the bridge state directory "${bridgeStateDir}", because restricted sessions keep repository instruction copies there.`);
 		if (start.tools && start.tools.length > 0) {
 			runtime.toolNames = new Set(start.tools.map((tool) => tool.name));
 			runtime.relay = await startToolRelay({ tools: start.tools });
@@ -2165,9 +2493,14 @@ async function ensureRuntime({ start }) {
 			directory: workdir,
 			headers: serverAuthHeaders
 		});
+		if (start.permissionMode && start.permissionMode !== "allow-all") {
+			const tools = await runtime.client.tool.ids({ directory: workdir });
+			if (tools.error || !tools.data?.includes("harness_read_guard")) throw new Error("OpenCode failed to load the required Harness read plugin.");
+		}
 		const mcpServers = asOpenCodeObject((await runtime.client.mcp.status()).data) ?? {};
 		runtime.mcpToolPrefixes = new Set(Object.entries(mcpServers).filter(([serverName, status]) => serverName !== "harness-tools" && asOpenCodeObject(status)?.status === "connected").map(([serverName]) => `${sanitizeMcpToolName(serverName)}_`));
 		runtime.openCodeConfig = structuredClone(start.openCodeConfig);
+		runtime.permissionMode = start.permissionMode;
 		runtime.inactiveBuiltinToolNames = structuredClone(start.inactiveBuiltinToolNames);
 	} catch (error) {
 		closeRuntime();
@@ -2181,6 +2514,7 @@ function closeRuntime() {
 	runtime.client = void 0;
 	runtime.relay = void 0;
 	runtime.openCodeConfig = void 0;
+	runtime.permissionMode = void 0;
 	runtime.inactiveBuiltinToolNames = void 0;
 	runtime.toolNames = /* @__PURE__ */ new Set();
 	runtime.mcpToolPrefixes = /* @__PURE__ */ new Set();
@@ -2206,9 +2540,14 @@ function buildOpenCodeConfig({ start, relayPort, toolSchemasPath }) {
 	};
 	const instructions = resolveOpenCodeInstructions({
 		workdir,
-		hostInstructions: start.openCodeConfig?.instructions
+		hostInstructions: start.openCodeConfig?.instructions,
+		...isRestrictivePermissionMode(start.permissionMode) ? { mirrorDir: instructionMirrorDir } : {}
 	});
 	if (instructions) config.instructions = instructions;
+	if (start.permissionMode && start.permissionMode !== "allow-all") {
+		config.permission.harness_read_guard = "deny";
+		config.plugin = [...Array.isArray(config.plugin) ? config.plugin : [], pathToFileURL(path.join(bootstrapDir, "opencode-read-plugin.mjs")).href];
+	}
 	if (start.model) config.model = start.model;
 	if (skillsDir) config.skills = { paths: [skillsDir] };
 	const permission = config.permission;
@@ -3110,14 +3449,16 @@ async function selectPermissionReply({ context, sessionId, toolCall, metadata, a
 		"ls"
 	].includes(toolName);
 	const kind = action === "external_directory" && nativeName ? nativeName === "apply_patch" ? "edit" : TOOL_KIND[toWireToolName(nativeName)] ?? "bash" : TOOL_KIND[toolName] ?? "bash";
-	if ((permissionMode === "allow-edits" ? kind === "readonly" || kind === "edit" : kind === "readonly") && (!filePermission || await areOpenCodePermissionPathsTrusted({
+	const allowed = permissionMode === "allow-edits" ? kind === "readonly" || kind === "edit" : kind === "readonly";
+	const permissionPathOptions = {
 		action,
 		resources,
 		metadata,
 		toolCall,
 		workDir: workdir,
 		readableSkillRoots: context.readableSkillRoots
-	}))) return { reply: "once" };
+	};
+	if (allowed && (!filePermission || await areOpenCodePermissionPathsTrusted(permissionPathOptions) && !await areOpenCodePermissionPathsWriteProtected(permissionPathOptions))) return { reply: "once" };
 	const decision = await requestApproval();
 	return decision.approved ? { reply: "once" } : {
 		reply: "reject",
@@ -3139,6 +3480,9 @@ function toPermissionToolName(action) {
 }
 function isBuiltinToolInactive(input) {
 	return input.inactiveBuiltinToolNames?.some((toolName) => toolName === input.toolName) ?? false;
+}
+function isRestrictivePermissionMode(permissionMode) {
+	return Boolean(permissionMode && permissionMode !== "allow-all");
 }
 function isPathInsideOrEqual(file, root) {
 	const relative = path.relative(canonicalizeForContainment(root), canonicalizeForContainment(file));

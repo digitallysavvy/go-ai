@@ -133,7 +133,9 @@ func TestGetBootstrapShipsBridgeFilesAndCommands(t *testing.T) {
 	for _, f := range b.Files {
 		paths = append(paths, f.Path)
 	}
+	// TS 486e08f044: the read plugin is the first bootstrap file.
 	want := []string{
+		".harness-bootstrap/opencode/opencode-read-plugin.mjs",
 		".harness-bootstrap/opencode/package.json",
 		".harness-bootstrap/opencode/pnpm-lock.yaml",
 		".harness-bootstrap/opencode/pnpm-workspace.yaml",

@@ -103,7 +103,7 @@ const adapters = {
     adapterDir: 'opencode',
     harnessId: 'opencode',
     bootstrapDir: '.harness-bootstrap/opencode',
-    fileNames: ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'bridge.mjs', 'host-tool-mcp.mjs'],
+    fileNames: ['opencode-read-plugin.mjs', 'package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'bridge.mjs', 'host-tool-mcp.mjs'],
     commands: [
       { command: 'pnpm install --frozen-lockfile --store-dir .pnpm-store' },
       { command: './node_modules/.bin/opencode --version' },

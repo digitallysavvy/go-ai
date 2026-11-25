@@ -1,14 +1,14 @@
-import { appendFile, lstat, mkdir, realpath, writeFile } from "node:fs/promises";
+import { appendFile, lstat, mkdir, readdir, realpath, writeFile } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
 import { createPublicKey, randomBytes, randomUUID, verify } from "node:crypto";
 import { argv, env, pid, stdout } from "node:process";
 import { WebSocketServer } from "ws";
 import { Buffer as Buffer$1 } from "node:buffer";
+import path from "node:path";
 import * as claudeAgentSdk from "@anthropic-ai/claude-agent-sdk";
 import * as mcpServerModule from "@modelcontextprotocol/sdk/server/mcp.js";
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod/v4";
-import path from "node:path";
 //#region ../harness/dist/bridge/index.js
 const BRIDGE_AUTH_TIMEOUT_MS = 1e4;
 const BRIDGE_AUTH_MESSAGE_PREFIX = "ai-sdk-harness-bridge-auth-v1\0";
@@ -88,6 +88,132 @@ var HarnessBridgeCapabilityUnsupportedError = class extends Error {
 		return error != null && typeof error === "object" && "name" in error && error.name === name && "message" in error && typeof error.message === "string";
 	}
 };
+function assertWriteProtectedPathEntries(entries) {
+	for (const entry of entries) if (typeof entry !== "string" || entry.length === 0 || path.posix.isAbsolute(entry) || entry.split("/").some((segment) => segment === "" || segment === "." || segment === "..")) throw new TypeError(`Write-protected path entries must be relative paths without empty, "." or ".." segments; received ${JSON.stringify(entry)}.`);
+}
+function isInsideWriteProtectionPath({ parent, candidate }) {
+	const relative = path.posix.relative(parent, candidate);
+	return relative === "" || relative !== ".." && !relative.startsWith("../") && !path.posix.isAbsolute(relative);
+}
+function matchesWriteProtectedPath({ targets, protectedPaths, anyProtectedPathExists }) {
+	return targets.some((target) => protectedPaths.some((protectedPath) => isInsideWriteProtectionPath({
+		parent: protectedPath,
+		candidate: target.path
+	}) || isInsideWriteProtectionPath({
+		parent: target.path,
+		candidate: protectedPath
+	})) || anyProtectedPathExists && target.isMultiLinkFile);
+}
+/**
+* Returns whether writing to any of `paths` touches a write-protected path and
+* therefore requires the host's approval. Runs inside the sandbox, next to the
+* files it checks.
+*
+* `writeProtectedPaths` entries are relative to `workDir` and must not contain
+* empty, `.`, or `..` segments. Relative `paths` resolve against `cwd`, which
+* defaults to `workDir`.
+*
+* A path matches when its canonical location is a protected path, lies inside
+* one, or is a parent of one. Each protected entry is protected both at its
+* literal location below the canonical working directory and at its canonical
+* location. The literal location covers parents of a protected path that is
+* itself a symlink, whose canonical location lies elsewhere.
+*
+* Protected paths are resolved on every call because the filesystem can change
+* during a session. Symlinks inside protected directories protect their
+* targets as well, so files reachable through a protected path cannot be
+* written through an unprotected alias. While any protected path exists,
+* writes to files with more than one link match too. Any resolution failure,
+* including dangling or looping symlinks, reports the write as protected.
+*/
+async function isWriteProtectedPath({ workDir, cwd = workDir, paths, writeProtectedPaths }) {
+	assertWriteProtectedPathEntries(writeProtectedPaths);
+	if (paths.length === 0) return true;
+	try {
+		const canonicalWorkDir = await realpath(workDir);
+		const protection = await collectWriteProtectedPaths({
+			canonicalWorkDir,
+			protectedRoots: await Promise.all(writeProtectedPaths.map((entry) => resolveExistingPrefix(`${workDir}/${entry}`)))
+		});
+		if (protection == null) return true;
+		const targets = [];
+		for (const filePath of paths) {
+			if (typeof filePath !== "string" || filePath.trim().length === 0) return true;
+			if (!path.posix.isAbsolute(filePath) && !path.posix.isAbsolute(cwd)) return true;
+			const absolutePath = path.posix.isAbsolute(filePath) ? filePath : `${cwd}/${filePath}`;
+			for (const candidatePath of /* @__PURE__ */ new Set([absolutePath, path.posix.normalize(absolutePath)])) {
+				const target = await resolveExistingPrefix(candidatePath);
+				const stats = protection.anyRootExists ? await lstatIfExists(target) : void 0;
+				targets.push({
+					path: target,
+					isMultiLinkFile: stats?.isFile() === true && stats.nlink > 1
+				});
+			}
+		}
+		return matchesWriteProtectedPath({
+			targets,
+			protectedPaths: [...writeProtectedPaths.map((entry) => path.posix.join(canonicalWorkDir, entry)), ...protection.paths],
+			anyProtectedPathExists: protection.anyRootExists
+		});
+	} catch {
+		return true;
+	}
+}
+async function collectWriteProtectedPaths({ canonicalWorkDir, protectedRoots }) {
+	const paths = [...protectedRoots];
+	const queue = [];
+	let anyRootExists = false;
+	for (const root of protectedRoots) {
+		const stats = await lstatIfExists(root);
+		if (stats == null) continue;
+		anyRootExists = true;
+		if (stats.isDirectory()) queue.push(root);
+	}
+	const scanned = /* @__PURE__ */ new Set();
+	let entryCount = 0;
+	while (queue.length > 0) {
+		const directory = queue.shift();
+		if (scanned.has(directory)) continue;
+		scanned.add(directory);
+		for (const entry of await readdir(directory, { withFileTypes: true })) {
+			entryCount += 1;
+			if (entryCount > 2e3) return void 0;
+			const entryPath = path.posix.join(directory, entry.name);
+			if (entry.isSymbolicLink()) {
+				const target = await realpath(entryPath);
+				paths.push(target);
+				if (isInsideWriteProtectionPath({
+					parent: canonicalWorkDir,
+					candidate: target
+				}) && (await lstat(target)).isDirectory()) queue.push(target);
+			} else if (entry.isDirectory()) queue.push(entryPath);
+		}
+	}
+	return {
+		paths,
+		anyRootExists
+	};
+}
+async function resolveExistingPrefix(inputPath) {
+	let existingPath = inputPath;
+	const missingSegments = [];
+	while (await lstatIfExists(existingPath) == null) {
+		const parent = path.posix.dirname(existingPath);
+		const segment = path.posix.basename(existingPath);
+		if (parent === existingPath || segment === ".." || segment === ".") throw new Error(`Unable to resolve path ${JSON.stringify(inputPath)}.`);
+		missingSegments.unshift(segment);
+		existingPath = parent;
+	}
+	return path.posix.join(await realpath(existingPath), ...missingSegments);
+}
+async function lstatIfExists(entryPath) {
+	try {
+		return await lstat(entryPath);
+	} catch (error) {
+		if (error != null && typeof error === "object" && "code" in error && error.code === "ENOENT") return;
+		throw error;
+	}
+}
 function getNormalizedInlineImage(part) {
 	if (part.type === "file" && part.mediaType.startsWith("image/") && part.mediaType !== "image/*" && part.data.type === "data" && typeof part.data.data === "string") return {
 		data: part.data.data,
@@ -837,6 +963,7 @@ function createEmitStreamEvent({ state, emit, emitWarning, emitTerminalError, on
 				rawValue: {
 					type,
 					subtype: msg.subtype,
+					...msg.subtype === "init" && typeof msg.session_id === "string" && msg.session_id.length > 0 ? { sessionId: msg.session_id } : {},
 					...msg.permissionMode != null ? { permissionMode: msg.permissionMode } : {}
 				}
 			});
@@ -880,6 +1007,10 @@ function createEmitStreamEvent({ state, emit, emitWarning, emitTerminalError, on
 				type: "raw",
 				rawValue: msg
 			});
+			const content = msg.message?.content;
+			if (type === "user" && Array.isArray(content)) {
+				for (const block of content) if (block.type === "tool_result" && typeof block.tool_use_id === "string") state.mcpHandlerCalls.delete(block.tool_use_id);
+			}
 			return;
 		}
 		if (type === "stream_event") {
@@ -1584,6 +1715,11 @@ const NATIVE_TO_COMMON = {
 	WebSearch: "webSearch",
 	AskUserQuestion: "askUserQuestions"
 };
+const CLAUDE_CODE_WRITE_PROTECTED_PATHS = [
+	".agents/skills",
+	".claude",
+	".mcp.json"
+];
 const NATIVE_TOOL_KINDS = {
 	Read: "readonly",
 	Glob: "readonly",
@@ -1859,13 +1995,40 @@ async function needsHostApproval(input) {
 	}
 	if (input.blockedPath != null) paths.push(input.blockedPath);
 	if (!paths.every((value) => typeof value === "string")) return true;
-	return !await areFileToolPathsTrusted({
+	if (!await areFileToolPathsTrusted({
 		workDir: workdir,
 		cwd: input.cwd,
 		paths,
 		access,
 		readableSkillRoots: input.readableSkillRoots,
 		additionalDirectories: input.additionalDirectories
+	})) return true;
+	return access === "write" && await isWriteProtectedPath({
+		workDir: workdir,
+		cwd: input.cwd,
+		paths,
+		writeProtectedPaths: CLAUDE_CODE_WRITE_PROTECTED_PATHS
+	});
+}
+async function isProtectedClaudeFileWrite(input) {
+	const args = input.toolInput != null && typeof input.toolInput === "object" ? input.toolInput : {};
+	let target;
+	switch (input.toolName) {
+		case "Write":
+		case "Edit":
+			target = args.file_path;
+			break;
+		case "NotebookEdit":
+			target = args.notebook_path;
+			break;
+		default: return false;
+	}
+	if (typeof target !== "string") return true;
+	return isWriteProtectedPath({
+		workDir: workdir,
+		cwd: input.cwd,
+		paths: [target],
+		writeProtectedPaths: CLAUDE_CODE_WRITE_PROTECTED_PATHS
 	});
 }
 function createApprovalPreToolUseHook(input) {
@@ -1886,7 +2049,11 @@ function createApprovalPreToolUseHook(input) {
 				}
 			} };
 		}
-		if (!await needsHostApproval({
+		if (!(input.autoMode ? await isProtectedClaudeFileWrite({
+			toolName,
+			toolInput: hookInput.tool_input,
+			cwd: hookInput.cwd
+		}) : await needsHostApproval({
 			toolName,
 			toolInput: hookInput.tool_input,
 			cwd: hookInput.cwd,
@@ -1894,7 +2061,7 @@ function createApprovalPreToolUseHook(input) {
 			additionalDirectories: input.additionalDirectories,
 			permissionMode: input.permissionMode,
 			inactiveNativeTools: input.inactiveNativeTools
-		})) return {};
+		}))) return {};
 		input.deferredToolUseIds.add(toolUseID);
 		return { hookSpecificOutput: {
 			hookEventName: "PreToolUse",
@@ -2056,6 +2223,7 @@ async function runTurn(start, turn) {
 		readableSkillRoots: start.readableSkillRoots ?? [],
 		additionalDirectories: start.additionalDirectories ?? [],
 		permissionMode,
+		autoMode: start.autoMode === true,
 		inactiveNativeTools: new Set(inactiveNativeTools),
 		decisions: approvalDecisions,
 		deferredToolUseIds,
@@ -2103,7 +2271,7 @@ async function runTurn(start, turn) {
 			} } : {},
 			includePartialMessages: true,
 			hooks: {
-				PreToolUse: [...permissionMode === "allow-all" || start.autoMode === true ? [] : [{ hooks: [approvalPreToolUseHook] }], {
+				PreToolUse: [...permissionMode === "allow-all" ? [] : [{ hooks: [approvalPreToolUseHook] }], {
 					matcher: "AskUserQuestion",
 					hooks: [questionPreToolUseHook],
 					...start.questionTimeoutMs !== void 0 ? { timeout: Math.ceil(start.questionTimeoutMs / 1e3) } : {}
