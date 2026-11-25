@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -928,5 +929,106 @@ func TestPortgenGenerateTextStoppedBy(t *testing.T) {
 				t.Fatalf("StoppedBy = %q, want %q", result.StoppedBy, tc.want)
 			}
 		})
+	}
+}
+
+// ---- per-call OnWarning (TS d834c5bb35) ----
+
+func portgenWarnModel(modelWarnings []types.Warning) *testutil.MockLanguageModel {
+	return &testutil.MockLanguageModel{
+		ProviderName: "mock-provider", ModelName: "mock-model-id", ToolSupport: true,
+		DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{Text: "It is sunny.", FinishReason: types.FinishReasonStop, Warnings: modelWarnings}, nil
+		},
+	}
+}
+
+func TestPortgenOnWarningReplacesTheGlobalLogger(t *testing.T) {
+	var global []LogWarningsOptions
+	SetLogWarnings(func(o LogWarningsOptions) { global = append(global, o) })
+	t.Cleanup(func() { SetLogWarnings(nil) })
+	note := types.Warning{Type: "other", Message: "Provider note"}
+
+	var got []LogWarningsOptions
+	if _, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: portgenWarnModel([]types.Warning{note}), Prompt: "q",
+		OnWarning: func(o LogWarningsOptions) { got = append(got, o) },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Provider != "mock-provider" || got[0].Model != "mock-model-id" || !reflect.DeepEqual(got[0].Warnings, []types.Warning{note}) {
+		t.Fatalf("onWarning calls = %+v", got)
+	}
+	if len(global) != 0 {
+		t.Fatalf("global logger got %+v", global)
+	}
+
+	// Without OnWarning the global logger keeps receiving the warnings.
+	if _, err := GenerateText(context.Background(), GenerateTextOptions{Model: portgenWarnModel([]types.Warning{note}), Prompt: "q"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(global) != 1 || global[0].Provider != "mock-provider" {
+		t.Fatalf("global = %+v", global)
+	}
+}
+
+func TestPortgenPromptWarningsJoinStepWarnings(t *testing.T) {
+	note := types.Warning{Type: "other", Message: "Provider note"}
+	var got []LogWarningsOptions
+	result, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:     portgenWarnModel([]types.Warning{note}),
+		Messages:  []types.Message{r86genImageMessage(1)},
+		OnWarning: func(o LogWarningsOptions) { got = append(got, o) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Steps[0].Warnings) != 2 || result.Steps[0].Warnings[1] != note {
+		t.Fatalf("step warnings = %+v", result.Steps[0].Warnings)
+	}
+	if result.Steps[0].Warnings[0].Type != "deprecated" {
+		t.Fatalf("first step warning = %+v, want the prompt deprecation", result.Steps[0].Warnings[0])
+	}
+	if len(result.Warnings) != 2 {
+		t.Fatalf("result warnings = %+v", result.Warnings)
+	}
+	// The prompt batch has no provider scope; the model batch has one.
+	if len(got) != 2 || got[0].Provider != "" || got[0].Model != "" || len(got[0].Warnings) != 1 || got[1].Provider != "mock-provider" {
+		t.Fatalf("onWarning calls = %+v", got)
+	}
+}
+
+func TestPortgenOnWarningIsSkippedWithoutWarningsAndSurvivesPanics(t *testing.T) {
+	calls := 0
+	if _, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: portgenWarnModel(nil), Prompt: "q",
+		OnWarning: func(LogWarningsOptions) { calls++ },
+	}); err != nil || calls != 0 {
+		t.Fatalf("err = %v, calls = %d", err, calls)
+	}
+	result, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:     portgenWarnModel([]types.Warning{{Type: "other", Message: "Provider note"}}),
+		Messages:  []types.Message{r86genImageMessage(1)},
+		OnWarning: func(LogWarningsOptions) { calls++; panic("onWarning failed") },
+	})
+	if err != nil || calls != 2 || len(result.Steps[0].Warnings) != 2 {
+		t.Fatalf("err = %v, calls = %d, result = %+v", err, calls, result)
+	}
+}
+
+func TestPortgenOnWarningReceivesTheUnsupportedTimeoutWarning(t *testing.T) {
+	var global int
+	SetLogWarnings(func(LogWarningsOptions) { global++ })
+	t.Cleanup(func() { SetLogWarnings(nil) })
+	var got []LogWarningsOptions
+	chunk := time.Second
+	if _, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: portgenWarnModel(nil), Prompt: "q", Timeout: &TimeoutConfig{PerChunk: &chunk},
+		OnWarning: func(o LogWarningsOptions) { got = append(got, o) },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Warnings[0].Feature != "timeout.chunkMs" || global != 0 {
+		t.Fatalf("got = %+v, global = %d", got, global)
 	}
 }

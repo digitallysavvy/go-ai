@@ -1546,7 +1546,9 @@ func (f FileContentBlock) DeprecationWarning() (Warning, bool) {
 			if f.MediaType == "application/octet-stream" {
 				inferenceSuffix = `Unable to infer media type from URL. Defaulting to 'application/octet-stream'.`
 			}
-			message = `The "file-url" tool result content part with URL "` + f.URL + `" is missing a "mediaType". ` + inferenceSuffix + " " + message
+			// TS d834c5bb35 leaves the URL out: warnings reach step results and
+			// telemetry, and a URL can carry a credential.
+			message = `A "file-url" tool result content part is missing a "mediaType". ` + inferenceSuffix + " " + message
 		}
 	case "image-url":
 		message = `The "image-url" type for tool result content is deprecated. Use the "file" type with mediaType 'image' (or a specific image/* subtype) and { type: 'url', url } instead.`

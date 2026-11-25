@@ -11,8 +11,10 @@ import (
 // condition: the tool loop stopped because it reached IsStepCount(stepCount).
 // It is the part of createDefaultStopCondition that the WorkflowAgent shares
 // (TS logDefaultStopConditionWarning, exported from ai/internal, f43ee39373).
-func LogDefaultStopConditionWarning(stepCount int, provider, modelID string) {
-	ai.LogWarnings(ai.LogWarningsOptions{
+// A non-nil onWarning receives the warning instead of the global logger
+// (d834c5bb35).
+func LogDefaultStopConditionWarning(stepCount int, provider, modelID string, onWarning ai.LogWarningsFunction) {
+	ai.CreateLogWarnings(onWarning)(ai.LogWarningsOptions{
 		Provider: provider,
 		Model:    modelID,
 		Warnings: []types.Warning{{
@@ -30,7 +32,7 @@ func LogDefaultStopConditionWarning(stepCount int, provider, modelID string) {
 // Stop conditions are only evaluated when the loop can otherwise continue, so
 // logging here avoids warning when a call finishes naturally at the limit.
 // Mirrors TS createDefaultStopCondition (#22329).
-func createDefaultStopCondition(stepCount int) ai.StopCondition {
+func createDefaultStopCondition(stepCount int, onWarning ai.LogWarningsFunction) ai.StopCondition {
 	limit := ai.IsStepCount(stepCount)
 	return func(state ai.StopConditionState) string {
 		reason := limit(state)
@@ -38,7 +40,7 @@ func createDefaultStopCondition(stepCount int) ai.StopCondition {
 			return ""
 		}
 		model := state.Steps[len(state.Steps)-1].Model
-		LogDefaultStopConditionWarning(stepCount, model.Provider, model.ModelID)
+		LogDefaultStopConditionWarning(stepCount, model.Provider, model.ModelID, onWarning)
 		return reason
 	}
 }

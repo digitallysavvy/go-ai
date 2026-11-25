@@ -546,6 +546,12 @@ type GenerateTextOptions struct {
 	// #23813).
 	ExperimentalSteering *Steering
 
+	// OnWarning receives the warnings of the call, for example unsupported
+	// settings or deprecated prompt parts, instead of the global warning
+	// logger (TS onWarning, d834c5bb35). A panic in it does not break the
+	// call.
+	OnWarning LogWarningsFunction
+
 	// OnStepError is called when a step that started fails before it produces
 	// a step result: the provider call fails or an error occurs while the step
 	// runs. OnStepEnd is not called for such a step. In GenerateText an abort
@@ -873,6 +879,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	if err != nil {
 		return nil, err
 	}
+	logCallWarnings := createLogWarnings(opts.OnWarning)
 	// TS logs these after the tool search state, before prepareRetries.
 	// Warn (once, up front) when a streaming-only timeout setting is passed
 	// to the non-streaming GenerateText (TS 349afe7 / generate-text.ts
@@ -897,7 +904,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			})
 		}
 		if len(unsupportedTimeoutWarnings) > 0 {
-			logModelWarnings(unsupportedTimeoutWarnings, opts.Model.Provider(), opts.Model.ModelID())
+			logCallWarnings(LogWarningsOptions{Warnings: unsupportedTimeoutWarnings, Provider: opts.Model.Provider(), Model: opts.Model.ModelID()})
 		}
 	}
 
@@ -1410,7 +1417,10 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			toolsByName[stepExecutionTools[i].Name] = &stepExecutionTools[i]
 		}
 
-		logPromptDeprecations(promptDeprecations.forStep(stepMessages))
+		// The prompt warnings of the step join its warnings and are logged as
+		// one batch, without provider or model (TS promptWarnings).
+		promptWarnings := flattenWarningBatches(promptDeprecations.forStep(stepMessages))
+		logCallWarnings(LogWarningsOptions{Warnings: promptWarnings})
 		stepPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(stepCtx, types.Prompt{
 			Messages: messagesForModel(stepMessages),
 			// The sandbox description is not added to the prompt (TS:
@@ -1753,7 +1763,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			RawFinishReason:              stepRawFinishReason,
 			Usage:                        genResult.Usage,
 			Performance:                  performance,
-			Warnings:                     genResult.Warnings,
+			Warnings:                     stepWarningsWithPrompt(promptWarnings, genResult.Warnings),
 			Sources:                      stepSources,
 			Request:                      stepRequest,
 			Response: types.StepResponse{
@@ -2020,7 +2030,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		// Log this step's model warnings once per model call (TS
 		// generate-text.ts logWarnings, called per step just before the step
 		// is pushed onto steps).
-		logModelWarnings(stepResult.Warnings, stepModel.Provider(), stepModel.ModelID())
+		logCallWarnings(LogWarningsOptions{Warnings: genResult.Warnings, Provider: stepModel.Provider(), Model: stepModel.ModelID()})
 
 		// Add step to results
 		result.Steps = append(result.Steps, stepResult)
@@ -3491,4 +3501,16 @@ func streamRequestURL(stream provider.TextStream) string {
 // shape (the step-end and end events carry the step's request as in TS).
 func generateStepRequestOf(r types.StepRequest) GenerateStepRequest {
 	return GenerateStepRequest{Body: r.Body, Messages: r.Messages, URL: r.URL}
+}
+
+// stepWarningsWithPrompt is a step's warnings: the prompt conversion warnings
+// followed by the model call's (TS `[...promptWarnings, ...warnings]`). It
+// returns the model warnings as they are when the prompt has none.
+func stepWarningsWithPrompt(prompt, model []types.Warning) []types.Warning {
+	if len(prompt) == 0 {
+		return model
+	}
+	out := make([]types.Warning, 0, len(prompt)+len(model))
+	out = append(out, prompt...)
+	return append(out, model...)
 }

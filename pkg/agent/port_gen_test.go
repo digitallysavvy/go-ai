@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
@@ -159,7 +160,7 @@ func TestPortgenGenerateAgentApprovalMessagesSlicePerStep(t *testing.T) {
 // warning for the given provider and model.
 func TestPortgenLogDefaultStopConditionWarning(t *testing.T) {
 	logged := captureWarnings(t)
-	LogDefaultStopConditionWarning(20, "mock-provider", "mock-model")
+	LogDefaultStopConditionWarning(20, "mock-provider", "mock-model", nil)
 	got := logged()
 	if len(got) != 1 || got[0].Provider != "mock-provider" || got[0].Model != "mock-model" || len(got[0].Warnings) != 1 {
 		t.Fatalf("logged = %+v", got)
@@ -191,5 +192,34 @@ func TestPortgenToolLoopAgentDefaultStepLimitStoppedBy(t *testing.T) {
 	}
 	if len(result.Steps) != 20 || result.StoppedBy != ai.StoppedByStopCondition {
 		t.Fatalf("steps = %d, stoppedBy = %q", len(result.Steps), result.StoppedBy)
+	}
+}
+
+// Port of on-warning.test.ts 'receives the default step limit warning of a
+// ToolLoopAgent (generate)' (TS d834c5bb35).
+func TestPortgenToolLoopAgentOnWarningReceivesDefaultStepLimit(t *testing.T) {
+	global := captureWarnings(t)
+	var got []ai.LogWarningsOptions
+	responses := toolLoopResponses(21, 0)
+	call := 0
+	model := &testutil.MockLanguageModel{ProviderName: "mock-provider", ModelName: "mock-model-id", ToolSupport: true,
+		DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			r := responses[call]
+			call++
+			return &r, nil
+		}}
+	agent := NewToolLoopAgent(AgentConfig{
+		Model: model, Tools: []types.Tool{defaultStopTestTool()},
+		OnWarning: func(o ai.LogWarningsOptions) { got = append(got, o) },
+	})
+	if _, err := agent.Generate(context.Background(), AgentGenerateOptions{Prompt: "What is the weather in Paris?"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Provider != "mock-provider" || got[0].Model != "mock-model-id" ||
+		!strings.Contains(got[0].Warnings[0].Message, "IsStepCount(20)") {
+		t.Fatalf("onWarning calls = %+v", got)
+	}
+	if n := len(global()); n != 0 {
+		t.Fatalf("global logger got %d calls", n)
 	}
 }

@@ -233,7 +233,7 @@ func NewToolLoopAgent(config AgentConfig) *ToolLoopAgent {
 		})
 		config.MaxSteps = 0
 	} else {
-		config.StopWhen = []ai.StopCondition{createDefaultStopCondition(20)}
+		config.StopWhen = []ai.StopCondition{createDefaultStopCondition(20, config.OnWarning)}
 		config.MaxSteps = 0
 	}
 
@@ -412,6 +412,7 @@ func (a *ToolLoopAgent) Generate(ctx context.Context, opts AgentGenerateOptions)
 		OnStart:                        cbs.onStart,
 		OnStepStart:                    cbs.onStepStart,
 		OnStepError:                    config.OnStepError,
+		OnWarning:                      config.OnWarning,
 		ExperimentalSteering:           opts.ExperimentalSteering,
 		OnToolExecutionStart:           cbs.onToolCallStart,
 		OnToolExecutionEnd:             cbs.onToolCallFinish,

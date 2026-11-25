@@ -549,6 +549,12 @@ type AgentConfig struct {
 	// OnStepStart is called at the beginning of each LLM step.
 	OnStepStartEvent func(ctx context.Context, e ai.OnStepStartEvent)
 
+	// OnWarning receives the warnings of the agent calls, for example
+	// unsupported settings, deprecated prompt parts, or reaching the default
+	// step limit, instead of the global warning logger (TS onWarning,
+	// d834c5bb35). Like OnStepError it is set here, not per call.
+	OnWarning ai.LogWarningsFunction
+
 	// OnStepError is called when a step that started fails before it produces
 	// a step result (the provider call fails or, in Stream, the model stream
 	// ends without output). OnStepEnd is not called for such a step. In

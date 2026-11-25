@@ -66,9 +66,10 @@ func TestR86genImageDeprecationFollowsStepMessages(t *testing.T) {
 			t.Fatal(err)
 		}
 		// Step 1: the prompt's message (1 image). Step 2: the prompt's
-		// message, then the steering message (2 images).
-		if got := *batches; len(got) != 3 || got[0] != 1 || got[1] != 1 || got[2] != 2 {
-			t.Fatalf("batches = %v, want [1 1 2]", got)
+		// message, then the steering message (2 images). TS d834c5bb35 logs
+		// the prompt warnings of a step as one batch.
+		if got := *batches; len(got) != 2 || got[0] != 1 || got[1] != 3 {
+			t.Fatalf("batches = %v, want [1 3]", got)
 		}
 	})
 
