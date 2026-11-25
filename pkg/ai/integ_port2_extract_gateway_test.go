@@ -202,11 +202,13 @@ func TestIntegPort2ExtractKeepsGatewayBYOKCredentialsOutOfTelemetryErrors(t *tes
 		t.Fatalf("onError calls = %d, want 1", len(onError.errors))
 	}
 	event := onError.errors[0]
-	// Settings holds funcs (TS JSON.stringify drops them); marshal the rest
-	// and check the whole event's printed form as well.
-	marshalled := event
-	marshalled.Settings = nil
-	eventJSON, err := json.Marshal(marshalled)
+	// Settings holds funcs (TS JSON.stringify drops them); marshal the other
+	// fields and check the whole event's printed form as well.
+	eventJSON, err := json.Marshal(struct {
+		Error     error
+		CallID    string
+		AIVersion string
+	}{event.Error, event.CallID, event.AIVersion})
 	if err != nil {
 		t.Fatal(err)
 	}
