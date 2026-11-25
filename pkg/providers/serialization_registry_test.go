@@ -99,6 +99,13 @@ var registryConfigOverrides = map[string]map[string]interface{}{
 	// deserializeEmbeddingModel in pkg/providers/baseten/serialization.go);
 	// without it, Provider.EmbeddingModel has no endpoint to call.
 	"baseten.embedding": {"BaseURL": "https://example.test/sync/v1"},
+	// The language-model-backed extraction models (providerutils
+	// ExtractionLanguageModel, TS [WORKFLOW_SERIALIZE]) carry the wrapped
+	// language model in config.model; it is restored through
+	// provider.DeserializeModel.
+	"anthropic.extraction": {"model": map[string]interface{}{"provider": "anthropic.messages", "modelId": "test-model", "config": map[string]interface{}{}}, "maxFieldsPerCall": 16},
+	"openai.extraction":    {"model": map[string]interface{}{"provider": "openai.responses", "modelId": "test-model", "config": map[string]interface{}{}}},
+	"google.extraction":    {"model": map[string]interface{}{"provider": "google.generative-ai", "modelId": "test-model", "config": map[string]interface{}{}}},
 }
 
 // registryModelIDOverrides supplies a non-default ModelID for registry keys
@@ -444,6 +451,29 @@ func TestDecisionModelDeserializerRegistryKeysRoundTrip(t *testing.T) {
 			if reason, ok := registryAliasKeys[key]; ok {
 				t.Logf("alias key %q: %s (restored Provider() = %q)", key, reason, restored.Provider())
 				return
+			}
+			if restored.Provider() != key {
+				t.Fatalf("restored Provider() = %q, want %q", restored.Provider(), key)
+			}
+		})
+	}
+}
+
+func TestExtractionModelDeserializerRegistryKeysRoundTrip(t *testing.T) {
+	keys := provider.RegisteredExtractionModelDeserializerKeys()
+	if len(keys) == 0 {
+		t.Fatal("no extraction model deserializers registered")
+	}
+	for _, key := range keys {
+		key := key
+		t.Run(key, func(t *testing.T) {
+			restored, err := provider.DeserializeExtractionModel(provider.SerializedModel{
+				Provider: key,
+				ModelID:  modelIDFor(key),
+				Config:   configFor(key),
+			})
+			if err != nil {
+				t.Fatalf("DeserializeExtractionModel(%q) error = %v", key, err)
 			}
 			if restored.Provider() != key {
 				t.Fatalf("restored Provider() = %q, want %q", restored.Provider(), key)

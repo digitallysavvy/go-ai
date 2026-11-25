@@ -8,6 +8,7 @@ import (
 
 func init() {
 	provider.RegisterDecisionModelDeserializer(decisionProviderName, deserializeDecisionModel)
+	provider.RegisterExtractionModelDeserializer(extractionProviderName, DeserializeExtractionModel)
 }
 
 // Serialize implements provider.SerializableModel for workflow boundaries.

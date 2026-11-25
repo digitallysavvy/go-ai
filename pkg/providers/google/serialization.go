@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 func init() {
@@ -22,6 +23,9 @@ func init() {
 	provider.RegisterModelDeserializer("google.interactions", deserializeInteractionsModel)
 	provider.RegisterModelDeserializer("google.generative-ai.interactions", deserializeInteractionsModel)
 	provider.RegisterDecisionModelDeserializer("google.decision", deserializeDecisionModel)
+	// Provider.ExtractionModel wraps a generative-ai model (TS
+	// ExtractionLanguageModel [WORKFLOW_SERIALIZE]).
+	provider.RegisterExtractionModelDeserializer("google.extraction", providerutils.DeserializeExtractionLanguageModel)
 }
 
 // Serialize implements provider.SerializableModel for workflow boundaries.
