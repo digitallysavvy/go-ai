@@ -66,7 +66,7 @@ func (m *ExtractionModel) DoExtract(ctx context.Context, opts provider.Extractio
 	properties := providerutils.OrderedMap{Keys: ids, Vals: make(map[string]interface{}, len(ids))}
 	for _, id := range ids {
 		field := opts.Fields[id]
-		if field.Type != provider.ExtractionFieldText && !(field.Type == provider.ExtractionFieldList && field.Items == provider.ExtractionFieldText) {
+		if field.Type != provider.ExtractionFieldText && (field.Type != provider.ExtractionFieldList || field.Items != provider.ExtractionFieldText) {
 			fieldType := field.Type
 			if field.Type == provider.ExtractionFieldList {
 				fieldType = "list<" + field.Items + ">"

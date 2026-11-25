@@ -286,12 +286,12 @@ func TestPort2toolsExtractionSourceRejectsOffsetsInsideACharacter(t *testing.T) 
 		entity scaledownExtractionEntity
 		want   *provider.ExtractionSource
 	}{
-		"after emoji":            {scaledownExtractionEntity{Text: "ab", Start: ptr(5.0), End: ptr(7.0)}, &provider.ExtractionSource{Type: "text", Part: 0, Start: 3, End: 5}},
-		"starts inside emoji":    {scaledownExtractionEntity{Text: "\xf0\x9f", Start: ptr(1.0), End: ptr(3.0)}, nil},
-		"starts inside (3 of 4)": {scaledownExtractionEntity{Text: "\U0001f642", Start: ptr(0.0), End: ptr(3.0)}, nil},
-		"end before start":       {scaledownExtractionEntity{Text: "", Start: ptr(3.0), End: ptr(2.0)}, nil},
+		"after emoji":               {scaledownExtractionEntity{Text: "ab", Start: ptr(5.0), End: ptr(7.0)}, &provider.ExtractionSource{Type: "text", Part: 0, Start: 3, End: 5}},
+		"starts inside emoji":       {scaledownExtractionEntity{Text: "\xf0\x9f", Start: ptr(1.0), End: ptr(3.0)}, nil},
+		"starts inside (3 of 4)":    {scaledownExtractionEntity{Text: "\U0001f642", Start: ptr(0.0), End: ptr(3.0)}, nil},
+		"end before start":          {scaledownExtractionEntity{Text: "", Start: ptr(3.0), End: ptr(2.0)}, nil},
 		"misaligned but equal text": {scaledownExtractionEntity{Text: "é", Start: ptr(1.0), End: ptr(3.0)}, nil},
-		"missing offsets":        {scaledownExtractionEntity{Text: "ab"}, nil},
+		"missing offsets":           {scaledownExtractionEntity{Text: "ab"}, nil},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
