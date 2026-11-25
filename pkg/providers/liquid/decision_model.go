@@ -90,7 +90,7 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 				return nil, providererrors.NewArgumentError(fmt.Sprintf("questions.%s.criteria", id), fmt.Sprintf("Liquid Choice questions support %d to %d options.", minChoiceOptions, maxChoiceOptions), nil)
 			}
 			wire.Vals["type"] = "choice"
-			var criteria interface{} = q.Criteria
+			criteria := q.Criteria
 			if order := opts.CriteriaOrder[id]; len(order) > 0 {
 				criteria = providerutils.OrderedMap{Keys: provider.OrderedKeys(options, order), Vals: options}
 			}

@@ -292,7 +292,7 @@ func TestSendsImagesAndAudioAsOrderedTopLevelDataURLs(t *testing.T) {
 	}
 	// images and audio precede the questions, after the state.
 	img, aud, q := strings.Index(c.raw, `"images"`), strings.Index(c.raw, `"audio"`), strings.Index(c.raw, `"questions"`)
-	if !(strings.Index(c.raw, `"state"`) < img && img < aud && aud < q) {
+	if state := strings.Index(c.raw, `"state"`); state >= img || img >= aud || aud >= q {
 		t.Errorf("body key order: %s", c.raw[:80])
 	}
 }
