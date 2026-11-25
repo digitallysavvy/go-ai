@@ -69,6 +69,11 @@ type Settings struct {
 	// Reconnect configures reconnection attempts after an established bridge
 	// connection drops.
 	Reconnect *bridge.ReconnectOptions
+	// KeepAliveMS is the WebSocket ping interval in milliseconds (TS
+	// `keepAliveMs`, 04a8f3837e). Unset uses the default of 20000; 0 disables
+	// the heartbeat. Two unanswered pings terminate the socket and trigger
+	// reconnect.
+	KeepAliveMS *int
 	// MCPServers are MCP server definitions keyed by server name, in
 	// Cursor's native ACP MCP server configuration format.
 	MCPServers map[string]any
@@ -142,6 +147,12 @@ func BuildConfig(settings Settings) acp.Settings {
 	}
 	if settings.Reconnect != nil {
 		cfg.Reconnect = *settings.Reconnect
+	}
+	if settings.KeepAliveMS != nil {
+		cfg.KeepAlive = time.Duration(*settings.KeepAliveMS) * time.Millisecond
+		if *settings.KeepAliveMS <= 0 {
+			cfg.KeepAlive = -1
+		}
 	}
 	return cfg
 }

@@ -10,12 +10,14 @@ import (
 // CreateParams mirrors the subset of `@vercel/sandbox`'s `Sandbox.create`
 // parameters this package uses (TS `BaseCreateSandboxParams`).
 type CreateParams struct {
-	Runtime            string
-	Image              string
-	Source             *SnapshotSource
-	TimeoutMs          int64
-	Ports              []int
-	Name               string
+	Runtime   string
+	Image     string
+	Source    *SnapshotSource
+	TimeoutMs int64
+	Ports     []int
+	Name      string
+	// NameSet marks Name as present even when empty (TS `name: ''`).
+	NameSet            bool
 	Persistent         *bool
 	NetworkPolicy      *NetworkPolicy
 	SnapshotExpiration *int64
@@ -35,6 +37,7 @@ func (p CreateParams) toRequest() createSandboxRequest {
 		Runtime:            p.Runtime,
 		Image:              p.Image,
 		Name:               p.Name,
+		NameSet:            p.NameSet,
 		Persistent:         p.Persistent,
 		NetworkPolicy:      toAPINetworkPolicy(p.NetworkPolicy),
 		SnapshotExpiration: p.SnapshotExpiration,
@@ -148,7 +151,7 @@ func GetOrCreateSandbox(ctx context.Context, client *APIClient, params CreatePar
 		}
 		return sbx, nil
 	}
-	if params.Name == "" {
+	if params.Name == "" && !params.NameSet {
 		return create()
 	}
 	sbx, err := GetSandbox(ctx, client, params.Name, nil)

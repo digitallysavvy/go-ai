@@ -316,6 +316,11 @@ type Settings struct {
 	// finishes. Mirrors TS `hostDisconnectTimeoutMs` (a54f0fd8c6).
 	HostDisconnectTimeout time.Duration
 	Reconnect             bridge.ReconnectOptions
+	// KeepAlive is the WebSocket ping interval (TS `keepAliveMs`, 04a8f3837e).
+	// Zero uses the default of 20s; a negative value disables the heartbeat
+	// (TS `keepAliveMs: 0`). Two unanswered pings with no inbound bytes
+	// terminate the socket and trigger the bounded reconnect.
+	KeepAlive time.Duration
 
 	// ClientApp overrides the default "ai-sdk-harness-acp"/Version identity
 	// sent to the ACP implementation and used in the implementation identity

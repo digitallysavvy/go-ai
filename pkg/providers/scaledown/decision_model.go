@@ -189,7 +189,7 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 		ValidateResponse: validateScaleDownDecisionResponse,
 	}, &response)
 	if err != nil {
-		return nil, scaledownHTTPError(err)
+		return nil, scaledownHTTPError(err, decisionProviderName)
 	}
 
 	var rawBody interface{}

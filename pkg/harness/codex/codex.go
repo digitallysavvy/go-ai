@@ -271,6 +271,7 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 	channelOpts := bridge.ChannelOptions{
 		Connect:       bridge.NewBridgeConnectFunc(launched.Endpoint, bridge.BridgeConnectOptions{Name: "codex bridge", OpenRetryTimeout: timeout, StartContext: ctx, AuthPrivateKey: bridgeAuth.PrivateKey}),
 		Reconnect:     settings.Reconnect,
+		KeepAlive:     settings.KeepAlive,
 		OnDiagnostic:  onDiagnostic,
 		OnBridgeError: bridge.CreateBridgeErrorHandler(HarnessID, opts.SessionID),
 	}
@@ -350,6 +351,7 @@ func (h *Harness) tryAttach(ctx context.Context, opts attachOptions) *session {
 	channel := bridge.NewChannel(bridge.ChannelOptions{
 		Connect:                bridge.NewBridgeConnectFunc(endpoint, bridge.BridgeConnectOptions{Name: "codex bridge", AuthPrivateKey: opts.coords.PrivateKey}),
 		Reconnect:              opts.settings.Reconnect,
+		KeepAlive:              opts.settings.KeepAlive,
 		InitialLastSeenEventID: opts.coords.LastSeenEventID,
 		OnDiagnostic:           opts.onDiagnostic,
 		OnBridgeError:          bridge.CreateBridgeErrorHandler(HarnessID, opts.sessionID),

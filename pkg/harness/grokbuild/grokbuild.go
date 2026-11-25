@@ -63,7 +63,12 @@ type Settings struct {
 	// suspended turn is exempt (TS a54f0fd8c6).
 	HostDisconnectTimeoutMS *int
 	Reconnect               *bridge.ReconnectOptions
-	MCPServers              map[string]any
+	// KeepAliveMS is the WebSocket ping interval in milliseconds (TS
+	// `keepAliveMs`, 04a8f3837e). Unset uses the default of 20000; 0 disables
+	// the heartbeat. Two unanswered pings terminate the socket and trigger
+	// reconnect.
+	KeepAliveMS *int
+	MCPServers  map[string]any
 	// MintBridgeToken is forwarded to the ACP adapter, which ignores it and
 	// logs a warning when it is set.
 	//
@@ -174,6 +179,12 @@ func BuildConfig(settings Settings) (acp.Settings, error) {
 	}
 	if settings.Reconnect != nil {
 		cfg.Reconnect = *settings.Reconnect
+	}
+	if settings.KeepAliveMS != nil {
+		cfg.KeepAlive = time.Duration(*settings.KeepAliveMS) * time.Millisecond
+		if *settings.KeepAliveMS <= 0 {
+			cfg.KeepAlive = -1
+		}
 	}
 	return cfg, nil
 }

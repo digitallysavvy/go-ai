@@ -67,6 +67,14 @@ type fakeServer struct {
 	// kills counts POST .../cmd/{id}/kill requests.
 	kills int
 
+	// blockLogs, when set, makes the logs endpoint stream the command's
+	// output and then hold the response open until the request is
+	// cancelled; logsStarted is closed when the first such response has
+	// flushed and logsEnded receives once each held response ends.
+	blockLogs   bool
+	logsStarted chan struct{}
+	logsEnded   chan struct{}
+
 	// CommandFn answers every command run against any session; nil defaults
 	// to `{exitCode:0}` with no output. Tests set this to script specific
 	// commands.
@@ -435,6 +443,15 @@ func (f *fakeServer) handleCommandSubpath(w http.ResponseWriter, r *http.Request
 		}
 		if flusher != nil {
 			flusher.Flush()
+		}
+		if f.blockLogs {
+			select {
+			case <-f.logsStarted:
+			default:
+				close(f.logsStarted)
+			}
+			<-r.Context().Done()
+			f.logsEnded <- struct{}{}
 		}
 	case len(parts) == 2 && parts[1] == "kill" && r.Method == http.MethodPost:
 		f.mu.Lock()

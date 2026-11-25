@@ -53,13 +53,16 @@ type createSandboxRequest struct {
 	// project_id claim is empty).
 	ProjectID string `json:"projectId"`
 	// Ports is always sent: 3.9.0 Sandbox.create passes `ports ?? []`.
-	Ports              []int                    `json:"ports"`
-	Source             *SnapshotSource          `json:"source,omitempty"`
-	Timeout            int64                    `json:"timeout,omitempty"`
-	Resources          *ResourcesParams         `json:"resources,omitempty"`
-	Runtime            string                   `json:"runtime,omitempty"`
-	Image              string                   `json:"image,omitempty"`
-	Name               string                   `json:"name,omitempty"`
+	Ports     []int            `json:"ports"`
+	Source    *SnapshotSource  `json:"source,omitempty"`
+	Timeout   int64            `json:"timeout,omitempty"`
+	Resources *ResourcesParams `json:"resources,omitempty"`
+	Runtime   string           `json:"runtime,omitempty"`
+	Image     string           `json:"image,omitempty"`
+	Name      string           `json:"name,omitempty"`
+	// NameSet sends "name" even when Name is empty (TS sends a defined
+	// `name: ''`; only an absent name is omitted).
+	NameSet            bool                     `json:"-"`
 	Persistent         *bool                    `json:"persistent,omitempty"`
 	NetworkPolicy      *apiNetworkPolicy        `json:"networkPolicy,omitempty"`
 	Env                map[string]string        `json:"env,omitempty"`
@@ -68,6 +71,34 @@ type createSandboxRequest struct {
 	KeepLastSnapshots  *KeepLastSnapshotsParams `json:"keepLastSnapshots,omitempty"`
 	Region             string                   `json:"region,omitempty"`
 	FailoverRegions    []string                 `json:"failoverRegions,omitempty"`
+}
+
+// MarshalJSON writes "name" when Name is non-empty or NameSet is true.
+func (r createSandboxRequest) MarshalJSON() ([]byte, error) {
+	type plain createSandboxRequest
+	if !r.NameSet || r.Name != "" {
+		return json.Marshal(plain(r))
+	}
+	return json.Marshal(struct {
+		plain
+		Name string `json:"name"`
+	}{plain(r), ""})
+}
+
+// UnmarshalJSON records whether "name" was present.
+func (r *createSandboxRequest) UnmarshalJSON(data []byte) error {
+	type plain createSandboxRequest
+	var p plain
+	if err := json.Unmarshal(data, &p); err != nil {
+		return err
+	}
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(data, &keys); err != nil {
+		return err
+	}
+	_, p.NameSet = keys["name"]
+	*r = createSandboxRequest(p)
+	return nil
 }
 
 type sandboxRouteWire struct {

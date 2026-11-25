@@ -742,6 +742,7 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 		Connect:       bridge.NewBridgeConnectFunc(launched.Endpoint, bridge.BridgeConnectOptions{Name: settings.HarnessID + " ACP bridge", OpenRetryTimeout: timeout, StartContext: ctx, AuthPrivateKey: bridgeAuth.PrivateKey}),
 		Decode:        decodeOutbound,
 		Reconnect:     settings.Reconnect,
+		KeepAlive:     settings.KeepAlive,
 		OnBridgeError: onBridgeErr,
 		OnDiagnostic:  onDiagnostic,
 	}

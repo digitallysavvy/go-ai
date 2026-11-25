@@ -16,7 +16,7 @@ import (
 // createJsonErrorResponseHandler with {detail: string | {msg: string}[]}): a
 // matching body gives the detail string, or the messages joined with ", "; any
 // other body gives the response's status text.
-func scaledownHTTPError(err error) error {
+func scaledownHTTPError(err error, providerName string) error {
 	if cause, ok := internalhttp.FetchRejectionCause(err); ok {
 		return cause
 	}
@@ -36,7 +36,7 @@ func scaledownHTTPError(err error) error {
 		message, data = text, parsed
 	}
 	return &providererrors.ProviderError{
-		Provider:        decisionProviderName,
+		Provider:        providerName,
 		StatusCode:      statusErr.StatusCode,
 		Message:         message,
 		ResponseHeaders: lowerHeaders(providerutils.ExtractHeaders(statusErr.Headers)),

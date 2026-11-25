@@ -87,7 +87,7 @@ func TestPortToolsTemplateNameNamesTemplateAndLiveSandbox(t *testing.T) {
 		return nil
 	}}
 	create := func(opts CreateSessionOptions) {
-		opts.Credentials, opts.BaseURL, opts.Runtime, opts.Template, opts.TemplateName = testCreds(), f.URL(), "node24", template, "app-template"
+		opts.Credentials, opts.BaseURL, opts.Runtime, opts.Template, opts.TemplateName = testCreds(), f.URL(), "node24", template, port2toolsStr("app-template")
 		if _, err := CreateNetworkSandboxSession(context.Background(), opts); err != nil {
 			t.Fatal(err)
 		}
@@ -127,7 +127,7 @@ func TestPortToolsTemplateNameIgnoredWithoutTemplate(t *testing.T) {
 	f := newFakeServer()
 	defer f.Close()
 	_, err := CreateNetworkSandboxSession(context.Background(), CreateSessionOptions{
-		Credentials: testCreds(), BaseURL: f.URL(), Runtime: "node24", SandboxID: "live-name", TemplateName: "app-template",
+		Credentials: testCreds(), BaseURL: f.URL(), Runtime: "node24", SandboxID: "live-name", TemplateName: port2toolsStr("app-template"),
 	})
 	if err != nil {
 		t.Fatal(err)
