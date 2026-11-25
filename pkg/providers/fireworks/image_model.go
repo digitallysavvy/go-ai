@@ -361,6 +361,11 @@ func (m *ImageModel) downloadImage(ctx context.Context, imageURL string, callHea
 		}
 		return nil, providerutils.StatusCodeDownloadError("fireworks", err)
 	}
+	// TS createBinaryResponseHandler: a null body (204 / 205) is "Response
+	// body is empty".
+	if err := fileutil.EmptyBinaryBodyError("fireworks", downloaded.StatusCode, http.Header(downloaded.Headers)); err != nil {
+		return nil, err
+	}
 	data := downloaded.Data
 
 	mimeType := downloaded.ContentType

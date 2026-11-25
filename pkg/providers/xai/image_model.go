@@ -299,7 +299,7 @@ func (m *ImageModel) responseImages(ctx context.Context, data []xaiImageData) ([
 			return nil, nil, providererrors.NewProviderError("xai.image", 0, "",
 				"no image data (neither url nor b64_json) in response", nil)
 		}
-		imageBytes, err := m.downloadImage(ctx, image.URL)
+		imageBytes, err := m.downloadImage(ctx, image.URL, "xai.image")
 		if err != nil {
 			// TS getFromApi with createStatusCodeErrorResponseHandler: an
 			// HTTP failure is an APICallError with the status text; any
@@ -436,11 +436,20 @@ func (m *ImageModel) checkUnsupportedOptions(opts *provider.ImageGenerateOptions
 }
 
 // downloadImage downloads an image from a URL with size limits to prevent DoS
-func (m *ImageModel) downloadImage(ctx context.Context, url string) ([]byte, error) {
+// (TS getFromApi + createBinaryResponseHandler; providerName names the
+// "Response body is empty" error of a 204 / 205 reply).
+func (m *ImageModel) downloadImage(ctx context.Context, url, providerName string) ([]byte, error) {
 	// url comes from the response body: validated and DNS-pinned, with the
 	// configured base URL origin exempt (TS getFromApi validateUrl +
 	// trustedOrigin: baseURL).
-	return fileutil.Download(ctx, url, fileutil.TrustedOriginDownloadOptions(m.provider.config.BaseURL, m.provider.client.HTTPClient().Transport))
+	res, err := fileutil.DownloadWithMetadata(ctx, url, fileutil.TrustedOriginDownloadOptions(m.provider.config.BaseURL, m.provider.client.HTTPClient().Transport))
+	if err != nil {
+		return nil, err
+	}
+	if err := fileutil.EmptyBinaryBodyError(providerName, res.StatusCode, http.Header(res.Headers)); err != nil {
+		return nil, err
+	}
+	return res.Data, nil
 }
 
 // extractImageProviderOptions extracts XAI-specific provider options

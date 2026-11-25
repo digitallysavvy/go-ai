@@ -149,7 +149,7 @@ func (m *ImageModel) doCompat(ctx context.Context, opts *provider.ImageGenerateO
 			return nil, err
 		}
 		dlOpts.Headers = m.compatDownloadHeaders(providerHeaders, *d.URL, opts.Headers)
-		raw, err := fileutil.Download(ctx, *d.URL, dlOpts)
+		res, err := fileutil.DownloadWithMetadata(ctx, *d.URL, dlOpts)
 		if err != nil {
 			// TS getFromApi with createStatusCodeErrorResponseHandler: an
 			// HTTP failure is an APICallError with the status text; any
@@ -161,6 +161,12 @@ func (m *ImageModel) doCompat(ctx context.Context, opts *provider.ImageGenerateO
 			}
 			return nil, providerutils.StatusCodeDownloadError(m.Provider(), err)
 		}
+		// TS createBinaryResponseHandler: a null body (204 / 205) is
+		// "Response body is empty".
+		if err := fileutil.EmptyBinaryBodyError(m.Provider(), res.StatusCode, http.Header(res.Headers)); err != nil {
+			return nil, err
+		}
+		raw := res.Data
 		images = append(images, raw)
 		b64 = append(b64, base64.StdEncoding.EncodeToString(raw))
 	}

@@ -543,6 +543,11 @@ func (m *ImageModel) download(ctx context.Context, processID string, headers map
 		}
 		return nil, nil, err
 	}
+	// TS createBinaryResponseHandler: a null body (204 / 205) is "Response
+	// body is empty".
+	if err := fileutil.EmptyBinaryBodyError("topaz", result.StatusCode, http.Header(result.Headers)); err != nil {
+		return nil, nil, err
+	}
 
 	// TS response headers: repeated lines joined with ", ".
 	return result.Data, providerutils.ExtractHeaders(result.Headers), nil

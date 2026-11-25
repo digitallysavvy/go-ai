@@ -257,6 +257,11 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 			}
 			return nil, providerutils.StatusCodeDownloadError("minimax.image", err)
 		}
+		// TS createBinaryResponseHandler: a null body (204 / 205) is
+		// "Response body is empty".
+		if err := fileutil.EmptyBinaryBodyError("minimax.image", result.StatusCode, stdhttp.Header(result.Headers)); err != nil {
+			return nil, err
+		}
 		images = append(images, result.Data)
 	}
 

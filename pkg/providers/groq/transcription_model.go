@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"math"
 	"mime/multipart"
+	"net/http"
 	"reflect"
 	"regexp"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
@@ -214,7 +216,12 @@ func (m *TranscriptionModel) generate(ctx context.Context, in groqTranscribeInpu
 	// A plain-text response (responseFormat: "text") is not JSON; only try
 	// the JSON path when the response doesn't look like bare text.
 	if groqOpts.ResponseFormat != nil && *groqOpts.ResponseFormat == "text" {
-		// TS groqTextTranscriptionResponseHandler: textDecoder.decode(value).
+		// TS groqTextTranscriptionResponseHandler: textDecoder.decode(value)
+		// of createBinaryResponseHandler, which fails a null body (204 / 205)
+		// with "Response body is empty".
+		if err := fileutil.EmptyBinaryBodyError("groq", resp.StatusCode, http.Header(resp.Headers)); err != nil {
+			return nil, err
+		}
 		text := prompt.DecodeUTF8Text(resp.Body)
 		return &types.TranscriptionResult{
 			Text:     text,

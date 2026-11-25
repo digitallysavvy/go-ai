@@ -8,6 +8,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -160,6 +161,13 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 		metadata["requestedDurationMs"] = *req.requestedDurationMs
 	}
 
+	if req.path != "/v1/music/detailed" && !req.withTimestamps {
+		// TS createBinaryResponseHandler: a null body (204 / 205) is
+		// "Response body is empty".
+		if err := fileutil.EmptyBinaryBodyError("elevenlabs", resp.StatusCode, http.Header(resp.Headers)); err != nil {
+			return nil, err
+		}
+	}
 	audio := resp.Body
 	// TS response.body is the handler's rawValue: the parsed JSON of a
 	// timestamped response (the metadata part for music), nothing for audio.

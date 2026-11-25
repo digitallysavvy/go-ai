@@ -1020,7 +1020,7 @@ func (b *Batch) convertImageBatchResponse(ctx context.Context, resp xaiImageResp
 		case d.URL == "":
 			return nil, providererrors.NewArgumentError("batchResult", "xAI returned an image without data or a URL.", nil)
 		default:
-			data, err := im.downloadImage(ctx, d.URL)
+			data, err := im.downloadImage(ctx, d.URL, b.Provider())
 			if err != nil {
 				// TS getFromApi with xaiFailedResponseHandler: a network
 				// failure is the retryable "Cannot connect to API" error and
