@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -189,15 +190,17 @@ func toolInputValidator(tool *types.Tool) schema.Validator {
 
 func revalidateApprovedInput(ctx context.Context, approval CollectedToolApproval, tool *types.Tool, validator schema.Validator, opts ValidateApprovedToolApprovalsOptions) error {
 	call := approval.ToolCall
-	approvedInput := call.Arguments
-	if approvedInput == nil {
-		approvedInput = map[string]interface{}{}
-	}
-	var value interface{} = approvedInput
+	// TS 3c09e0011c: preserve the approved input before validators or
+	// refiners can mutate it, and give them an independent copy of the schema
+	// input. Go maps are shared references, so a validator or refiner that
+	// edits its input in place would otherwise rewrite the approved input
+	// (and the caller's message history) and pass the equality check below.
+	approvedInput := cloneApprovalArguments(call.Arguments)
+	var value interface{} = cloneApprovalJSON(approvedInput)
 	// TS hasOwnProperty(approvalRequest, 'inputSchemaInput'): a null schema
 	// input is validated as null.
 	if approval.ApprovalRequest.InputSchemaInput != nil || approval.ApprovalRequest.InputSchemaInputSet {
-		value = approval.ApprovalRequest.InputSchemaInput
+		value = cloneApprovalJSON(approval.ApprovalRequest.InputSchemaInput)
 	}
 	// TS's safeValidateTypes performs a zod/standard-schema parse, which
 	// fills .default() values as part of parsing and returns that defaulted
@@ -300,3 +303,75 @@ func isDeepEqualJSONData(a, b interface{}) bool {
 
 // ErrorName is the TS error name, used where TS shows error.toString().
 func (e *InvalidToolInputError) ErrorName() string { return "AI_InvalidToolInputError" }
+
+func cloneApprovalArguments(args map[string]interface{}) map[string]interface{} {
+	if args == nil {
+		return map[string]interface{}{}
+	}
+	return cloneApprovalJSON(args).(map[string]interface{})
+}
+
+// cloneApprovalJSON deep-copies JSON-like data (TS structuredClone of an
+// approved tool input). Maps and slices of any element type are copied;
+// scalars and other values are returned as they are.
+func cloneApprovalJSON(value interface{}) interface{} {
+	switch v := value.(type) {
+	case nil:
+		return nil
+	case map[string]interface{}:
+		if v == nil {
+			return v
+		}
+		out := make(map[string]interface{}, len(v))
+		for key, item := range v {
+			out[key] = cloneApprovalJSON(item)
+		}
+		return out
+	case []interface{}:
+		if v == nil {
+			return v
+		}
+		out := make([]interface{}, len(v))
+		for i, item := range v {
+			out[i] = cloneApprovalJSON(item)
+		}
+		return out
+	case string, bool, float64, float32, int, int64, int32, uint, uint64, uint32, json.Number:
+		return v
+	}
+	rv := reflect.ValueOf(value)
+	switch rv.Kind() {
+	case reflect.Map:
+		if rv.IsNil() {
+			return value
+		}
+		out := reflect.MakeMapWithSize(rv.Type(), rv.Len())
+		iter := rv.MapRange()
+		for iter.Next() {
+			out.SetMapIndex(iter.Key(), cloneApprovalElem(iter.Value(), rv.Type().Elem()))
+		}
+		return out.Interface()
+	case reflect.Slice:
+		if rv.IsNil() {
+			return value
+		}
+		out := reflect.MakeSlice(rv.Type(), rv.Len(), rv.Len())
+		for i := 0; i < rv.Len(); i++ {
+			out.Index(i).Set(cloneApprovalElem(rv.Index(i), rv.Type().Elem()))
+		}
+		return out.Interface()
+	}
+	return value
+}
+
+func cloneApprovalElem(elem reflect.Value, elemType reflect.Type) reflect.Value {
+	cloned := cloneApprovalJSON(elem.Interface())
+	if cloned == nil {
+		return reflect.Zero(elemType)
+	}
+	cv := reflect.ValueOf(cloned)
+	if cv.Type().AssignableTo(elemType) {
+		return cv
+	}
+	return elem
+}
