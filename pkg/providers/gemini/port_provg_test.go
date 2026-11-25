@@ -139,3 +139,47 @@ func TestPortprovgLanguageCatalogMatchesTS(t *testing.T) {
 	}
 	t.Logf("%d language rows compared", checked)
 }
+
+// Ruling 13 (differential test on unknown model IDs): the fallback for IDs
+// that are not listed in the TS catalog (prefixed IDs, Vertex paths, future
+// Gemini versions) resolves exactly like the per-ID rules it replaced (TS
+// 1145cd58eb resolveUnlistedLanguageModelRow).
+func TestPortprovgUnlistedLanguageModelFallback(t *testing.T) {
+	levels := func(l ...string) []string { return l }
+	cases := []struct {
+		id   string
+		want LanguageModelCapabilities
+	}{
+		{"gemini-99-pro-preview", LanguageModelCapabilities{
+			ProviderTools: true, FileSearch: true, FunctionTools: true, Mixed: true, FunctionResponseParts: true, ThoughtSignatures: true,
+			WithResponseSchema: true, JSONResponseTool: true, ThinkingLevels: levels("low", "medium", "high"), MaxThinkingBudget: 24576, ExternalFileURLs: true,
+		}},
+		{"eu.gemini-2.5-flash", LanguageModelCapabilities{
+			ProviderTools: true, FileSearch: true, FunctionTools: true, PenaltiesVertexOnly: true, MaxThinkingBudget: 24576,
+		}},
+		{"gemini-2.5-pro", LanguageModelCapabilities{
+			ProviderTools: true, FileSearch: true, FunctionTools: true, JSONResponseTool: true, PenaltiesVertexOnly: true,
+			MinThinkingBudget: 128, MaxThinkingBudget: 32768, ExternalFileURLs: true,
+		}},
+		{"gemma-3-27b-it", LanguageModelCapabilities{FunctionTools: true, SystemInstructionAsUser: true, MaxThinkingBudget: 24576}},
+		{"models/gemini-4-hydrogen-eap", LanguageModelCapabilities{
+			ProviderTools: true, FileSearch: true, FunctionTools: true, Mixed: true, FunctionResponseParts: true, ThoughtSignatures: true,
+			WithResponseSchema: true, JSONResponseTool: true, ThinkingLevels: levels("low", "medium", "high", "xhigh"), MaxThinkingBudget: 24576, ExternalFileURLs: true,
+		}},
+		{"gemini-4-hydrogenous", LanguageModelCapabilities{
+			ProviderTools: true, FileSearch: true, FunctionTools: true, Mixed: true, FunctionResponseParts: true, ThoughtSignatures: true,
+			WithResponseSchema: true, JSONResponseTool: true, ThinkingLevels: levels("minimal", "low", "medium", "high"), MaxThinkingBudget: 24576, ExternalFileURLs: true,
+		}},
+		{"gemini-3-pro-image-preview-x", LanguageModelCapabilities{
+			ProviderTools: true, FileSearch: true, FunctionTools: true, Mixed: true, FunctionResponseParts: true, ThoughtSignatures: true,
+			WithResponseSchema: true, JSONResponseTool: true, MaxThinkingBudget: 32768, ExternalFileURLs: true,
+		}},
+		{"nano-banana-pro-preview", LanguageModelCapabilities{ProviderTools: true, FunctionTools: true, MaxThinkingBudget: 24576}},
+		{"gemini-1.5-flash", LanguageModelCapabilities{FunctionTools: true, JSONResponseTool: true, MaxThinkingBudget: 24576, ExternalFileURLs: true}},
+	}
+	for _, tc := range cases {
+		if got := LanguageModelCapabilitiesFor(tc.id); !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("%s:\n got  %+v\n want %+v", tc.id, got, tc.want)
+		}
+	}
+}
