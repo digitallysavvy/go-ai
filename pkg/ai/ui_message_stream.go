@@ -25,6 +25,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
@@ -150,7 +151,27 @@ type UIMessageStreamResultOptions struct {
 	OnEnd        UIMessageStreamOnEndCallback
 	// Deprecated: use OnEnd.
 	OnFinish UIMessageStreamOnFinishCallback
-	OnError  func(error) string
+	// OnError formats stream errors. It also formats the error text of failed
+	// tool calls (tool execution errors and invalid tool calls) when
+	// RedactToolErrors is enabled, which is the default when OnError is set.
+	// Provider-executed tool execution errors bypass it. Invalid tool calls of
+	// provider-executed tools always use it. A nil OnError masks stream errors
+	// with "An error occurred.".
+	OnError func(error) string
+	// RedactToolErrors replaces the error text of failed tool calls (tool
+	// execution errors and invalid tool calls) with the result of OnError.
+	// By default the client receives the error text the model received (the
+	// UI messages are sent back to the model on the next request, so a
+	// different text changes the history that its reasoning and answers are
+	// based on; some models reject such a history, for example Anthropic
+	// models with preserved thinking). To keep error details away from the
+	// model and the client, return a safe error from the tool's Execute
+	// function.
+	//
+	// Nil defaults to true when OnError is set, so an existing OnError keeps
+	// handling tool errors, and to false otherwise. Mirrors TS
+	// redactToolErrors (#24980).
+	RedactToolErrors *bool
 	// PartialStream marks a source that may end without a finish or error
 	// chunk because the producer intentionally suspended it mid-step (a
 	// time-sliced harness turn). The converter then forwards what arrived and
@@ -1079,6 +1100,14 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 		// invalid call, so onError runs once, with the call's own error
 		// (tool-input-error).
 		invalidToolCallIDs := map[string]bool{}
+		// When tool errors are redacted a failed tool call has two error
+		// texts: the model receives getErrorMessage(error) with the next
+		// step, and the UI receives the OnError result. Reasoning from a
+		// later step was produced after the model read its text, so UI
+		// messages that contain both no longer reproduce the history that
+		// reasoning belongs to (TS ceeee29f9a).
+		var mismatchedToolCallIDInCurrentStep, mismatchedToolCallIDInEarlierStep string
+		hasWarnedAboutToolErrorMismatch := false
 		activeTextIDs := &orderedIDSet{}
 		activeReasoningIDs := &orderedIDSet{}
 		textID := ""
@@ -1424,6 +1453,37 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 				if !isInvalidToolCallError {
 					converted = toUIMessageChunks(chunkForConversion, options)
 				}
+				switch {
+				case chunk.Type == provider.ChunkTypeStartStep || chunk.Type == provider.ChunkTypeStreamStart:
+					// the model receives the tool errors of a step with the next step
+					if mismatchedToolCallIDInEarlierStep == "" {
+						mismatchedToolCallIDInEarlierStep = mismatchedToolCallIDInCurrentStep
+					}
+					mismatchedToolCallIDInCurrentStep = ""
+				case len(converted) > 0 && (converted[0]["type"] == "tool-output-error" || converted[0]["type"] == "tool-input-error") &&
+					((chunk.Type == provider.ChunkTypeToolResult && chunk.ToolResult != nil && !chunk.ToolResult.ProviderExecuted) ||
+						(chunk.Type == provider.ChunkTypeToolCall && chunk.ToolCall != nil && !chunk.ToolCall.ProviderExecuted)):
+					var toolCallID string
+					var toolErr error
+					if chunk.Type == provider.ChunkTypeToolResult {
+						toolCallID, toolErr = chunk.ToolResult.ToolCallID, chunk.ToolResult.Error
+					} else {
+						toolCallID, toolErr = chunk.ToolCall.ID, chunk.ToolCall.Error
+					}
+					if errorText, _ := converted[0]["errorText"].(string); errorText != providerutils.ToolErrorText(toolErr) && mismatchedToolCallIDInCurrentStep == "" {
+						mismatchedToolCallIDInCurrentStep = toolCallID
+					}
+				case len(converted) > 0 && converted[0]["type"] == "reasoning-start" && mismatchedToolCallIDInEarlierStep != "" && !hasWarnedAboutToolErrorMismatch:
+					hasWarnedAboutToolErrorMismatch = true
+					LogWarnings(LogWarningsOptions{Warnings: []types.Warning{{
+						Type: "other",
+						Message: `The error text sent to the UI for tool call "` + mismatchedToolCallIDInEarlierStep + `" differs from the error text the model received, ` +
+							"and reasoning from a later step was sent to the UI. " +
+							"Converting these UI messages back to model messages changes the tool result. " +
+							"Models that bind reasoning to the preceding messages (for example Anthropic models with preserved thinking) reject that history. " +
+							"See https://ai-sdk.dev/docs/ai-sdk-ui/chatbot-tool-usage#tool-error-text-and-message-history",
+					}}})
+				}
 				if chunk.Type == provider.ChunkTypeFinish || chunk.Type == provider.ChunkTypeFinishStep {
 					// Apply step metadata before the finish-step boundary, so
 					// the OnStepEnd snapshot includes it (TS #22268).
@@ -1585,12 +1645,23 @@ func toUIMessageChunks(part provider.StreamChunk, opts UIMessageStreamResultOpti
 	}
 
 	chunks := convertProviderChunkToUIMessageChunks(part, resultChunkConversionOptions{
-		SendReasoning: sendReasoning,
-		SendSources:   sendSources,
-		OnError:       onError,
-		Tools:         opts.Tools,
+		SendReasoning:    sendReasoning,
+		SendSources:      sendSources,
+		OnError:          onError,
+		RedactToolErrors: redactToolErrors(opts),
+		Tools:            opts.Tools,
 	})
 	return chunks
+}
+
+// redactToolErrors resolves the RedactToolErrors option: an OnError that is
+// set keeps handling the error text of failed tool calls, as it did before
+// they stopped being redacted by default.
+func redactToolErrors(opts UIMessageStreamResultOptions) bool {
+	if opts.RedactToolErrors != nil {
+		return *opts.RedactToolErrors
+	}
+	return opts.OnError != nil
 }
 
 func responseUIMessageID(options UIMessageStreamResultOptions) string {
@@ -3509,7 +3580,10 @@ type resultChunkConversionOptions struct {
 	SendReasoning bool
 	SendSources   bool
 	OnError       func(error) string
-	Tools         []types.Tool
+	// RedactToolErrors sends the error text of failed tool calls through
+	// OnError instead of the text the model received.
+	RedactToolErrors bool
+	Tools            []types.Tool
 }
 
 func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resultChunkConversionOptions) []UIMessageChunk {
@@ -3537,6 +3611,20 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 			}
 		}
 		return dynamic
+	}
+
+	// The error text of a failed tool call is not altered by default (TS
+	// getToolErrorText). In a multi-step call the model has already received
+	// this text and may have reasoned about it; the UI message is the record
+	// convertToModelMessages sends back on the next request, so replacing the
+	// text would change the history after the fact and would not keep the
+	// text from the client either (the model's reasoning and answer reach it
+	// too).
+	getToolErrorText := func(err error) string {
+		if opts.RedactToolErrors {
+			return opts.OnError(err)
+		}
+		return providerutils.ToolErrorText(err)
 	}
 
 	switch chunk.Type {
@@ -3691,12 +3779,20 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 			break
 		}
 		if chunk.ToolCall.Invalid {
+			invalidCallErrorText := ""
+			if chunk.ToolCall.ProviderExecuted {
+				invalidCallErrorText = opts.OnError(chunk.ToolCall.Error)
+			} else {
+				invalidCallErrorText = getToolErrorText(chunk.ToolCall.Error)
+			}
 			part := map[string]interface{}{
 				"type":       "tool-input-error",
 				"toolCallId": chunk.ToolCall.ID,
 				"toolName":   chunk.ToolCall.ToolName,
 				"input":      invalidToolCallInput(*chunk.ToolCall),
-				"errorText":  opts.OnError(chunk.ToolCall.Error),
+				// streamText sends the model a tool result for an invalid
+				// tool call only when the tool is not provider-executed.
+				"errorText": invalidCallErrorText,
 			}
 			if chunk.ToolCall.ProviderExecuted || chunk.ToolCall.ProviderExecutedSet {
 				part["providerExecuted"] = chunk.ToolCall.ProviderExecuted
@@ -3917,7 +4013,7 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 		if chunk.ToolResult.Error != nil {
 			var errorText string
 			if !chunk.ToolResult.ProviderExecuted {
-				errorText = opts.OnError(chunk.ToolResult.Error)
+				errorText = getToolErrorText(chunk.ToolResult.Error)
 			} else {
 				// TS: typeof error === 'string' ? error : JSON.stringify(error),
 				// without calling onError. A structured provider error travels
