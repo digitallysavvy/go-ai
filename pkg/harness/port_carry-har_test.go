@@ -128,7 +128,7 @@ func TestPortcarryharPanicValueStaysOutOfStream(t *testing.T) {
 // portcarryharEcho runs one host tool call whose echo the scripted runtime
 // flags with echoIsError (nil: the submission's own flag), as in TS
 // streamEchoedHostToolResult.
-func portcarryharEcho(t *testing.T, tool types.Tool, echoIsError func(ToolResultSubmission) bool) (toolOutcomes []provider.StreamChunk, endErr error) {
+func portcarryharEcho(t *testing.T, tool types.Tool, echoIsError func(ToolResultSubmission) bool, approval ...ToolApprovalConfiguration) (toolOutcomes []provider.StreamChunk, endErr error) {
 	t.Helper()
 	tools := map[string]types.Tool{tool.Name: tool}
 	mock := newScriptedHarness(
@@ -147,10 +147,14 @@ func portcarryharEcho(t *testing.T, tool types.Tool, echoIsError func(ToolResult
 		},
 	)
 	var mu sync.Mutex
+	var toolApproval ToolApprovalConfiguration
+	if len(approval) > 0 {
+		toolApproval = approval[0]
+	}
 	out := runPrompt(context.Background(), runPromptInput{
 		Harness: mock.harness, Session: mock.session,
 		Prompt: TextPrompt("go"), Tools: tools, ActiveTools: tools, SandboxSession: testSandbox(),
-		SessionWorkDir: "/work/dir",
+		SessionWorkDir: "/work/dir", ToolApproval: toolApproval,
 		Callbacks: Callbacks{OnToolExecutionEnd: func(_ context.Context, e ai.OnToolCallFinishEvent) {
 			mu.Lock()
 			endErr = e.ToolOutput.Error
@@ -221,6 +225,23 @@ func TestPortcarryharEchoFlagFollowsSubmission(t *testing.T) {
 	if len(outcomes) != 1 || outcomes[0].ToolResult.Error != nil {
 		t.Fatalf("flagged success = %+v, want one tool-result", outcomes)
 	}
+	// reason: flags a denied call.
+	denied := types.Tool{
+		Name: "lookup", Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
+		Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			return map[string]interface{}{"found": true}, nil
+		},
+	}
+	outcomes, _ = portcarryharEcho(t, denied, func(ToolResultSubmission) bool { return true },
+		ToolApprovalConfiguration{"lookup": ai.ToolApprovalStatusDenied})
+	if len(outcomes) != 1 || outcomes[0].ToolResult.Error != nil {
+		t.Fatalf("flagged denied call = %+v, want one tool-result", outcomes)
+	}
+	if m, _ := outcomes[0].ToolResult.Result.(map[string]interface{}); m["type"] != "execution-denied" {
+		t.Fatalf("denied result = %#v, want execution-denied output", outcomes[0].ToolResult.Result)
+	}
+	// reason: flags that result inside submitToolResult is the same path here
+	// (the scripted runtime echoes from the submit callback).
 	// reason: drops the flag of a failed call.
 	outcomes, _ = portcarryharEcho(t, failing, func(ToolResultSubmission) bool { return false })
 	if len(outcomes) != 1 || outcomes[0].ToolResult.Error == nil {
@@ -249,5 +270,58 @@ func TestPortcarryharToModelOutputFailureIsOneToolError(t *testing.T) {
 	}
 	if got := outcomes[0].ToolResult.Error.Error(); got != `{"error":"Error: conversion failed"}` {
 		t.Fatalf("error text = %q", got)
+	}
+}
+
+// TS 1a94af38c7 'keeps host tool context out of the stream when context
+// validation fails' (pause path): the turn pauses for a client tool, so the
+// harness itself reports the host tool outcome.
+func TestPortcarryharContextValidationErrorStaysOutOfStreamOnPause(t *testing.T) {
+	executed := false
+	lookup := portcarryharContextTool(&executed)
+	askUser := types.Tool{Name: "askUser", Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}}
+	tools := map[string]types.Tool{"lookup": lookup, "askUser": askUser}
+	mock := newScriptedHarness(
+		func(emit func(StreamPart)) {
+			emit(&StreamStartPart{})
+			emit(&ToolCallPart{ToolCallID: "c1", ToolName: "lookup", Input: `{}`})
+			emit(&ToolCallPart{ToolCallID: "c2", ToolName: "askUser", Input: `{}`})
+			emit(&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonToolCalls}, Usage: stringUsage(1, 1)})
+			emit(&FinishPart{FinishReason: FinishReason{Unified: FinishReasonToolCalls}, TotalUsage: stringUsage(1, 1)})
+		},
+		nil,
+	)
+	var mu sync.Mutex
+	var hostErr error
+	out := runPrompt(context.Background(), runPromptInput{
+		Harness: mock.harness, Session: mock.session,
+		Prompt: TextPrompt("go"), Tools: tools, ActiveTools: tools, SandboxSession: testSandbox(),
+		ToolsContext: map[string]interface{}{"lookup": map[string]interface{}{"userId": 123, "apiKey": "host-secret"}},
+		Callbacks: Callbacks{OnToolExecutionEnd: func(_ context.Context, e ai.OnToolCallFinishEvent) {
+			mu.Lock()
+			hostErr = e.ToolOutput.Error
+			mu.Unlock()
+		}},
+	})
+	chunks := drainRunPrompt(t, out)
+	if executed {
+		t.Fatal("tool executed despite invalid context")
+	}
+	var failed *types.ToolResult
+	for _, c := range chunksOfType(chunks, provider.ChunkTypeToolResult) {
+		if c.ToolResult.ToolCallID == "c1" {
+			failed = c.ToolResult
+		}
+	}
+	if failed == nil || failed.Error == nil || failed.Error.Error() != "Tool context validation failed." {
+		t.Fatalf("stream part = %+v, want a tool-error with the text the runtime received", failed)
+	}
+	if strings.Contains(fmt.Sprintf("%+v", chunks), "host-secret") {
+		t.Fatal("the context value reached the stream")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if hostErr == nil || !strings.Contains(hostErr.Error(), "host-secret") {
+		t.Fatalf("OnToolExecutionEnd error = %v, want the detailed error", hostErr)
 	}
 }
