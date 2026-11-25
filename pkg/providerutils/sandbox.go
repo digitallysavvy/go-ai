@@ -47,6 +47,14 @@ type SandboxProcessOptions struct {
 	// command. When false, standard input is closed (TS spawn `stdin`,
 	// 95348b32c6). Run ignores it.
 	Stdin bool
+	// MaxOutputLength, for Run only, limits each returned output stream to at
+	// most this many UTF-16 code units (TS `maxOutputLength`, 1d2c2ff2e4). The
+	// command still runs to completion and its remaining output is drained
+	// and discarded. A supporting implementation returns StdoutLength and
+	// StderrLength with the original stream lengths. Zero means no limit; a
+	// negative value is an invalid argument. An implementation may ignore the
+	// option and return the full output. Spawn ignores it.
+	MaxOutputLength int64
 }
 
 // WritableSandboxProcess is a SandboxProcess spawned with
@@ -115,6 +123,13 @@ type SandboxRunResult struct {
 	Stdout   string
 	Stderr   string
 	ExitCode int
+	// StdoutLength and StderrLength are the original stream lengths in UTF-16
+	// code units, returned by an implementation that supports
+	// SandboxProcessOptions.MaxOutputLength when the option is set (TS
+	// `stdoutLength` / `stderrLength`). Zero means omitted: Stdout and Stderr
+	// then hold the full output.
+	StdoutLength int64
+	StderrLength int64
 }
 
 // SandboxReadTextFileOptions controls text file reads.

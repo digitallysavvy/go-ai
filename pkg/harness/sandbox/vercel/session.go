@@ -7,6 +7,7 @@ import (
 	"math"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf16"
 
@@ -56,8 +57,44 @@ func (s *Session) Run(ctx context.Context, opts providerutils.SandboxProcessOpti
 	if ctx.Err() != nil {
 		return providerutils.SandboxRunResult{}, context.Cause(ctx)
 	}
+	if opts.MaxOutputLength != 0 {
+		return s.runBounded(ctx, opts)
+	}
 	result, err := s.sandbox.RunCommand(ctx, "bash", []string{"-c", opts.Command}, s.resolveWorkingDirectory(opts.WorkingDirectory), opts.Env)
 	return providerutils.SandboxRunResult{Stdout: result.Stdout, Stderr: result.Stderr, ExitCode: result.ExitCode}, err
+}
+
+// runBounded is Run with opts.MaxOutputLength set (TS 1d2c2ff2e4): the
+// non-detached path buffers every log before returning, so the command runs
+// detached and its logs stream into two TextOutputCaptures that keep only the
+// configured prefixes. The command still runs to completion; the rest of its
+// output is drained and discarded. Cancelling ctx kills the command (Spawn).
+func (s *Session) runBounded(ctx context.Context, opts providerutils.SandboxProcessOptions) (providerutils.SandboxRunResult, error) {
+	stdout, err := providerutils.NewTextOutputCapture(opts.MaxOutputLength)
+	if err != nil {
+		return providerutils.SandboxRunResult{}, err
+	}
+	stderr, err := providerutils.NewTextOutputCapture(opts.MaxOutputLength)
+	if err != nil {
+		return providerutils.SandboxRunResult{}, err
+	}
+	opts.Stdin = false
+	proc, err := s.Spawn(ctx, opts)
+	if err != nil {
+		return providerutils.SandboxRunResult{}, err
+	}
+	var readers sync.WaitGroup
+	readers.Add(2)
+	go func() { defer readers.Done(); _, _ = io.Copy(stdout, proc.Stdout()) }()
+	go func() { defer readers.Done(); _, _ = io.Copy(stderr, proc.Stderr()) }()
+	result, waitErr := proc.Wait()
+	if waitErr != nil {
+		// Closing the pipes' producer is the sandbox's job; do not wait on
+		// readers whose stream a failed Wait may leave open.
+		return providerutils.SandboxRunResult{Stdout: stdout.Text(), Stderr: stderr.Text(), ExitCode: -1, StdoutLength: stdout.Length(), StderrLength: stderr.Length()}, waitErr
+	}
+	readers.Wait()
+	return providerutils.SandboxRunResult{Stdout: stdout.Text(), Stderr: stderr.Text(), ExitCode: result.ExitCode, StdoutLength: stdout.Length(), StderrLength: stderr.Length()}, nil
 }
 
 // resolveWorkingDirectory makes a relative working directory absolute

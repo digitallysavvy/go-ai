@@ -412,9 +412,17 @@ func (s *Session) Spawn(ctx context.Context, opts providerutils.SandboxProcessOp
 
 // Run runs a command to completion and collects its output.
 func (s *Session) Run(ctx context.Context, opts providerutils.SandboxProcessOptions) (providerutils.SandboxRunResult, error) {
+	if opts.MaxOutputLength != 0 {
+		if _, err := providerutils.NewTextOutputCapture(opts.MaxOutputLength); err != nil {
+			return providerutils.SandboxRunResult{}, err
+		}
+	}
 	proc, err := s.Spawn(ctx, opts)
 	if err != nil {
 		return providerutils.SandboxRunResult{}, err
+	}
+	if opts.MaxOutputLength != 0 {
+		return s.runBounded(proc, opts.MaxOutputLength)
 	}
 	var stdout, stderr bytes.Buffer
 	var wg sync.WaitGroup
@@ -424,6 +432,23 @@ func (s *Session) Run(ctx context.Context, opts providerutils.SandboxProcessOpti
 	wg.Wait()
 	result, err := proc.Wait()
 	return providerutils.SandboxRunResult{Stdout: stdout.String(), Stderr: stderr.String(), ExitCode: result.ExitCode}, err
+}
+
+// runBounded finishes Run for opts.MaxOutputLength (TS 1d2c2ff2e4): each
+// stream keeps only its prefix and the original lengths come back with it.
+func (s *Session) runBounded(proc providerutils.SandboxProcess, limit int64) (providerutils.SandboxRunResult, error) {
+	stdout, _ := providerutils.NewTextOutputCapture(limit)
+	stderr, _ := providerutils.NewTextOutputCapture(limit)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); _, _ = io.Copy(stdout, proc.Stdout()) }()
+	go func() { defer wg.Done(); _, _ = io.Copy(stderr, proc.Stderr()) }()
+	wg.Wait()
+	result, err := proc.Wait()
+	return providerutils.SandboxRunResult{
+		Stdout: stdout.Text(), Stderr: stderr.Text(), ExitCode: result.ExitCode,
+		StdoutLength: stdout.Length(), StderrLength: stderr.Length(),
+	}, err
 }
 
 // ReadFile opens a file; nil when it does not exist.
