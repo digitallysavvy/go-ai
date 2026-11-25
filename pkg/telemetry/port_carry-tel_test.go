@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -162,5 +163,45 @@ func TestPortcarrytelRootSpanOutputUsesContentOrder(t *testing.T) {
 	want := `[{"role":"assistant","parts":[{"type":"text","content":"draft"},{"type":"tool_call","id":"c1","name":"t","arguments":{}},{"type":"tool_call_response","id":"c1","response":"ok"},{"type":"text","content":"final"}],"finish_reason":"stop"}]`
 	if got != want {
 		t.Errorf("got  %s\nwant %s", got, want)
+	}
+}
+
+// TS packages/otel open-telemetry.test.ts 'steering interrupt' (e4039889ba):
+// a model call started while the previous one is still open ends the
+// previous chat span with an error status.
+func TestPortcarrytelSteeringInterruptEndsCancelledModelCallSpan(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	set := &Settings{Integrations: []TelemetryIntegration{NewOpenTelemetry(OpenTelemetryOptions{Tracer: tp.Tracer("t")})}}
+	id := t.Name()
+	ctx := FireOnStart(context.Background(), TelemetryStartEvent{Settings: set, CallID: id, OperationType: "ai.generateText", ModelID: "m", ModelProvider: "openai.chat"})
+	ctx = FireOnStepStart(ctx, TelemetryStepStartEvent{Settings: set, CallID: id, OperationType: "ai.generateText"})
+	start := LanguageModelCallStartEvent{Settings: set, CallID: id, ModelID: "m", ModelProvider: "openai.chat"}
+	FireOnLanguageModelCallStart(ctx, start)
+	// The interrupt cancels the call: no end event, a second call starts.
+	ctx2 := FireOnLanguageModelCallStart(ctx, start)
+	FireOnLanguageModelCallEnd(ctx2, LanguageModelCallEndEvent{Settings: set, CallID: id, ModelID: "m", ModelProvider: "openai.chat", FinishReason: "stop"})
+	FireOnStepEnd(ctx, TelemetryStepEndEvent{Settings: set, CallID: id, OperationType: "ai.generateText"})
+	FireOnEnd(ctx, TelemetryFinishEvent{Settings: set, CallID: id, OperationType: "ai.generateText", ModelID: "m", FinishReason: "stop"})
+
+	var chats []sdktrace.ReadOnlySpan
+	for _, s := range rec.Ended() {
+		if s.Name() == "chat m" {
+			chats = append(chats, s)
+		}
+	}
+	if len(chats) != 2 {
+		t.Fatalf("ended chat spans = %d, want 2", len(chats))
+	}
+	if chats[0].Status().Code != codes.Error {
+		t.Errorf("cancelled chat span status = %v, want Error", chats[0].Status().Code)
+	}
+	if chats[1].Status().Code == codes.Error {
+		t.Errorf("second chat span has an error status")
+	}
+	for _, s := range rec.Started() {
+		if s.EndTime().IsZero() {
+			t.Errorf("span %s never ended", s.Name())
+		}
 	}
 }
