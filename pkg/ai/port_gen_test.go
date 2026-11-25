@@ -879,7 +879,9 @@ func TestPortgenGenerateTextStoppedBy(t *testing.T) {
 		return &types.GenerateResult{Text: "It is sunny.", Content: []types.ContentPart{types.TextContent{Text: "It is sunny."}}, FinishReason: finish}
 	}
 	schemaCity := map[string]interface{}{"type": "object", "properties": map[string]interface{}{"city": map[string]interface{}{"type": "string"}}, "required": []interface{}{"city"}}
-	exec := func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) { return "sunny", nil }
+	exec := func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+		return "sunny", nil
+	}
 	weather := types.Tool{Name: "weather", Parameters: schemaCity, Execute: exec}
 	noExecute := types.Tool{Name: "weather", Parameters: schemaCity}
 	needsApproval := types.Tool{Name: "weather", Parameters: schemaCity, Execute: exec, ToolApproval: types.ToolApprovalStatusUserApproval}
