@@ -1,11 +1,11 @@
 package ai
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -239,14 +239,17 @@ func normalizeApprovalRequest(p types.ToolApprovalRequestContent) types.ToolAppr
 func toolCallFromContentPart(part types.ToolCallContent) types.ToolCall {
 	args := part.Arguments
 	if args == nil && part.Input != "" {
+		// safeParseJSON semantics: a __proto__ key fails, 1e400 is +Inf.
 		var parsed map[string]interface{}
-		if err := json.Unmarshal([]byte(part.Input), &parsed); err == nil {
+		if err := jsonexact.Unmarshal([]byte(part.Input), &parsed); err == nil {
 			args = parsed
 		}
 	}
+	// TS holds providerMetadata as an object (no parse): a number past the
+	// double range is Infinity (ruling 4) and a __proto__ key an own property.
 	var providerMetadata map[string]interface{}
 	if len(part.ProviderMetadata) > 0 {
-		_ = json.Unmarshal(part.ProviderMetadata, &providerMetadata)
+		_ = jsonexact.UnmarshalPlain(part.ProviderMetadata, &providerMetadata)
 	}
 	return types.ToolCall{
 		ID:               part.ToolCallID,
