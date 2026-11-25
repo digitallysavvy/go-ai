@@ -32,10 +32,16 @@ func (p *Provider) ExperimentalRealtime(modelID string) *RealtimeModel {
 	return &RealtimeModel{provider: p, modelID: modelID}
 }
 
-// GetRealtimeToken mints a client secret for modelID, mirroring TS
-// gateway.experimental_realtime.getToken.
+// GetRealtimeToken mints a client secret for opts.Model, mirroring TS
+// gateway.experimental_realtime.getToken: the secret is bound to the API the
+// model ID (or opts.API) selects, so a Live model gets a Live-bound secret
+// and the live-model URL.
 func (p *Provider) GetRealtimeToken(ctx context.Context, opts provider.RealtimeFactoryGetTokenOptions) (provider.ClientSecretResult, error) {
-	return p.ExperimentalRealtime(opts.Model).DoCreateClientSecret(ctx, opts.ClientSecretOptions)
+	model, err := p.ExperimentalRealtimeModel(opts.Model, RealtimeModelOptions{API: opts.API})
+	if err != nil {
+		return provider.ClientSecretResult{}, err
+	}
+	return model.(provider.RealtimeClientSecretCreator).DoCreateClientSecret(ctx, opts.ClientSecretOptions)
 }
 
 func (m *RealtimeModel) SpecificationVersion() string { return "v4" }
@@ -250,13 +256,28 @@ func (m *RealtimeModel) GetServerConnection(ctx context.Context, opts provider.R
 	if err := gatewayRealtimeAssertConversationIntent(opts.Intent); err != nil {
 		return provider.WebSocketConfig{}, err
 	}
-	token, authMethod, err := m.provider.authResolver(ctx)
+	out, err := m.provider.gatewayServerHeaders(ctx)
 	if err != nil {
 		return provider.WebSocketConfig{}, err
 	}
+	wsURL, err := gatewayWebSocketURLChecked(m.provider.baseURL, "/realtime-model", m.modelID)
+	if err != nil {
+		return provider.WebSocketConfig{}, err
+	}
+	return provider.WebSocketConfig{URL: wsURL, Headers: out}, nil
+}
+
+// gatewayServerHeaders is the provider's resolved HTTP auth headers as a
+// server WebSocket handshake carries them (TS getHeaders through
+// removeUndefinedEntries).
+func (p *Provider) gatewayServerHeaders(ctx context.Context) (map[string]string, error) {
+	token, authMethod, err := p.authResolver(ctx)
+	if err != nil {
+		return nil, err
+	}
 	headers := mergeHeadersFold(
 		map[string]string{"Authorization": "Bearer " + token, "ai-gateway-auth-method": authMethod},
-		m.provider.headers,
+		p.headers,
 	)
 	// TS getHeaders goes through withUserAgentSuffix, which lower-cases the
 	// header names; removeUndefinedEntries drops unset values.
@@ -266,11 +287,7 @@ func (m *RealtimeModel) GetServerConnection(ctx context.Context, opts provider.R
 			out[strings.ToLower(k)] = v
 		}
 	}
-	wsURL, err := gatewayWebSocketURLChecked(m.provider.baseURL, "/realtime-model", m.modelID)
-	if err != nil {
-		return provider.WebSocketConfig{}, err
-	}
-	return provider.WebSocketConfig{URL: wsURL, Headers: out}, nil
+	return out, nil
 }
 
 // BuildSessionConfigForIntent is BuildSessionConfig for an intent

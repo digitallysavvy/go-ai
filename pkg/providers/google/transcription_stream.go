@@ -804,5 +804,9 @@ func liveOffsetSeconds(offset interface{}) (float64, bool) {
 		}
 		return v, true
 	}
+	// TS Number.parseFloat(String(offset)): arrays read as their joined text.
+	if text, ok := gemini.JSOffsetString(offset); ok {
+		return parseOffsetSeconds(text)
+	}
 	return 0, false
 }

@@ -56,7 +56,7 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 	opts.Questions = provider.DecisionQuestionsJSON(opts.Questions)
 	// TS converts the state (rejecting non-inline files) before it parses
 	// the gateway provider options.
-	stateParts, err := encodeGatewayDecisionState(provider.DecisionStateParts(opts.State))
+	stateParts, err := encodeGatewayState(provider.DecisionStateParts(opts.State), "decision", false)
 	if err != nil {
 		return nil, err
 	}
@@ -248,6 +248,13 @@ func (m *DecisionModel) DoEvaluate(ctx context.Context, opts provider.DecisionCa
 // shape; URL, reference, and text file data are rejected before any request.
 // Mirrors TS toGatewayDecisionState.
 func encodeGatewayDecisionState(parts []provider.DecisionStatePart) ([]interface{}, error) {
+	return encodeGatewayState(parts, "decision", false)
+}
+
+// encodeGatewayState is TS toGatewayStateParts (f886264eb6): modelType names
+// the model kind in the error text, and allowReferences passes reference file
+// data through unchanged (extraction only).
+func encodeGatewayState(parts []provider.DecisionStatePart, modelType string, allowReferences bool) ([]interface{}, error) {
 	out := make([]interface{}, 0, len(parts))
 	for _, part := range parts {
 		switch part.Type {
@@ -257,14 +264,18 @@ func encodeGatewayDecisionState(parts []provider.DecisionStatePart) ([]interface
 			out = append(out, map[string]interface{}{"type": "json", "value": part.Value})
 		case "file":
 			if part.File == nil {
-				return nil, &providererrors.UnsupportedFunctionalityError{Functionality: "Gateway decision file input"}
+				return nil, &providererrors.UnsupportedFunctionalityError{Functionality: "Gateway " + modelType + " file input"}
 			}
 			kind := string(part.File.FileData.Type)
 			if kind == "" && part.File.URL != "" {
 				kind = "url"
 			}
+			if allowReferences && kind == string(types.FileDataTypeReference) {
+				out = append(out, gatewayReferenceFilePart(part.File))
+				continue
+			}
 			if kind != "" && kind != string(types.FileDataTypeData) {
-				return nil, &providererrors.UnsupportedFunctionalityError{Functionality: fmt.Sprintf("Gateway decision file input: %s data", kind)}
+				return nil, &providererrors.UnsupportedFunctionalityError{Functionality: fmt.Sprintf("Gateway %s file input: %s data", modelType, kind)}
 			}
 			// TS `typeof data === 'string' ? data : base64(data)`
 			// (gateway-decision-model.ts:222): a base64 DataString is sent as
@@ -277,7 +288,7 @@ func encodeGatewayDecisionState(parts []provider.DecisionStatePart) ([]interface
 			} else {
 				mt, data, err := part.InlineData()
 				if err != nil {
-					return nil, &providererrors.UnsupportedFunctionalityError{Functionality: "Gateway decision file input"}
+					return nil, &providererrors.UnsupportedFunctionalityError{Functionality: "Gateway " + modelType + " file input"}
 				}
 				mediaType, encoded = mt, base64.StdEncoding.EncodeToString(data)
 			}
@@ -298,6 +309,27 @@ func encodeGatewayDecisionState(parts []provider.DecisionStatePart) ([]interface
 		}
 	}
 	return out, nil
+}
+
+// gatewayReferenceFilePart is a file part with reference data, sent as given
+// (TS `return part`).
+func gatewayReferenceFilePart(f *types.FileContent) map[string]interface{} {
+	reference := f.FileData.Reference
+	if reference == nil {
+		reference = types.ProviderReference{}
+	}
+	wire := map[string]interface{}{
+		"type":      "file",
+		"mediaType": firstNonEmptyString(f.MediaType, f.MimeType, f.FileData.MediaType),
+		"data":      map[string]interface{}{"type": "reference", "reference": reference},
+	}
+	if f.Filename != "" {
+		wire["filename"] = f.Filename
+	}
+	if len(f.ProviderOptions) > 0 {
+		wire["providerOptions"] = f.ProviderOptions
+	}
+	return wire
 }
 
 func firstNonEmptyString(values ...string) string {

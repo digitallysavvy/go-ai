@@ -20,6 +20,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providers/gemini"
 	wsutil "github.com/digitallysavvy/go-ai/pkg/providerutils/websocket"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 	"golang.org/x/net/websocket"
@@ -729,6 +730,10 @@ func liveOffsetSeconds(offset interface{}) (float64, bool) {
 			return 0, false
 		}
 		return v, true
+	}
+	// TS Number.parseFloat(String(offset)): arrays read as their joined text.
+	if text, ok := gemini.JSOffsetString(offset); ok {
+		return parseGoogleDuration(text)
 	}
 	return 0, false
 }

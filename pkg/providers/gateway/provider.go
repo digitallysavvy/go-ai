@@ -45,6 +45,7 @@ var knownGatewayModelTypes = map[string]struct{}{
 	"embedding": {},
 	// Keep "evaluation" until Gateway migrates its model catalog to "decision".
 	"evaluation":    {},
+	"extraction":    {},
 	"image":         {},
 	"language":      {},
 	"realtime":      {},
