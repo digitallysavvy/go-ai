@@ -938,6 +938,229 @@ func TestPort2streamFinishChunkCarriesStoppedBy(t *testing.T) {
 	}
 }
 
+// TS stream-text-steering.test.ts 'should deliver messages that prepareStep
+// turns into text parts with provider options'.
+func TestPort2streamSteeringWithPrepareStepProviderOptions(t *testing.T) {
+	steering := NewSteering()
+	var handle *SteerHandle
+	calls := &port2streamCalls{}
+	model := port2streamModel(calls, func(n int, ctx context.Context) (provider.TextStream, error) {
+		if n == 1 {
+			return testutil.NewMockTextStream(port2streamWeatherCall()), nil
+		}
+		return testutil.NewMockTextStream(port2streamTextChunks("It is sunny in Paris, Texas.")), nil
+	})
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model: model, Prompt: "What is the weather in Paris?",
+		Tools: []types.Tool{{
+			Name: "weather",
+			Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+				handle = steering.Steer("I meant Paris, Texas.")
+				return "sunny", nil
+			},
+		}},
+		StopWhen:             []StopCondition{IsStepCount(5)},
+		ExperimentalSteering: steering,
+		PrepareStep: func(_ context.Context, step PrepareStepOptions) PrepareStepOptions {
+			mapped := make([]types.Message, len(step.Messages))
+			for i, m := range step.Messages {
+				if m.Role == types.RoleUser {
+					parts := make([]types.ContentPart, len(m.Content))
+					for j, p := range m.Content {
+						if tc, ok := p.(types.TextContent); ok {
+							tc.ProviderOptions = map[string]interface{}{"anthropic": map[string]interface{}{"cacheControl": map[string]interface{}{"type": "ephemeral"}}}
+							p = tc
+						}
+						parts[j] = p
+					}
+					m.Content = parts
+				}
+				mapped[i] = m
+			}
+			step.Messages = mapped
+			return step
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	port2streamCollect(t, result)
+	steps := result.Steps()
+	if o := waitOutcome(t, handle); !o.Delivered || o.StepNumber != 1 {
+		t.Fatalf("outcome = %+v", o)
+	}
+	if len(steps) != 2 || len(steps[1].ExperimentalSteeringMessages) != 1 {
+		t.Fatalf("steps = %d, step 1 steering messages = %+v", len(steps), steps[len(steps)-1].ExperimentalSteeringMessages)
+	}
+}
+
+// TS stream-text.test.ts 'should reject an approved response to a tool call
+// that was denied automatically' and 'should continue a conversation that ends
+// with an automatic denial'.
+func port2streamApprovalCall(t *testing.T, secret []byte, status func() types.ToolApprovalStatus, executed *int, messages []types.Message, onError func(error)) *StreamTextResult {
+	t.Helper()
+	var mu sync.Mutex
+	step := 0
+	model := &testutil.MockLanguageModel{ToolSupport: true, DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		step++
+		if step == 1 {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeStreamStart},
+				{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "tool1", Arguments: map[string]interface{}{"value": "test"}, RawArguments: `{ "value": "test" }`}},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls, Usage: port2streamUsage(10)},
+			}), nil
+		}
+		return testutil.NewMockTextStream([]provider.StreamChunk{
+			{Type: provider.ChunkTypeStreamStart},
+			{Type: provider.ChunkTypeTextStart, ID: "1"},
+			{Type: provider.ChunkTypeText, ID: "1", Text: "done"},
+			{Type: provider.ChunkTypeTextEnd, ID: "1"},
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, Usage: port2streamUsage(10)},
+		}), nil
+	}}
+	if messages == nil {
+		messages = []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "test"}}}}
+	}
+	opts := StreamTextOptions{
+		Model: model,
+		Tools: []types.Tool{{
+			Name:       "tool1",
+			Parameters: valueStringSchema(),
+			Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+				*executed++
+				return "result1", nil
+			},
+		}},
+		ToolApproval: map[string]interface{}{"tool1": types.GenericToolApprovalFunc(func(types.ToolApprovalOptions) types.ToolApprovalResult {
+			return types.ToolApprovalResult{Status: status()}
+		})},
+		ExperimentalToolApprovalSecret: secret,
+		StopWhen:                       []StopCondition{IsStepCount(3)},
+		Messages:                       messages,
+	}
+	if onError != nil {
+		opts.OnError = func(_ context.Context, err error) { onError(err) }
+	}
+	result, err := StreamText(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return result
+}
+
+func TestPort2streamAutomaticDenialReplay(t *testing.T) {
+	secret := []byte("test-hmac-secret-do-not-use-in-production")
+	user := types.Message{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "test"}}}
+	t.Run("approved replay is rejected", func(t *testing.T) {
+		executed := 0
+		status := types.ToolApprovalStatusDenied
+		first := port2streamApprovalCall(t, secret, func() types.ToolApprovalStatus { return status }, &executed, nil, nil)
+		if err := first.ConsumeStream(); err != nil {
+			t.Fatal(err)
+		}
+		responseMessages := first.ResponseMessages()
+		request, ok := portgenFindApprovalRequest(responseMessages)
+		if !ok {
+			t.Fatalf("no approval request in %+v", responseMessages)
+		}
+		// The client omits the history that caused the denial, so the policy
+		// no longer denies the call when the approval is checked again.
+		status = types.ToolApprovalStatusNotApplicable
+		var mu sync.Mutex
+		var errs []error
+		replay := port2streamApprovalCall(t, secret, func() types.ToolApprovalStatus { return status }, &executed, []types.Message{
+			user,
+			responseMessages[0],
+			{Role: types.RoleTool, Content: []types.ContentPart{types.ToolApprovalResponseContent{ApprovalID: request.ApprovalID, Approved: true}}},
+		}, func(err error) { mu.Lock(); errs = append(errs, err); mu.Unlock() })
+		_ = replay.ConsumeStream()
+		mu.Lock()
+		defer mu.Unlock()
+		if len(errs) != 1 || !IsInvalidToolApprovalSignatureError(errs[0]) || !strings.Contains(errs[0].Error(), "missing signature") {
+			t.Fatalf("errors = %v, want one missing signature error", errs)
+		}
+		if executed != 0 {
+			t.Fatalf("executed = %d, want 0", executed)
+		}
+	})
+	t.Run("denied conversation continues", func(t *testing.T) {
+		executed := 0
+		denied := func() types.ToolApprovalStatus { return types.ToolApprovalStatusDenied }
+		first := port2streamApprovalCall(t, secret, denied, &executed, nil, nil)
+		if err := first.ConsumeStream(); err != nil {
+			t.Fatal(err)
+		}
+		responseMessages := first.ResponseMessages()
+		var mu sync.Mutex
+		var errs []error
+		continued := port2streamApprovalCall(t, secret, denied, &executed,
+			[]types.Message{user, responseMessages[0], responseMessages[1]},
+			func(err error) { mu.Lock(); errs = append(errs, err); mu.Unlock() })
+		if err := continued.ConsumeStream(); err != nil {
+			t.Fatal(err)
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if continued.Text() != "done" || len(errs) != 0 || executed != 0 {
+			t.Fatalf("text = %q, errors = %v, executed = %d", continued.Text(), errs, executed)
+		}
+	})
+}
+
+// TS stream-language-model-call.test.ts 'should add the prompt conversion
+// warnings to the stream-start warnings' and 'should send the prompt
+// conversion warnings when the provider does not send a stream-start part':
+// the warnings of the step's start-step part and of the step.
+func TestPort2streamPromptWarningsLeadTheStreamStartWarnings(t *testing.T) {
+	providerWarning := types.Warning{Type: "other", Details: "provider warning"}
+	finish := provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, Usage: port2streamUsage(10)}
+	cases := []struct {
+		name   string
+		stream []provider.StreamChunk
+		want   []string
+	}{
+		{"with stream-start", []provider.StreamChunk{{Type: provider.ChunkTypeStreamStart, Warnings: []types.Warning{providerWarning}}, finish}, []string{"deprecated", "other"}},
+		{"without stream-start", []provider.StreamChunk{finish}, []string{"deprecated"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			model := &testutil.MockLanguageModel{DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+				return testutil.NewMockTextStream(append([]provider.StreamChunk(nil), tc.stream...)), nil
+			}}
+			result, err := StreamText(context.Background(), StreamTextOptions{
+				Model: model, Messages: []types.Message{r86genImageMessage(1)}, OnWarning: func(LogWarningsOptions) {},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			chunks := port2streamCollect(t, result)
+			var startStep *provider.StreamChunk
+			for i := range chunks {
+				if chunks[i].Type == provider.ChunkTypeStartStep {
+					startStep = &chunks[i]
+				}
+			}
+			if startStep == nil {
+				t.Fatalf("no start-step in %v", port2streamTypes(chunks))
+			}
+			for name, warnings := range map[string][]types.Warning{"start-step": startStep.Warnings, "step": result.Steps()[0].Warnings} {
+				var got []string
+				for _, w := range warnings {
+					got = append(got, w.Type)
+				}
+				if !reflect.DeepEqual(got, tc.want) {
+					t.Fatalf("%s warning types = %v, want %v", name, got, tc.want)
+				}
+				if warnings[0].Type == "deprecated" && !strings.Contains(warnings[0].Message+warnings[0].Details, "image") {
+					t.Fatalf("%s first warning = %+v", name, warnings[0])
+				}
+			}
+		})
+	}
+}
+
 // TS validate-ui-messages.test.ts 'should stop at the first invalid steering
 // message part' and 'should stop accumulating structural errors across
 // invalid steering parts': the issue path of a steering-message part with a
