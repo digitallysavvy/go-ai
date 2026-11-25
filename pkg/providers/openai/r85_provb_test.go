@@ -35,7 +35,7 @@ type r85provbCapabilitiesTS struct {
 
 // TestR85provbCapabilitiesMatchNode compares GetLanguageModelCapabilities
 // with TS getOpenAILanguageModelCapabilities (openai-model-catalog.ts at
-// 30548ee7f9, run under Node 24) for every Go model ID constant plus edge
+// a457990a33, run under Node 24 (stripTypeScriptTypes; re-recorded for c3ee424a70)) for every Go model ID constant plus edge
 // IDs (dated GPT-5 variants, pro/codex/chat, GPT-6.1 Terra, unknown IDs).
 // TS d07b475bc8 (GPT-5.x efforts, chat function tools) and 01d7a03b05
 // (GPT-6.1 Terra).

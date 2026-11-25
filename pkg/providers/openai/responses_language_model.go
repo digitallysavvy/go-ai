@@ -790,7 +790,7 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 
 	// TS reports the GPT-6 promptCacheRetention removal before the
 	// reasoning-model warnings.
-	if promptCacheRetention != "" && modelCapabilities.SupportsConfigurationUpdate {
+	if promptCacheRetention != "" && !modelCapabilities.SupportsPromptCacheRetention {
 		// GPT-6+ models do not support promptCacheRetention; use
 		// promptCacheOptions instead.
 		warnings = append(warnings, types.Warning{
@@ -920,9 +920,8 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 			})
 		}
 		// GPT-6+ models do not support logprobs while reasoning is active
-		// (TS endpoints.responses.logprobsRequireNonReasoning;
-		// SupportsConfigurationUpdate is the same GPT-6+ test).
-		if modelCapabilities.SupportsConfigurationUpdate && (topLogprobs != nil || sliceHas(includeFields, "message.output_text.logprobs")) {
+		// (TS endpoints.responses.logprobsRequireNonReasoning).
+		if modelCapabilities.ResponsesLogprobsRequireNonReasoning && (topLogprobs != nil || sliceHas(includeFields, "message.output_text.logprobs")) {
 			topLogprobs = nil
 			filtered := includeFields[:0:0]
 			for _, v := range includeFields {
@@ -1047,7 +1046,7 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 	}
 	if promptCacheRetention != "" {
 		// GPT-6+ drops it (warned about above).
-		if !modelCapabilities.SupportsConfigurationUpdate {
+		if modelCapabilities.SupportsPromptCacheRetention {
 			body["prompt_cache_retention"] = promptCacheRetention
 		}
 	} else if hasNilProviderOption(openaiOpts, "promptCacheRetention") {

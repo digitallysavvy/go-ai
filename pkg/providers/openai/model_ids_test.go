@@ -9,6 +9,10 @@ func TestOpenAIModelIDs(t *testing.T) {
 		constant string
 		expected string
 	}{
+		// GPT-6.2 series (TS ed981f8be6)
+		{"GPT62Astra", ModelGPT62Astra, "gpt-6.2-astra"},
+		{"GPT62Sol", ModelGPT62Sol, "gpt-6.2-sol"},
+
 		// GPT-5.4 series
 		{"GPT54", ModelGPT54, "gpt-5.4"},
 		{"GPT54Pro", ModelGPT54Pro, "gpt-5.4-pro"},

@@ -339,6 +339,10 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 			SupportsFlexProcessing:         true,
 			SupportsPriorityProcessing:     true,
 			SupportsNonReasoningParameters: true,
+			// No model-id capability logic: keep promptCacheRetention and
+			// temperature.
+			SupportsPromptCacheRetention:            true,
+			SupportsChatTemperatureWithoutReasoning: true,
 		}
 	}
 	body := map[string]interface{}{
@@ -682,9 +686,8 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	// GPT-6+ models don't support it; use promptCacheOptions instead
 	// (b2b1bb9).
 	if promptCacheRetention, ok := openaiOpts["promptCacheRetention"].(string); ok && promptCacheRetention != "" {
-		// TS promptCache.retention is false for GPT-6 and later models
-		// (SupportsConfigurationUpdate is the same GPT-6+ test).
-		if capabilities.SupportsConfigurationUpdate {
+		// TS promptCache.retention is false for GPT-6 and later models.
+		if !capabilities.SupportsPromptCacheRetention {
 			warnings = append(warnings, types.Warning{
 				Type:    "unsupported",
 				Feature: "promptCacheRetention",
@@ -840,8 +843,7 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 			}
 			delete(body, "max_tokens")
 		}
-	} else if strings.HasPrefix(m.modelID, "gpt-4o-search-preview") ||
-		strings.HasPrefix(m.modelID, "gpt-4o-mini-search-preview") {
+	} else if !capabilities.SupportsChatTemperatureWithoutReasoning {
 		if _, ok := body["temperature"]; ok {
 			delete(body, "temperature")
 			warnings = append(warnings, types.Warning{
