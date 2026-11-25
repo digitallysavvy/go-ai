@@ -551,7 +551,9 @@ func uiPartSelectorIssue(raw interface{}) (string, string) {
 	}
 	partType, _ := part["type"].(string)
 	switch partType {
-	case "text", "reasoning", "custom", "source-url", "source-document", "file", "reasoning-file", "steering-message", "step-start":
+	case "steering-message":
+		return steeringSelectorIssue(part)
+	case "text", "reasoning", "custom", "source-url", "source-document", "file", "reasoning-file", "step-start":
 		return "", ""
 	}
 	if strings.HasPrefix(partType, "data-") {
@@ -657,21 +659,58 @@ func steeringPartsIssue(part map[string]interface{}) string {
 		if !ok {
 			return fmt.Sprintf("Invalid input: expected object for parts[%d]", i)
 		}
-		var issue string
-		switch nested["type"] {
-		case "text":
-			issue = firstIssue(requireString(nested, "text"), optionalProviderMetadata(nested, "providerMetadata"))
-		case "file":
-			issue = firstIssue(requireString(nested, "mediaType"), optionalString(nested, "filename"), requireString(nested, "url"),
-				providerReferenceIssue(nested), optionalProviderMetadata(nested, "providerMetadata"))
-		default:
-			issue = "Invalid input: expected a text or file part"
-		}
-		if issue != "" {
+		if issue := steeringNestedPartIssue(nested); issue != "" {
 			return fmt.Sprintf("parts[%d]: %s", i, issue)
 		}
 	}
 	return ""
+}
+
+// steeringNestedPartIssue checks one object of a steering-message part's
+// parts against the TS steeringMessagePartSchema (a discriminated union on
+// `type`): an unknown or missing type is the discriminator's issue.
+func steeringNestedPartIssue(nested map[string]interface{}) string {
+	switch nested["type"] {
+	case "text":
+		return firstIssue(requireString(nested, "text"), optionalProviderMetadata(nested, "providerMetadata"))
+	case "file":
+		return firstIssue(requireString(nested, "mediaType"), optionalString(nested, "filename"), requireString(nested, "url"),
+			providerReferenceIssue(nested), optionalProviderMetadata(nested, "providerMetadata"))
+	}
+	return steeringTypeMessage
+}
+
+// steeringTypeMessage is the discriminator issue of a steering-message part's
+// nested part with a missing or unknown type.
+const steeringTypeMessage = "Invalid discriminator value. Expected 'text' | 'file'"
+
+// steeringSelectorIssue reports the first invalid nested part of a
+// steering-message part when its type is the problem: TS ends the issue path
+// at `parts[i].type` (zod's discriminated union selects the schema by the
+// `type` key). Earlier problems (the id, a non-array, an invalid element)
+// are the checks of uiPartIssue.
+func steeringSelectorIssue(part map[string]interface{}) (string, string) {
+	if requireString(part, "id") != "" {
+		return "", ""
+	}
+	parts, ok := part["parts"].([]interface{})
+	if !ok {
+		return "", ""
+	}
+	for i, raw := range parts {
+		nested, ok := raw.(map[string]interface{})
+		if !ok {
+			return "", ""
+		}
+		issue := steeringNestedPartIssue(nested)
+		if issue == steeringTypeMessage {
+			return fmt.Sprintf("parts[%d].type", i), steeringTypeMessage
+		}
+		if issue != "" {
+			return "", ""
+		}
+	}
+	return "", ""
 }
 
 // providerReferenceIssue checks an optional record<string, string>

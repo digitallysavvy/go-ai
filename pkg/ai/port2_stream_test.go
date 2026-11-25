@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"reflect"
@@ -934,5 +935,40 @@ func TestPort2streamFinishChunkCarriesStoppedBy(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TS validate-ui-messages.test.ts 'should stop at the first invalid steering
+// message part' and 'should stop accumulating structural errors across
+// invalid steering parts': the issue path of a steering-message part with a
+// missing or unknown type ends at parts[i].type, as the TS discriminated union
+// reports it. Problems before it (the id, an earlier invalid element) win.
+func TestPort2streamValidateUIMessagesSteeringPartTypePath(t *testing.T) {
+	cases := []struct {
+		name, parts, want string
+	}{
+		{"missing type", `[{"type":"text","text":"valid"},{},{}]`, "[0].parts[0].parts[1].type: " + steeringTypeMessage},
+		{"unknown type", `[{"type":"nope"}]`, "[0].parts[0].parts[0].type: " + steeringTypeMessage},
+		{"earlier invalid element wins", `[{"type":"text"},{}]`, "[0].parts[0]: parts[0]: Invalid input: expected string for text"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ValidateUIMessages(context.Background(), ValidateUIMessagesOptions{
+				Messages: json.RawMessage(`[{"id":"1","role":"assistant","parts":[{"type":"steering-message","id":"steer-1","parts":` + tc.parts + `}]}]`),
+			})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want %q", err, tc.want)
+			}
+			if strings.Count(err.Error(), "Invalid") > 2 {
+				t.Fatalf("the error reports several issues: %v", err)
+			}
+		})
+	}
+	// A missing id is reported before the parts.
+	_, err := ValidateUIMessages(context.Background(), ValidateUIMessagesOptions{
+		Messages: json.RawMessage(`[{"id":"1","role":"assistant","parts":[{"type":"steering-message","parts":[{}]}]}]`),
+	})
+	if err == nil || !strings.Contains(err.Error(), "[0].parts[0]: ") || strings.Contains(err.Error(), ".type:") {
+		t.Fatalf("err = %v, want the id issue on the part", err)
 	}
 }

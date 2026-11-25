@@ -112,7 +112,7 @@ func TestPortStreamValidateUIMessagesStopsAtFirstInvalidElement(t *testing.T) {
 	}{
 		{"parts", `[{"id":"1","role":"user","parts":` + portstreamRepeat(2500, `{}`) + `}]`, "[0].parts[0].type"},
 		{"messages", portstreamRepeat(100, `{"id":"1","role":"user","parts":[{}]}`), "[0].parts[0].type"},
-		{"steering parts", `[{"id":"1","role":"assistant","parts":[{"type":"steering-message","id":"2","parts":` + portstreamRepeat(2500, `{}`) + `}]}]`, "[0].parts[0]"},
+		{"steering parts", `[{"id":"1","role":"assistant","parts":[{"type":"steering-message","id":"2","parts":` + portstreamRepeat(2500, `{}`) + `}]}]`, "[0].parts[0].parts[0].type"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
