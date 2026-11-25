@@ -4821,6 +4821,8 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				FinishReason:    r.finishReason,
 				RawFinishReason: r.rawFinishReason,
 				Usage:           &totalUsage,
+				// TS finish part stoppedBy (7760e33531).
+				StoppedBy: string(stoppedBy),
 			}
 			forwardThroughTransformChain(0, []provider.StreamChunk{callFinishChunk})
 		} else if rec == nil {
