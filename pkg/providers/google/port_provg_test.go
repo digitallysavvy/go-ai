@@ -272,3 +272,73 @@ func TestPortprovgNanoBananaHasNoMixedTools(t *testing.T) {
 		t.Fatalf("warnings = %v", portprovgWarningDetails(result.Warnings))
 	}
 }
+
+// TS google-language-model.test.ts (a4de3a2148): the prompt block reason
+// message reaches providerMetadata.google.promptFeedback in generate and
+// stream results.
+func TestPortprovgPromptBlockReasonMessage(t *testing.T) {
+	const feedback = `"promptFeedback":{"blockReason":"PROHIBITED_CONTENT","blockReasonMessage":"The prompt is blocked due to prohibited contents"},"usageMetadata":{"promptTokenCount":9,"totalTokenCount":9}`
+	want := `{"blockReason":"PROHIBITED_CONTENT","blockReasonMessage":"The prompt is blocked due to prohibited contents"}`
+	feedbackJSON := func(t *testing.T, metadata interface{}) string {
+		t.Helper()
+		raw, err := json.Marshal(metadata)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var decoded struct {
+			Google struct {
+				PromptFeedback json.RawMessage `json:"promptFeedback"`
+			} `json:"google"`
+		}
+		if err := json.Unmarshal(raw, &decoded); err != nil {
+			t.Fatal(err)
+		}
+		return string(decoded.Google.PromptFeedback)
+	}
+
+	t.Run("generate", func(t *testing.T) {
+		server, _ := portprovg2Server(t, "application/json", "{"+feedback+"}")
+		model := NewLanguageModel(New(Config{APIKey: "k", BaseURL: server.URL}), ModelGemini25Flash)
+		result, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := feedbackJSON(t, result.ProviderMetadata); got != want {
+			t.Fatalf("promptFeedback = %s", got)
+		}
+	})
+	t.Run("stream", func(t *testing.T) {
+		server, _ := portprovg2Server(t, "text/event-stream", "data: {"+feedback+"}\n\n")
+		model := NewLanguageModel(New(Config{APIKey: "k", BaseURL: server.URL}), ModelGemini25Flash)
+		stream, err := model.DoStream(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer stream.Close() //nolint:errcheck
+		var got string
+		for {
+			chunk, err := stream.Next()
+			if err != nil {
+				break
+			}
+			if chunk.Type == provider.ChunkTypeFinish {
+				got = feedbackJSON(t, chunk.ProviderMetadata)
+			}
+		}
+		if got != want {
+			t.Fatalf("stream promptFeedback = %s", got)
+		}
+	})
+}
+
+func portprovg2Server(t *testing.T, contentType, body string) (*httptest.Server, *[]byte) {
+	t.Helper()
+	var got []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", contentType)
+		_, _ = io.WriteString(w, body)
+	}))
+	t.Cleanup(server.Close)
+	return server, &got
+}

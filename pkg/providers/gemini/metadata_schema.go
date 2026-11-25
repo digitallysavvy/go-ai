@@ -40,7 +40,7 @@ var (
 
 	metaSafetyRatings = metaArr(metaSafetyRating)
 
-	metaPromptFeedback = metaObj("blockReason", nil, "safetyRatings", metaSafetyRatings)
+	metaPromptFeedback = metaObj("blockReason", nil, "blockReasonMessage", nil, "safetyRatings", metaSafetyRatings)
 
 	metaURLContext = metaObj("urlMetadata", metaArr(metaObj("retrievedUrl", nil, "urlRetrievalStatus", nil)))
 
