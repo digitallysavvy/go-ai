@@ -532,7 +532,7 @@ func NewWorkflowAgent(cfg WorkflowAgent) (*WorkflowAgent, error) {
 		cfg.System = system
 	}
 	if len(cfg.StopWhen) == 0 {
-		cfg.StopWhen = []ai.StopCondition{ai.IsStepCount(20)}
+		cfg.StopWhen = []ai.StopCondition{workflowDefaultStopCondition(workflowDefaultStepLimit)}
 		cfg.stopWhenDefaulted = true
 	}
 	return &cfg, nil
@@ -2293,7 +2293,7 @@ func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenera
 		if streaming {
 			stopWhen = []ai.StopCondition{func(ai.StopConditionState) string { return "" }}
 		} else {
-			stopWhen = []ai.StopCondition{ai.IsStepCount(20)}
+			stopWhen = []ai.StopCondition{workflowDefaultStopCondition(workflowDefaultStepLimit)}
 		}
 	}
 	if len(govr.StopWhen) > 0 {
@@ -2719,6 +2719,41 @@ func (e *earlyPrepare) run(ctx context.Context, messages []types.Message, prompt
 		return nil, err
 	}
 	return &opts, nil
+}
+
+// workflowDefaultStepLimit is the step limit of WorkflowAgent.Generate when no
+// stop condition is configured (TS isStepCount(20)).
+const workflowDefaultStepLimit = 20
+
+// workflowDefaultStopCondition is the default step limit of Generate: it
+// behaves like ai.IsStepCount(stepCount) and logs a warning when the limit
+// stops a loop that could otherwise continue (TS f43ee39373
+// createDefaultStepLimitStopCondition + logDefaultStopConditionWarning). Stop
+// conditions are only evaluated when the loop can otherwise continue, so a run
+// that finishes naturally on the last allowed step logs nothing, and a
+// condition the caller or prepareCall supplies replaces this one and its
+// warning. It has no twin helper in pkg/agent until gen splits one out; the
+// message is the same.
+func workflowDefaultStopCondition(stepCount int) ai.StopCondition {
+	limit := ai.IsStepCount(stepCount)
+	return func(state ai.StopConditionState) string {
+		reason := limit(state)
+		if reason == "" {
+			return ""
+		}
+		model := state.Steps[len(state.Steps)-1].Model
+		ai.LogWarnings(ai.LogWarningsOptions{
+			Provider: model.Provider,
+			Model:    model.ModelID,
+			Warnings: []types.Warning{{
+				Type: "other",
+				Message: fmt.Sprintf("The tool loop stopped because it reached the default stopWhen condition, IsStepCount(%d). ", stepCount) +
+					"To allow more steps, set StopWhen to IsStepCount(...) with a higher limit or provide a custom stop condition. " +
+					"Learn more: https://ai-sdk.dev/docs/agents/loop-control",
+			}},
+		})
+		return reason
+	}
 }
 
 // withFinishReasonStop adds the WorkflowAgent rule that a step which ended

@@ -979,3 +979,163 @@ func TestPortcarrywfApprovedCallRunsWithTheRefinedInput(t *testing.T) {
 		}
 	}
 }
+
+// portcarrywfCaptureWarnings installs a custom warning logger for the test.
+func portcarrywfCaptureWarnings(t *testing.T) func() []ai.LogWarningsOptions {
+	t.Helper()
+	var mu sync.Mutex
+	var got []ai.LogWarningsOptions
+	ai.SetLogWarnings(func(o ai.LogWarningsOptions) { mu.Lock(); got = append(got, o); mu.Unlock() })
+	t.Cleanup(func() { ai.SetLogWarnings(nil) })
+	return func() []ai.LogWarningsOptions {
+		mu.Lock()
+		defer mu.Unlock()
+		out := got
+		got = nil
+		return out
+	}
+}
+
+func portcarrywfWarnStep(step []provider.StreamChunk) []provider.StreamChunk {
+	return append([]provider.StreamChunk{{Type: provider.ChunkTypeStreamStart, Warnings: []types.Warning{{Type: "unsupported", Feature: "temperature"}}}}, step...)
+}
+
+// TS 7ce7ffc28b (workflow-agent-warnings.test.ts): the warnings of every model
+// call are logged once, with the provider and model, in generate and stream; no
+// warnings log nothing; a disabled logger stays silent.
+func TestPortcarrywfLogsProviderWarningsOfEveryModelCall(t *testing.T) {
+	cases := []struct {
+		name  string
+		steps [][]provider.StreamChunk
+		want  int
+	}{
+		{"one call", [][]provider.StreamChunk{portcarrywfWarnStep(portcarrywfTextStep("Done."))}, 1},
+		{"two calls", [][]provider.StreamChunk{
+			portcarrywfWarnStep(portcarrywfToolStep(portcarrywfCall("weather-call", "weather", map[string]interface{}{"city": "London"}))),
+			portcarrywfWarnStep(portcarrywfTextStep("It is 18C.")),
+		}, 2},
+		{"no warnings", [][]provider.StreamChunk{portcarrywfTextStep("Done.")}, 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			logged := portcarrywfCaptureWarnings(t)
+			portcarrywfRunBoth(t, func() WorkflowAgent {
+				return WorkflowAgent{Model: portcarrywfModel(c.steps...), Tools: []types.Tool{portcarrywfWeatherTool(nil)}}
+			}, func(t *testing.T, mode string, _ []types.StepResult) {
+				got := logged()
+				if len(got) != c.want {
+					t.Fatalf("%s logged %d batches, want %d", mode, len(got), c.want)
+				}
+				for _, o := range got {
+					if o.Provider != "mock-provider" || o.Model != "mock-model-id" || len(o.Warnings) != 1 || o.Warnings[0].Feature != "temperature" {
+						t.Fatalf("%s logged %+v, want the temperature warning for mock-provider / mock-model-id", mode, o)
+					}
+				}
+			})
+		})
+	}
+}
+
+func portcarrywfDefaultLimitWarnings(got []ai.LogWarningsOptions) []string {
+	var out []string
+	for _, o := range got {
+		for _, w := range o.Warnings {
+			if strings.Contains(w.Message, "default stopWhen condition") {
+				out = append(out, w.Message)
+			}
+		}
+	}
+	return out
+}
+
+func portcarrywfAlwaysToolCalls(n int) [][]provider.StreamChunk {
+	steps := make([][]provider.StreamChunk, n)
+	for i := range steps {
+		steps[i] = portcarrywfToolStep(portcarrywfCall(fmt.Sprintf("weather-%d", i), "weather", map[string]interface{}{"city": "London"}))
+	}
+	return steps
+}
+
+// TS f43ee39373 (workflow-agent-default-step-limit.test.ts): generate() stops
+// at the default 20-step limit with one warning; an explicit limit (agent,
+// call, prepareCall) or a natural finish on step 20 logs none; prepareCall
+// returning the default condition it received still warns; stream() has no
+// default limit.
+func TestPortcarrywfDefaultStepLimitWarning(t *testing.T) {
+	weather := func() []types.Tool { return []types.Tool{portcarrywfWeatherTool(nil)} }
+	providerExecuted := portcarrywfToolStep(
+		provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "provider-call", ToolName: "weather", Arguments: map[string]interface{}{"city": "London"}, ProviderExecuted: true}},
+		provider.StreamChunk{Type: provider.ChunkTypeToolResult, ToolResult: &types.ToolResult{ToolCallID: "provider-call", ToolName: "weather", Result: map[string]interface{}{"temperature": 18}, ProviderExecuted: true}},
+	)
+	cases := []struct {
+		name      string
+		steps     [][]provider.StreamChunk
+		agent     func(*WorkflowAgent)
+		call      func(*WorkflowGenerateOptions)
+		wantSteps int
+		wantWarn  int
+	}{
+		{"default limit", portcarrywfAlwaysToolCalls(25), nil, nil, 20, 1},
+		{"natural finish on step 20", append(portcarrywfAlwaysToolCalls(19), portcarrywfTextStep("Done.")), nil, nil, 20, 0},
+		{"provider-executed call on step 20", append(portcarrywfAlwaysToolCalls(19), providerExecuted), nil, nil, 20, 0},
+		{"explicit default limit on the agent", portcarrywfAlwaysToolCalls(25), func(w *WorkflowAgent) { w.StopWhen = []ai.StopCondition{ai.IsStepCount(20)} }, nil, 20, 0},
+		{"explicit default limit on the call", portcarrywfAlwaysToolCalls(25), nil, func(o *WorkflowGenerateOptions) { o.StopWhen = []ai.StopCondition{ai.IsStepCount(20)} }, 20, 0},
+		{"prepareCall provides a stop condition", portcarrywfAlwaysToolCalls(25), func(w *WorkflowAgent) {
+			w.PrepareCall = func(_ context.Context, o LanguageModelCallOptions) (LanguageModelCallOptions, error) {
+				o.StopWhen = []ai.StopCondition{ai.IsStepCount(20)}
+				return o, nil
+			}
+		}, nil, 20, 0},
+		{"prepareCall returns the default condition", portcarrywfAlwaysToolCalls(25), func(w *WorkflowAgent) {
+			w.PrepareCall = func(_ context.Context, o LanguageModelCallOptions) (LanguageModelCallOptions, error) {
+				return LanguageModelCallOptions{StopWhen: o.StopWhen}, nil
+			}
+		}, nil, 20, 1},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			logged := portcarrywfCaptureWarnings(t)
+			cfg := WorkflowAgent{Model: portcarrywfModel(c.steps...), Tools: weather()}
+			if c.agent != nil {
+				c.agent(&cfg)
+			}
+			w, err := NewWorkflowAgent(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			call := WorkflowGenerateOptions{Prompt: "Keep calling the weather tool."}
+			if c.call != nil {
+				c.call(&call)
+			}
+			res, err := w.GenerateWithOptions(context.Background(), call)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(res.Steps) != c.wantSteps {
+				t.Fatalf("steps = %d, want %d", len(res.Steps), c.wantSteps)
+			}
+			warns := portcarrywfDefaultLimitWarnings(logged())
+			if len(warns) != c.wantWarn {
+				t.Fatalf("default-limit warnings = %v, want %d", warns, c.wantWarn)
+			}
+			if c.wantWarn == 1 && !strings.Contains(warns[0], "The tool loop stopped because it reached the default stopWhen condition, IsStepCount(20).") {
+				t.Fatalf("warning = %q", warns[0])
+			}
+		})
+	}
+	t.Run("stream with an explicit limit", func(t *testing.T) {
+		logged := portcarrywfCaptureWarnings(t)
+		w, err := NewWorkflowAgent(WorkflowAgent{Model: portcarrywfModel(portcarrywfAlwaysToolCalls(25)...), Tools: weather()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		res, err := w.StreamWithOptions(context.Background(), WorkflowStreamOptions{Prompt: "go", StopWhen: []ai.StopCondition{ai.IsStepCount(25)}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = res.ReadAll()
+		if len(res.Steps()) != 25 || len(portcarrywfDefaultLimitWarnings(logged())) != 0 {
+			t.Fatalf("steps = %d, want 25 and no default-limit warning", len(res.Steps()))
+		}
+	})
+}
