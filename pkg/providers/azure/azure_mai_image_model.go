@@ -39,6 +39,8 @@ var azureMaiImageModels = map[string]bool{
 	"mai-image-2.5-pro":   true,
 	"mai-image-2.6":       true,
 	"mai-image-2.6-flash": true,
+	"mai-image-2.7":       true,
+	"mai-image-2.7-flash": true,
 }
 
 // isMAIImageModel reports whether modelID is served by the MAI image API
@@ -54,11 +56,17 @@ type AzureImageModelOptions struct {
 	// MAI-Image models and "openai" otherwise.
 	API string `json:"api,omitempty"`
 	// AutoAspectRatio lets the model pick the output aspect ratio from the
-	// prompt and any reference images. MAI-Image-2.6 models only.
+	// prompt and any reference images. MAI-Image-2.6 and MAI-Image-2.7
+	// models only.
 	AutoAspectRatio *bool `json:"autoAspectRatio,omitempty"`
 	// WebGrounding grounds generation in Bing web search results.
-	// MAI-Image-2.6 models only.
+	// MAI-Image-2.6 and MAI-Image-2.7 models only.
 	WebGrounding *bool `json:"webGrounding,omitempty"`
+	// Background is the image background: "transparent" or "opaque" on the
+	// MAI image API (MAI-Image-2.7 models); OpenAI image deployments also
+	// accept "auto", which the MAI API does not (it is dropped with a
+	// warning). TS 3a48c5dca4.
+	Background string `json:"background,omitempty"`
 }
 
 // parseAzureImageProviderOptions parses providerOptions["azure"] for
@@ -80,6 +88,13 @@ func parseAzureImageProviderOptions(providerOptions map[string]interface{}) (Azu
 			return result, invalidAzureOption("providerOptions.azure.api", `must be "openai" or "mai"`)
 		}
 		result.API = s
+	}
+	if v, ok := m["background"]; ok {
+		s, ok := v.(string)
+		if !ok || (s != "transparent" && s != "opaque" && s != "auto") {
+			return result, invalidAzureOption("providerOptions.azure.background", `must be "transparent", "opaque" or "auto"`)
+		}
+		result.Background = s
 	}
 	for _, key := range []string{"autoAspectRatio", "webGrounding"} {
 		v, ok := m[key]
@@ -197,7 +212,8 @@ func (m *azureMaiImageModel) doGenerate(ctx context.Context, opts *provider.Imag
 		{"model", m.modelID},
 		{"prompt", opts.Prompt},
 	}
-	// TS sends { model, prompt, width, height, auto_aspect_ratio, web_grounding }.
+	// TS sends { model, prompt, width, height, auto_aspect_ratio, web_grounding,
+	// background }.
 	jsonBody := providerutils.OrderedMap{
 		Keys: []string{"model", "prompt"},
 		Vals: map[string]interface{}{"model": m.modelID, "prompt": opts.Prompt},
@@ -227,6 +243,9 @@ func (m *azureMaiImageModel) doGenerate(ctx context.Context, opts *provider.Imag
 	}
 	if maiOpts.WebGrounding != nil {
 		addField("web_grounding", *maiOpts.WebGrounding)
+	}
+	if maiOpts.Background != "" {
+		addField("background", maiOpts.Background)
 	}
 
 	// TS resolves requestOptions.headers (the API key or token) once, before
