@@ -15,8 +15,16 @@ func WrapMCPTools(tools map[string]types.Tool, approval types.ToolApprovalConfig
 	if len(defaults) > 0 && defaults[0] != "" {
 		fallback = defaults[0]
 	}
+	// An OPA approval applies the fallback to every policy evaluation itself
+	// (TS fac1d6a588): the policy can decide one tool call twice, with and
+	// without the earlier calls of the response, and a fallback of denied
+	// has to deny the unmatched evaluation even when the other one asks for
+	// user approval.
+	if fa, ok := approval.(FallbackApproval); ok {
+		approval = fa.ApplyApprovalFallback(fallback)
+	}
 	switch v := approval.(type) {
-	case types.GenericToolApprovalFunc, types.ToolApprovalFunc: //nolint:staticcheck // legacy function type still accepted for backward compatibility
+	case types.GenericToolApprovalFunc, types.ToolApprovalFunc, *OPAApproval, *ShadowApproval: //nolint:staticcheck // legacy function type still accepted for backward compatibility
 		return WrappedMCPTools{
 			Tools: tools,
 			ToolApproval: types.GenericToolApprovalFunc(func(args types.ToolApprovalOptions) types.ToolApprovalResult {
