@@ -1902,6 +1902,10 @@ func (w *WorkflowAgent) makePrepareCall(pctx prepareCallContext, stepsInline boo
 			mutated = keepUnsetHookFields(opts, mutated)
 			persist.record(opts, mutated)
 			stepHeaders, haveStepHeaders = workflowMergeStepHeaders(inHeaders, mutated.Headers), true
+			// A step's providerOptions merge into the call's (TS
+			// mergeObjects(providerOptions, prepareStepResult.providerOptions)),
+			// as core does on the streaming path.
+			mutated.ProviderOptions = promptutils.MergeProviderOptions(opts.ProviderOptions, mutated.ProviderOptions)
 			opts = mutated
 		}
 		if opts.Model != nil {
@@ -2119,6 +2123,13 @@ func (p *stepPersistence) record(in, out LanguageModelCallOptions) {
 		return
 	}
 	out.System, out.InstructionMessages, _ = resolveInstructionChange(in.System, in.InstructionMessages, out.System, out.InstructionMessages)
+	if len(out.InstructionMessages) > 0 {
+		// Instruction messages replace the system text (core clears System
+		// when a step sets them). Keeping the stale text would make the next
+		// step's hook input look like a System change that drops the
+		// messages again.
+		out.System = ""
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.set, p.last = true, out
