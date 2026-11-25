@@ -20,9 +20,11 @@ type bridgeConfiguration struct {
 	AskUserQuestionsRequestMethod string               `json:"askUserQuestionsRequestMethod,omitempty"`
 	HostToolMCPTransport          HostToolMCPTransport `json:"hostToolMcpTransport,omitempty"`
 	NonTextContentTypes           []NonTextContentType `json:"nonTextContentTypes,omitempty"`
+	WriteProtectedPaths           []string             `json:"writeProtectedPaths,omitempty"`
 }
 
-// MarshalJSON emits sessionMeta, clientCapabilities and nonTextContentTypes
+// MarshalJSON emits sessionMeta, clientCapabilities, nonTextContentTypes and
+// writeProtectedPaths
 // whenever they are non-nil, even when empty: TS spreads each one under a
 // `== null` check, so an empty record or array still reaches the bridge (an
 // empty sessionMeta becomes `_meta: {}` on session/new).
@@ -37,6 +39,7 @@ func (c bridgeConfiguration) MarshalJSON() ([]byte, error) {
 		AskUserQuestionsRequestMethod string                `json:"askUserQuestionsRequestMethod,omitempty"`
 		HostToolMCPTransport          HostToolMCPTransport  `json:"hostToolMcpTransport,omitempty"`
 		NonTextContentTypes           *[]NonTextContentType `json:"nonTextContentTypes,omitempty"`
+		WriteProtectedPaths           *[]string             `json:"writeProtectedPaths,omitempty"`
 	}
 	w := wire{
 		Agent: c.Agent.withArgs(), Authentication: c.Authentication, ProviderAuthentication: c.ProviderAuthentication,
@@ -51,6 +54,9 @@ func (c bridgeConfiguration) MarshalJSON() ([]byte, error) {
 	}
 	if c.NonTextContentTypes != nil {
 		w.NonTextContentTypes = &c.NonTextContentTypes
+	}
+	if c.WriteProtectedPaths != nil {
+		w.WriteProtectedPaths = &c.WriteProtectedPaths
 	}
 	return jsstr.Marshal(w)
 }

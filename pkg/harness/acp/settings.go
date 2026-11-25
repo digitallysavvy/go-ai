@@ -372,7 +372,15 @@ type Settings struct {
 	NonTextContentTypes   []NonTextContentType
 	AskUserQuestions      *AskUserQuestionsSettings
 	PermissionModeMapping *PermissionModeMapping
-	SessionMeta           map[string]any
+	// WriteProtectedPaths are paths relative to the session working directory
+	// (files or directories) the ACP agent must not write to without host
+	// approval. Under the allow-reads and allow-edits permission modes, edit,
+	// delete and move permission requests touching these paths always require
+	// approval. .agents/skills is always protected. allow-all is unaffected.
+	// Entries must be relative, without empty, "." or ".." segments. Mirrors
+	// TS `writeProtectedPaths` (6f9d73fd19).
+	WriteProtectedPaths []string
+	SessionMeta         map[string]any
 	// MintBridgeToken is ignored; CreateACP logs a warning when it is set.
 	//
 	// Deprecated: sandbox bridge authentication now uses an

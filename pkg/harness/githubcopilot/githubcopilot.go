@@ -144,6 +144,22 @@ func BuildConfig(settings Settings) (acp.Settings, error) {
 			return ResolveSubscriptionEnvironment(ctx, ResolveSubscriptionEnvironmentOptions{Auth: auth, Env: env})
 		},
 		HostToolMCPTransport: acp.HostToolMCPHTTP,
+		// GitHub Copilot CLI loads hooks, MCP servers, skills, custom agents
+		// and extensions from these repository locations when a session
+		// starts, some of which run shell commands outside of tool approval.
+		// The rest of .github stays writable because it also holds non-agent
+		// files such as CI workflows (TS 6f9d73fd19, 7acc5a3f92).
+		WriteProtectedPaths: []string{
+			".github/hooks",
+			".github/mcp.json",
+			".github/copilot",
+			".github/skills",
+			".github/agents",
+			".github/extensions",
+			".claude",
+			".mcp.json",
+			".vscode/mcp.json",
+		},
 		// Images from tool outputs are only processed with direct GitHub Copilot
 		// authentication: with AI Gateway the CLI does not fetch the model
 		// catalog and passes only the text of a tool output.
