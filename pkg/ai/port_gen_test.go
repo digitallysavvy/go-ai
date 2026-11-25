@@ -1338,3 +1338,48 @@ func TestPortgenSteeringInterruptRepeatedIDInterruptsOnce(t *testing.T) {
 		t.Fatalf("calls = %d, steps = %d", len(h.calls), len(result.Steps))
 	}
 }
+
+// TS e878ab3925 (ruling 5): a schema result with issues is a failure even
+// when it carries a value. Go validators return an error or nil
+// (schema.Validator.Validate), and Tool.ValidateInput returns (value, error):
+// an error always wins over the value on every tool input path.
+func TestPortgenToolInputValidationErrorWinsOverValue(t *testing.T) {
+	issue := errors.New("input has issues")
+	validate := func(v interface{}) (interface{}, error) { return v, issue }
+	t.Run("parsing a model tool call", func(t *testing.T) {
+		executed := 0
+		tool := types.Tool{Name: "tool1", Parameters: map[string]interface{}{"type": "object"}, ValidateInput: validate,
+			Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+				executed++
+				return "ok", nil
+			}}
+		calls := 0
+		model := &testutil.MockLanguageModel{ToolSupport: true, DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			calls++
+			if calls == 1 {
+				return &types.GenerateResult{FinishReason: types.FinishReasonToolCalls, ToolCalls: []types.ToolCall{{ID: "c1", ToolName: "tool1", Arguments: map[string]interface{}{"a": 1.0}, RawArguments: `{"a":1}`}}}, nil
+			}
+			return portgenText("done", 1), nil
+		}}
+		result, err := GenerateText(context.Background(), GenerateTextOptions{Model: model, Prompt: "q", Tools: []types.Tool{tool}, StopWhen: []StopCondition{IsStepCount(3)}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if executed != 0 || len(result.Steps[0].ToolCalls) != 1 || !result.Steps[0].ToolCalls[0].Invalid {
+			t.Fatalf("executed = %d, calls = %+v", executed, result.Steps[0].ToolCalls)
+		}
+	})
+	t.Run("approval replay", func(t *testing.T) {
+		approval := portgenCounterApproval(nil, nil)
+		res, err := ValidateApprovedToolApprovals(context.Background(), ValidateApprovedToolApprovalsOptions{
+			ApprovedToolApprovals: []CollectedToolApproval{approval},
+			Tools:                 []types.Tool{portgenCounterTool(validate)},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(res.ApprovedToolApprovals) != 0 || len(res.InvalidToolApprovals) != 1 {
+			t.Fatalf("approved=%d invalid=%d", len(res.ApprovedToolApprovals), len(res.InvalidToolApprovals))
+		}
+	})
+}
