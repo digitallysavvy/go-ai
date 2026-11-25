@@ -15,3 +15,13 @@ const (
 	DecisionModelDeciderV1_1_27B        PerplexityDecisionModelID = "pplx-decider-v1.1-27b"
 	DecisionModelDeciderV1_27B          PerplexityDecisionModelID = "pplx-decider-v1-27b"
 )
+
+// DecisionModelOptions are the providerOptions.perplexity options of decision
+// models (TS PerplexityDecisionModelOptions, d5440b3311).
+type DecisionModelOptions struct {
+	// Mode "web_grounding" searches the web before answering the questions.
+	Mode string `json:"mode,omitempty"`
+	// MaxStaleness is the maximum age in seconds of a fetched page (a
+	// non-negative integer). It does not filter search results. Zero is sent.
+	MaxStaleness *int `json:"maxStaleness,omitempty"`
+}

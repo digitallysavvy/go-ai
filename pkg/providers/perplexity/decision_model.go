@@ -53,6 +53,12 @@ func (m *DecisionModel) SupportedQuestionTypes() []string {
 func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCallOptions) (*provider.DecisionResult, error) {
 	// Typed-option ruling: read Go-typed option literals in their JSON form.
 	opts.ProviderOptions = providerutils.NormalizeOptionsJSON(opts.ProviderOptions)
+	// TS parseProviderOptions(perplexityDecisionModelOptions), before any
+	// other validation (d5440b3311).
+	perplexityOptions, err := providerutils.ParseProviderOptions("perplexity", opts.ProviderOptions, perplexityDecisionOptionsSchema)
+	if err != nil {
+		return nil, err
+	}
 	// Typed Go containers in Instructions / Criteria take their JSON form
 	// (TS providers always receive JSON).
 	opts.Questions = provider.DecisionQuestionsJSON(opts.Questions)
@@ -120,12 +126,9 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
 		Method: http.MethodPost,
 		Path:   "/v1/decisions",
-		// TS body literal order: model, state, questions.
-		Body: providerutils.OrderedMap{Keys: []string{"model", "state", "questions"}, Vals: map[string]interface{}{
-			"model":     m.modelID,
-			"state":     state,
-			"questions": nativeQuestions,
-		}},
+		// TS body literal order: model, state, questions, mode,
+		// max_staleness (undefined values are left out).
+		Body:    decisionRequestBody(m.modelID, state, nativeQuestions, perplexityOptions),
 		Headers: opts.Headers,
 		// TS createJsonResponseHandler(perplexityDecisionResponseSchema).
 		ValidateResponse: validatePerplexityDecisionResponse,
@@ -191,6 +194,11 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 	if perplexityOpts, ok := opts.ProviderOptions["perplexity"].(map[string]interface{}); ok {
 		keys := make([]string, 0, len(perplexityOpts))
 		for k := range perplexityOpts {
+			// mode and maxStaleness are decision options (TS
+			// perplexityProviderOptions.decision).
+			if _, supported := perplexityDecisionOptionsSchema[k]; supported {
+				continue
+			}
 			keys = append(keys, k)
 		}
 		sort.Strings(keys)
@@ -209,7 +217,7 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 		Answers:          answers,
 		Usage:            usage,
 		Warnings:         warnings,
-		ProviderMetadata: map[string]interface{}{"perplexity": map[string]interface{}{"confidence": confidence, "legend": legend}},
+		ProviderMetadata: map[string]interface{}{"perplexity": decisionMetadata(&response, confidence, legend)},
 		Response: &provider.DecisionResponseInfo{
 			ID:      headers["x-request-id"],
 			ModelID: modelID,
@@ -221,12 +229,78 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 
 // perplexityDecisionResponse is the wire shape of a successful response.
 type perplexityDecisionResponse struct {
-	Model   *string                    `json:"model"`
-	Answers map[string]json.RawMessage `json:"answers"`
-	Usage   *struct {
-		InputTokens  *pplxNumber `json:"input_tokens"`
-		OutputTokens *pplxNumber `json:"output_tokens"`
+	Model          *string                    `json:"model"`
+	Answers        map[string]json.RawMessage `json:"answers"`
+	SearchResults  json.RawMessage            `json:"search_results"`
+	FetchedResults json.RawMessage            `json:"fetched_results"`
+	Usage          *struct {
+		InputTokens      *pplxNumber                `json:"input_tokens"`
+		OutputTokens     *pplxNumber                `json:"output_tokens"`
+		ToolCallsDetails map[string]json.RawMessage `json:"tool_calls_details"`
 	} `json:"usage"`
+}
+
+// perplexityDecisionOptionsSchema is perplexityDecisionModelOptions: mode is
+// the literal "web_grounding" and maxStaleness a non-negative integer, both
+// optional.
+var perplexityDecisionOptionsSchema = func() providerutils.OptionSchema {
+	zero := 0
+	return providerutils.OptionSchema{
+		"mode":         providerutils.OptLiteral("web_grounding"),
+		"maxStaleness": providerutils.OptInt(&zero, nil),
+	}
+}()
+
+// decisionRequestBody is the request body: model, state, questions, then the
+// grounding options that were given.
+func decisionRequestBody(modelID string, state interface{}, questions providerutils.OrderedMap, options map[string]interface{}) providerutils.OrderedMap {
+	body := providerutils.OrderedMap{Keys: []string{"model", "state", "questions"}, Vals: map[string]interface{}{
+		"model":     modelID,
+		"state":     state,
+		"questions": questions,
+	}}
+	if mode, ok := options["mode"]; ok {
+		body.Keys = append(body.Keys, "mode")
+		body.Vals["mode"] = mode
+	}
+	if staleness, ok := options["maxStaleness"]; ok {
+		body.Keys = append(body.Keys, "max_staleness")
+		body.Vals["max_staleness"] = staleness
+	}
+	return body
+}
+
+// decisionMetadata is providerMetadata.perplexity: the grounding evidence
+// (searchResults, fetchedResults) and the tool invocation counts (toolCalls,
+// each invocation null when the API sent none) when the response carried
+// them, then confidence and legend.
+func decisionMetadata(response *perplexityDecisionResponse, confidence map[string]float64, legend map[string]interface{}) map[string]interface{} {
+	meta := map[string]interface{}{"confidence": confidence, "legend": legend}
+	for key, raw := range map[string]json.RawMessage{"searchResults": response.SearchResults, "fetchedResults": response.FetchedResults} {
+		if len(raw) == 0 || string(raw) == "null" {
+			continue
+		}
+		var value interface{}
+		if jsonexact.Unmarshal(raw, &value) == nil {
+			meta[key] = value
+		}
+	}
+	if response.Usage != nil && response.Usage.ToolCallsDetails != nil {
+		toolCalls := make(map[string]interface{}, len(response.Usage.ToolCallsDetails))
+		for name, raw := range response.Usage.ToolCallsDetails {
+			var details struct {
+				Invocation *pplxNumber `json:"invocation"`
+			}
+			_ = jsonexact.Unmarshal(raw, &details)
+			var invocation interface{}
+			if details.Invocation != nil {
+				invocation = float64(*details.Invocation)
+			}
+			toolCalls[name] = map[string]interface{}{"invocation": invocation}
+		}
+		meta["toolCalls"] = toolCalls
+	}
+	return meta
 }
 
 type perplexityDecisionAnswer struct {
@@ -257,6 +331,13 @@ var perplexityDecisionResponseNode = func() zodlite.Node {
 	nullishProbability := zodlite.Nullish(probability)
 	probabilities := zodlite.RecordOf(probability)
 	nullishNumber := zodlite.Nullish(zodlite.Number)
+	searchResult := func(withDates bool) zodlite.Node {
+		fields := []zodlite.Field{zodlite.F("title", zodlite.String), zodlite.F("url", zodlite.String), zodlite.F("snippet", zodlite.String)}
+		if withDates {
+			fields = append(fields, zodlite.F("date", zodlite.Nullish(zodlite.String)), zodlite.F("last_updated", zodlite.Nullish(zodlite.String)))
+		}
+		return zodlite.Object(fields...)
+	}
 	return zodlite.Object(
 		zodlite.F("model", zodlite.Nullish(zodlite.String)),
 		zodlite.F("answers", zodlite.RecordOf(zodlite.Disc(map[string]zodlite.Node{
@@ -267,8 +348,11 @@ var perplexityDecisionResponseNode = func() zodlite.Node {
 				zodlite.F("score", zodlite.Number), zodlite.F("probabilities", probabilities), zodlite.F("confidence", nullishProbability),
 				zodlite.F("legend", zodlite.Nullish(zodlite.RecordOf(zodlite.JSON)))),
 		}))),
+		zodlite.F("search_results", zodlite.Nullish(zodlite.Array(searchResult(true)))),
+		zodlite.F("fetched_results", zodlite.Nullish(zodlite.Array(searchResult(false)))),
 		zodlite.F("usage", zodlite.Nullish(zodlite.Object(
-			zodlite.F("input_tokens", nullishNumber), zodlite.F("output_tokens", nullishNumber)))),
+			zodlite.F("input_tokens", nullishNumber), zodlite.F("output_tokens", nullishNumber),
+			zodlite.F("tool_calls_details", zodlite.Nullish(zodlite.RecordOf(zodlite.Object(zodlite.F("invocation", nullishNumber)))))))),
 	)
 }()
 
