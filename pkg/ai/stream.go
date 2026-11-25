@@ -2864,7 +2864,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			}
 
 			// Track provider-inline tool results for the deferred hasResult check.
-			if chunk.Type == provider.ChunkTypeToolResult && chunk.ToolResult != nil {
+			// TS records only final tool results in the step content: a
+			// preliminary one (image generation previews) is streamed only.
+			if chunk.Type == provider.ChunkTypeToolResult && chunk.ToolResult != nil && !chunk.ToolResult.Preliminary {
 				enrichedResult, convertErr := enrichStreamedToolResultForModelOutput(stepCtx, *chunk.ToolResult, !r.adapterToolResults[chunk.ToolResult], stepToolCalls, toolsByName, &stepUsage)
 				if convertErr != nil && stepModelOutputErr == nil {
 					stepModelOutputErr = convertErr
@@ -5734,7 +5736,7 @@ func (r *StreamTextResult) readAllLegacy() (string, error) {
 				ThoughtSignature: enriched.ThoughtSignature,
 			})
 		}
-		if chunk.Type == provider.ChunkTypeToolResult && chunk.ToolResult != nil {
+		if chunk.Type == provider.ChunkTypeToolResult && chunk.ToolResult != nil && !chunk.ToolResult.Preliminary {
 			enrichedResult, convertErr := enrichStreamedToolResultForModelOutput(stepCtx, *chunk.ToolResult, !r.adapterToolResults[chunk.ToolResult], pendingToolCalls, toolsByName, &r.usage)
 			if convertErr != nil {
 				r.err = convertErr
