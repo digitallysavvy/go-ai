@@ -39,6 +39,7 @@ type Provider struct {
 
 var _ provider.Provider = (*Provider)(nil)
 var _ provider.DecisionModelProvider = (*Provider)(nil)
+var _ provider.ExtractionModelProvider = (*Provider)(nil)
 
 // New creates a ScaleDown provider. Mirrors TS createScaleDown.
 func New(cfg Config) *Provider {
@@ -62,7 +63,8 @@ func (p *Provider) Name() string { return "scaledown" }
 
 // resolveHeaders is the TS provider headers function: {x-api-key: <key>,
 // ...options.headers} with the ai-sdk-scaledown user-agent suffix. The key is
-// loaded per call, so a missing key surfaces when a decision is made.
+// loaded per call, so a missing key surfaces when a decision or extraction is
+// made.
 func (p *Provider) resolveHeaders() (map[string]string, error) {
 	apiKey, err := providerutils.LoadAPIKey(p.config.APIKey, apiKeyEnvVar, "ScaleDown")
 	if err != nil {
@@ -76,6 +78,12 @@ func (p *Provider) resolveHeaders() (map[string]string, error) {
 // custom ID). Mirrors TS decisionModel.
 func (p *Provider) DecisionModel(modelID string) (provider.DecisionModel, error) {
 	return NewDecisionModel(p, modelID), nil
+}
+
+// ExtractionModel returns a ScaleDown extraction model (extract, extract-1 or
+// a custom ID). Mirrors TS extractionModel.
+func (p *Provider) ExtractionModel(modelID string) (provider.ExtractionModel, error) {
+	return NewExtractionModel(p, modelID), nil
 }
 
 // LanguageModel is not supported.
