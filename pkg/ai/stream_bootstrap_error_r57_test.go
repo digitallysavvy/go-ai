@@ -42,7 +42,14 @@ func TestR57StreamTextFailureBeforeFirstStreamReachesOnError(t *testing.T) {
 		}}},
 		{name: "output response format", opts: StreamTextOptions{Prompt: "a", Output: r57FailingFormatOutput{}}},
 		{name: "step prompt conversion", opts: StreamTextOptions{Prompt: "a", PrepareStep: func(context.Context, PrepareStepOptions) PrepareStepOptions {
-			return PrepareStepOptions{Messages: []types.Message{{Role: types.RoleSystem, Content: []types.ContentPart{types.TextContent{Text: "s"}}}}}
+			// A data: string in the data variant is TS's InvalidDataContentError
+			// in convertToLanguageModelPrompt. (A system message no longer
+			// fails here: PrepareStep output may hold system messages, as in
+			// TS; port wave 2 integrator.)
+			return PrepareStepOptions{Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.FileContent{
+				MediaType: "text/plain",
+				FileData:  types.FileData{Type: types.FileDataTypeData, DataString: "data:text/plain;base64,SGk="},
+			}}}}}
 		}}},
 	}
 	for _, tc := range cases {

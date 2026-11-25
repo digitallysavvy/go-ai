@@ -270,7 +270,7 @@ func port2carryCore(t *testing.T, mode string, spec port2carryAgentSpec, respons
 }
 
 func (spec port2carryAgentSpec) workflow(model provider.LanguageModel) WorkflowAgent {
-	w := WorkflowAgent{AllowSystemInMessages: spec.prepareMsgs != nil, Model: model, Tools: spec.tools, ToolApproval: spec.toolApproval, RuntimeContext: spec.runtimeContext, ExperimentalToolApprovalSecret: spec.secret}
+	w := WorkflowAgent{Model: model, Tools: spec.tools, ToolApproval: spec.toolApproval, RuntimeContext: spec.runtimeContext, ExperimentalToolApprovalSecret: spec.secret}
 	if spec.instructions != "" {
 		w.Instructions = spec.instructions
 	}
@@ -284,9 +284,10 @@ func (spec port2carryAgentSpec) workflow(model provider.LanguageModel) WorkflowA
 	if spec.prepareMsgs != nil {
 		w.PrepareStep = func(_ context.Context, o LanguageModelCallOptions) (LanguageModelCallOptions, error) {
 			if m := spec.prepareMsgs(o.StepNumber); m != nil {
+				// TS prepareStep may return system messages in messages; no
+				// AllowSystemInMessages opt-in is needed (core accepts them
+				// in PrepareStep output, as TS convertToLanguageModelPrompt).
 				o.Messages = m
-				// TS prepareStep may return system messages in messages.
-				o.AllowSystemInMessages = true
 			}
 			return o, nil
 		}

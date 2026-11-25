@@ -1267,6 +1267,12 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		stepSystem := instructionsForNextStep
 		stepInstructionMessages := instructionMessagesForNextStep
 		stepMessages := currentMessages
+		// TS checks system-role messages only in the call's prompt /
+		// messages (standardizePrompt); the messages a PrepareStep returns go
+		// straight to convertToLanguageModelPrompt. PrepareStep is caller
+		// code and steering messages are user-role only, so allowing them
+		// for that step does not admit untrusted system messages.
+		stepAllowSystem := allowSystem
 		stepSandbox := opts.ExperimentalSandbox
 		stepTools := FilterActiveTools(opts.Tools, opts.ActiveTools)
 		stepActiveTools := opts.ActiveTools
@@ -1348,6 +1354,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				// slice, and no other step's.
 				stepMessages = make([]types.Message, len(prepared.Messages))
 				copy(stepMessages, prepared.Messages)
+				stepAllowSystem = true
 			}
 			stepTools, stepActiveTools = applyPreparedTools(opts.Tools, stepTools, stepActiveTools, prepared)
 			if prepared.ToolChoice.Type != "" {
@@ -1441,7 +1448,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			// model prompt automatically"; tool description functions and
 			// PrepareStep read it).
 			System: stepSystem,
-		}, allowSystem, effectiveDownload(opts.ExperimentalDownload), supportedURLChecker(stepModel))
+		}, stepAllowSystem, effectiveDownload(opts.ExperimentalDownload), supportedURLChecker(stepModel))
 		if normErr != nil {
 			return nil, normErr
 		}
@@ -1501,8 +1508,8 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		// Build generate options
 		genOpts := &provider.GenerateOptions{
 			Prompt:                stepPrompt,
-			AllowSystemMessages:   allowSystem,
-			AllowSystemInMessages: allowSystem,
+			AllowSystemMessages:   stepAllowSystem,
+			AllowSystemInMessages: stepAllowSystem,
 			Temperature:           stepTemperature,
 			MaxTokens:             stepMaxTokens,
 			TopP:                  stepTopP,

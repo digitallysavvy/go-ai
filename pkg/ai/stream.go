@@ -1251,6 +1251,12 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	if opts.Timeout != nil && opts.Timeout.HasPerStep() {
 		stepCtx, stepCancel = opts.Timeout.CreateTimeoutContext(ctx, "step")
 	}
+	// TS checks system-role messages only in the call's prompt / messages
+	// (standardizePrompt); the messages a PrepareStep returns go straight to
+	// convertToLanguageModelPrompt. PrepareStep is caller code and steering
+	// messages are user-role only, so allowing them for that step does not
+	// admit untrusted system messages.
+	stepAllowSystem := allowSystem
 	if opts.PrepareStep != nil {
 		givenInstructions := stepSystem
 		prepared := opts.PrepareStep(ctx, PrepareStepOptions{
@@ -1310,6 +1316,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		}
 		if prepared.Messages != nil {
 			stepMessages = cloneStepMessages(prepared.Messages)
+			stepAllowSystem = true
 		}
 		stepTools, stepActiveTools = applyPreparedTools(opts.Tools, stepTools, stepActiveTools, prepared)
 		if prepared.ToolChoice.Type != "" {
@@ -1410,7 +1417,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	}
 
 	r.stepPromptWarnings = r.logPromptWarnings(opts.OnWarning, r.promptDeprecations.forStep(stepMessages))
-	stepPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(stepCtx, types.Prompt{System: stepSystem, Messages: messagesForModel(stepMessages)}, allowSystem, effectiveDownload(opts.ExperimentalDownload), supportedURLChecker(stepModel))
+	stepPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(stepCtx, types.Prompt{System: stepSystem, Messages: messagesForModel(stepMessages)}, stepAllowSystem, effectiveDownload(opts.ExperimentalDownload), supportedURLChecker(stepModel))
 	if normErr != nil {
 		if stepCancel != nil {
 			stepCancel()
@@ -1457,8 +1464,8 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	// Build generate options
 	genOpts := &provider.GenerateOptions{
 		Prompt:                stepPrompt,
-		AllowSystemMessages:   allowSystem,
-		AllowSystemInMessages: allowSystem,
+		AllowSystemMessages:   stepAllowSystem,
+		AllowSystemInMessages: stepAllowSystem,
 		Temperature:           stepTemperature,
 		MaxTokens:             stepMaxTokens,
 		TopP:                  stepTopP,
@@ -2387,6 +2394,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		} else if r.timeout != nil && r.timeout.HasPerStep() {
 			nextStepCtx, nextStepCancel = r.timeout.CreateTimeoutContext(ctx, "step")
 		}
+		// As for the first step: messages a PrepareStep returns may hold
+		// system-role messages (TS convertToLanguageModelPrompt).
+		nextAllowSystem := allowSystemMessages(opts.AllowSystemMessages, opts.AllowSystemInMessages)
 		if opts.PrepareStep != nil {
 			initialSystem := r.cbInitialSystem
 			givenInstructions := nextSystem
@@ -2445,6 +2455,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			}
 			if prepared.Messages != nil {
 				nextMessages = cloneStepMessages(prepared.Messages)
+				nextAllowSystem = true
 			}
 			nextTools, nextActiveTools = applyPreparedTools(opts.Tools, nextTools, nextActiveTools, prepared)
 			if prepared.ToolChoice.Type != "" {
@@ -2552,7 +2563,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		nextPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(nextStepCtx, types.Prompt{
 			Messages: messagesForModel(nextMessages),
 			System:   nextSystem,
-		}, allowSystemMessages(opts.AllowSystemMessages, opts.AllowSystemInMessages), effectiveDownload(opts.ExperimentalDownload), supportedURLChecker(nextModel))
+		}, nextAllowSystem, effectiveDownload(opts.ExperimentalDownload), supportedURLChecker(nextModel))
 		if normErr != nil {
 			nextStepCancel()
 			failNextStep(normErr)
@@ -2593,8 +2604,8 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		}
 		nextGenOpts := &provider.GenerateOptions{
 			Prompt:                nextPrompt,
-			AllowSystemMessages:   allowSystemMessages(opts.AllowSystemMessages, opts.AllowSystemInMessages),
-			AllowSystemInMessages: allowSystemMessages(opts.AllowSystemMessages, opts.AllowSystemInMessages),
+			AllowSystemMessages:   nextAllowSystem,
+			AllowSystemInMessages: nextAllowSystem,
 			Temperature:           nextTemperature,
 			MaxTokens:             nextMaxTokens,
 			TopP:                  nextTopP,

@@ -1949,6 +1949,13 @@ func (w *WorkflowAgent) makePrepareCall(pctx prepareCallContext, stepsInline boo
 			// mergeObjects(providerOptions, prepareStepResult.providerOptions)),
 			// as core does on the streaming path.
 			mutated.ProviderOptions = promptutils.MergeProviderOptions(opts.ProviderOptions, mutated.ProviderOptions)
+			// The messages a PrepareStep returns may hold system-role
+			// messages: TS checks them only in the call's prompt (after
+			// prepareCall) and sends every step with allowSystemInMessages
+			// true (do-stream-step.ts), as core does for PrepareStep output.
+			if mutated.Messages != nil {
+				mutated.AllowSystemInMessages = true
+			}
 			opts = mutated
 		}
 		if opts.Model != nil {
