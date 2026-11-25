@@ -51,11 +51,15 @@ type AgentTUIToolApprovalReader interface {
 }
 
 type AgentTUIToolApprovalRequest struct {
-	ApprovalID       string
-	ToolCallID       string
-	ToolName         string
-	Title            string
-	Input            interface{}
+	ApprovalID string
+	ToolCallID string
+	ToolName   string
+	Title      string
+	Input      interface{}
+	// RawInput is the input text as the model sent it. When it describes
+	// the same input as Input, the renderer prints it in that key order
+	// (TS prints the model's order); a Go map has none.
+	RawInput         string
 	ProviderExecuted bool
 	MessageIndex     int
 	PartIndex        int
@@ -338,6 +342,7 @@ func findPendingToolApprovalRequests(messages []types.Message) []AgentTUIToolApp
 				ToolName:         toolCall.ToolName,
 				Title:            toolCall.Title,
 				Input:            toolCall.Arguments,
+				RawInput:         toolCall.RawArguments,
 				ProviderExecuted: toolCall.ProviderExecuted,
 				MessageIndex:     messageIndex,
 				PartIndex:        partIndex,

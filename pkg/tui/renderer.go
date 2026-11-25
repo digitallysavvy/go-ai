@@ -543,7 +543,7 @@ func (r *TerminalRenderer) showToolApprovalRequestLocked(request AgentTUIToolApp
 		kind:       sectionApproval,
 		title:      "Tool · " + nonEmpty(request.Title, request.ToolName),
 		rightTitle: "approve? y/n",
-		content:    "Input:\n" + formatValue(request.Input),
+		content:    approvalInputText(request),
 	})
 	r.scrollSectionIntoViewLocked(id)
 
@@ -1287,6 +1287,16 @@ func renderToolSection(sectionID string, tool *toolSectionState, collapsed bool)
 	return chatSection{id: sectionID, kind: sectionTool, title: title, rightTitle: nonEmpty(tool.status, "waiting"), content: content, collapsed: collapsed}
 }
 
+// approvalInputText is the "Input:" block of an approval section. TS prints
+// the input in the key order the model sent it; the raw input text keeps that
+// order, so it is used when it describes the same input as request.Input.
+func approvalInputText(request AgentTUIToolApprovalRequest) string {
+	if tree, ok := orderedInputTree(request.RawInput, request.Input); ok {
+		return "Input:\n" + prettyJSON(tree, "")
+	}
+	return "Input:\n" + formatValue(request.Input)
+}
+
 func formatToolApprovalTitle(request AgentTUIToolApprovalRequest) string {
 	title := request.Title
 	if title == "" {
@@ -1323,14 +1333,19 @@ func toolInputText(tool *toolSectionState) string {
 // parses and describes the same input as tool.input (so a repaired or edited
 // input is still printed from tool.input).
 func orderedToolInput(tool *toolSectionState) (interface{}, bool) {
-	if tool.inputText == "" {
+	return orderedInputTree(tool.inputText, tool.input)
+}
+
+// orderedInputTree parses raw as an ordered tree when it describes the same
+// input as want.
+func orderedInputTree(raw string, want interface{}) (interface{}, bool) {
+	if raw == "" {
 		return nil, false
 	}
-	tree, ok := jsonorder.Parse([]byte(tool.inputText))
+	tree, ok := jsonorder.Parse([]byte(raw))
 	if !ok {
 		return nil, false
 	}
-	want := tool.input
 	if want == nil {
 		want = map[string]interface{}{}
 	}
