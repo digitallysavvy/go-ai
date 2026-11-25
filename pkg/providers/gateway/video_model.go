@@ -160,14 +160,23 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 		Path:    "/video-model",
 		Body:    body,
 		Headers: headers,
+		// TS handles the null body of a 204 / 205 in its own handler.
+		KeepNullBody: true,
 	})
 	if err != nil {
 		return nil, m.handleErrorWithContext(ctx, err)
 	}
 	defer httpResp.Body.Close() //nolint:errcheck
 
+	// TS `response.body == null`: fetch gives a 204 / 205 a null body, and
+	// the handler throws the APICallError "SSE response body is empty"
+	// (statusCode, no headers or body), which asGatewayError converts.
+	if httpResp.StatusCode == http.StatusNoContent || httpResp.StatusCode == http.StatusResetContent {
+		return nil, m.handleErrorWithContext(ctx, m.sseAPICallError(ctx, httpResp.StatusCode, "SSE response body is empty", nil, "", nil))
+	}
+
 	// Read and parse the SSE stream
-	result, err := m.readSSEVideoResponse(ctx, httpResp.Body)
+	result, err := m.readSSEVideoResponse(ctx, httpResp.StatusCode, httpResp.Body)
 	if err != nil {
 		return nil, m.handleErrorWithContext(ctx, err)
 	}
@@ -360,7 +369,8 @@ type SSEVideoEvent struct {
 // readSSEVideoResponse reads the first data event from an SSE stream.
 // Like the TypeScript SDK parser, only result and error events are accepted.
 // Context cancellation is checked on each iteration to stop reading immediately.
-func (m *VideoModel) readSSEVideoResponse(ctx context.Context, body io.Reader) (*provider.VideoModelV3Response, error) {
+// status is the response status TS reports on the stream's APICallErrors.
+func (m *VideoModel) readSSEVideoResponse(ctx context.Context, status int, body io.Reader) (*provider.VideoModelV3Response, error) {
 	// The shared SSEParser is TS parseJsonEventStream's EventSourceParserStream:
 	// an event is its data lines joined once a blank line ends it, and the
 	// '[DONE]' event is skipped.
@@ -397,11 +407,11 @@ func (m *VideoModel) readSSEVideoResponse(ctx context.Context, body io.Reader) (
 		// type such as a heartbeat, a missing field) is an APICallError
 		// "Failed to parse video SSE event".
 		if bad := providerutils.MediaSchemaParser(providerutils.SchemaGatewayVideoEvent)(http.StatusOK, nil, []byte(data)); bad != nil {
-			return nil, m.sseAPICallError(ctx, http.StatusOK, "Failed to parse video SSE event", nil, "", bad)
+			return nil, m.sseAPICallError(ctx, status, "Failed to parse video SSE event", nil, "", bad)
 		}
 		var event SSEVideoEvent
 		if err := jsonexact.Unmarshal([]byte(data), &event); err != nil {
-			return nil, m.sseAPICallError(ctx, http.StatusOK, "Failed to parse video SSE event", nil, "", err)
+			return nil, m.sseAPICallError(ctx, status, "Failed to parse video SSE event", nil, "", err)
 		}
 
 		if event.Type == "error" {
@@ -422,7 +432,7 @@ func (m *VideoModel) readSSEVideoResponse(ctx context.Context, body io.Reader) (
 	}
 
 	// Stream ended without a result or error event
-	return nil, m.sseAPICallError(ctx, http.StatusOK, "SSE stream ended without a data event", nil, "", nil)
+	return nil, m.sseAPICallError(ctx, status, "SSE stream ended without a data event", nil, "", nil)
 }
 
 // sseAPICallError converts a failure of the video SSE stream the way TS

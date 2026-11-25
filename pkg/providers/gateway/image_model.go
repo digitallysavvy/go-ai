@@ -199,6 +199,10 @@ func gatewayStripStreamingImageDecoding(providerOptions map[string]interface{}) 
 // skeleton, never the image bytes.
 func (m *ImageModel) doStreamingImageRequest(ctx context.Context, request internalhttp.Request) (gatewayImageResponse, map[string][]byte, http.Header, error) {
 	var response gatewayImageResponse
+	// TS readResponseWithSizeLimit reads a null body (204 / 205) as no bytes,
+	// so the skeleton is empty text: "Invalid JSON response", as without
+	// streaming decoding.
+	request.KeepNullBody = true
 	httpResp, err := m.provider.client.DoStream(ctx, request)
 	if err != nil {
 		return response, nil, nil, err
