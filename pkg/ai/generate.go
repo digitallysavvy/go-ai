@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	retryutil "github.com/digitallysavvy/go-ai/pkg/internal/retry"
@@ -1250,13 +1251,21 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			stepCtx, stepCancel = opts.Timeout.CreateTimeoutContext(ctx, "step")
 			defer stepCancel()
 		}
-		stepModel := opts.Model
-		stepSystem := instructionsForNextStep
-		stepInstructionMessages := instructionMessagesForNextStep
 		steeringMessages := steeringRun.takeMessages()
 		if len(steeringMessages) > 0 {
 			currentMessages = append(append([]types.Message(nil), currentMessages...), steeringMessages...)
 		}
+		// A step that a steering interrupt cancelled is made again as the same
+		// step (TS e4039889ba): it keeps the steering messages it already
+		// delivered, calls OnStepStart once, and starts every attempt with
+		// the contexts the step started with.
+		var stepDeliveredSteering []types.Message
+		stepStartNotified := false
+		stepStartRuntimeContext, stepStartToolsContext := runtimeContext, toolsContext
+	stepAttempt:
+		stepModel := opts.Model
+		stepSystem := instructionsForNextStep
+		stepInstructionMessages := instructionMessagesForNextStep
 		stepMessages := currentMessages
 		stepSandbox := opts.ExperimentalSandbox
 		stepTools := FilterActiveTools(opts.Tools, opts.ActiveTools)
@@ -1405,7 +1414,11 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 
 		// Steering messages are delivered when they are part of the messages
 		// sent to the model after PrepareStep.
-		deliveredSteeringMessages := steeringDeliveredMessages(steeringRun.resolveTakenMessages(stepIndex, stepMessages))
+		stepDeliveredSteering = append(stepDeliveredSteering, steeringDeliveredMessages(steeringRun.resolveTakenMessages(stepIndex, stepMessages))...)
+		deliveredSteeringMessages := stepDeliveredSteering
+		if len(deliveredSteeringMessages) == 0 {
+			deliveredSteeringMessages = nil
+		}
 
 		stepTools = resolveStepTools(ctx, stepTools, toolsContext, stepSandbox)
 		stepTools = orderStepTools(stepTools, stepToolOrder)
@@ -1468,7 +1481,9 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			RuntimeContext:      runtimeContext,
 			ToolsContext:        toolsContext,
 		}
-		Notify(ctx, stepStartEvent, opts.OnStepStart)
+		if !stepStartNotified {
+			Notify(ctx, stepStartEvent, opts.OnStepStart)
+		}
 		openStep = &stepStartEvent
 
 		// Resolve ResponseFormat: prefer explicit opts.ResponseFormat; fall back
@@ -1521,20 +1536,23 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		if telemetrySettings.ShouldRecordInputs() {
 			stepTelSystem = stepSystem
 		}
-		stepCtx = telemetry.FireOnStepStart(stepCtx, telemetry.TelemetryStepStartEvent{
-			CallID:         callID,
-			OperationType:  "ai.generateText",
-			Settings:       telemetrySettings,
-			StepNumber:     stepIndex,
-			ModelProvider:  stepModel.Provider(),
-			ModelID:        stepModel.ModelID(),
-			ToolChoice:     preparedToolChoice(stepToolChoice),
-			PromptMessages: genOpts.Prompt.Messages,
-			System:         stepTelSystem,
-			StepTools:      stepTools,
-			RuntimeContext: telemetryRuntimeContextWithSensitivity(telemetrySettings, runtimeContext, opts.SensitiveRuntimeContext),
-			ToolsContext:   telemetryToolsContext(telemetrySettings, toolsContext),
-		})
+		if !stepStartNotified {
+			stepCtx = telemetry.FireOnStepStart(stepCtx, telemetry.TelemetryStepStartEvent{
+				CallID:         callID,
+				OperationType:  "ai.generateText",
+				Settings:       telemetrySettings,
+				StepNumber:     stepIndex,
+				ModelProvider:  stepModel.Provider(),
+				ModelID:        stepModel.ModelID(),
+				ToolChoice:     preparedToolChoice(stepToolChoice),
+				PromptMessages: genOpts.Prompt.Messages,
+				System:         stepTelSystem,
+				StepTools:      stepTools,
+				RuntimeContext: telemetryRuntimeContextWithSensitivity(telemetrySettings, runtimeContext, opts.SensitiveRuntimeContext),
+				ToolsContext:   telemetryToolsContext(telemetrySettings, toolsContext),
+			})
+		}
+		stepStartNotified = true
 		openStepTelemetryCtx = stepCtx
 
 		// TS generateText takes one stepStartTimestampMs after onStepStart,
@@ -1593,8 +1611,37 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		modelCallStart := stepStart
 		var genResult *types.GenerateResult
 		err := responseFormatErr
+		// A steering interrupt cancels the model call while it has produced
+		// no output (TS interruptController merged into the call's signal).
+		interruptCtx, interruptCancel := context.WithCancel(modelCallCtx)
+		var interrupted atomic.Bool
+		stopWatchingInterrupt := steeringRun.watchInterrupt(func() {
+			interrupted.Store(true)
+			interruptCancel()
+		})
 		if err == nil {
-			genResult, err = doGenerateWithGatewayRetry(modelCallCtx, stepModel, genOpts, opts.MaxRetries)
+			genResult, err = doGenerateWithGatewayRetry(interruptCtx, stepModel, genOpts, opts.MaxRetries)
+		}
+		stopWatchingInterrupt()
+		interruptCancel()
+		if err != nil && interrupted.Load() && stepCtx.Err() == nil {
+			// A caller abort or a timeout wins over an interrupt: the run
+			// ends instead of making the model call again. Otherwise the
+			// step is made again with the interrupting messages; the
+			// cancelled call is not counted in the usage.
+			runtimeContext, toolsContext = stepStartRuntimeContext, stepStartToolsContext
+			if more := steeringRun.takeMessages(); len(more) > 0 {
+				steeringMessages = append(steeringMessages, more...)
+				currentMessages = append(append([]types.Message(nil), currentMessages...), more...)
+			}
+			goto stepAttempt
+		}
+		if err != nil && interrupted.Load() {
+			// The caller's abort (or a timeout) won: report its reason, not
+			// the interrupt's cancellation (TS throws mergedAbortSignal.reason).
+			if cause := context.Cause(stepCtx); cause != nil {
+				err = cause
+			}
 		}
 		if err != nil {
 			if opts.Timeout != nil {

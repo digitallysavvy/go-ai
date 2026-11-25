@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1030,5 +1032,309 @@ func TestPortgenOnWarningReceivesTheUnsupportedTimeoutWarning(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].Warnings[0].Feature != "timeout.chunkMs" || global != 0 {
 		t.Fatalf("got = %+v, global = %d", got, global)
+	}
+}
+
+// ---- steering interrupt (TS e4039889ba) ----
+
+func portgenUserTexts(opts *provider.GenerateOptions) []string {
+	var out []string
+	for _, m := range opts.Prompt.Messages {
+		if m.Role == types.RoleUser {
+			out = append(out, userText(m))
+		}
+	}
+	return out
+}
+
+// portgenHangingFirstCall is a model whose first call hangs until its context
+// is cancelled; onFirstCall runs inside it. Later calls return responses[i].
+type portgenHangingModel struct {
+	mu    sync.Mutex
+	calls []*provider.GenerateOptions
+	ctxs  []context.Context
+}
+
+func (m *portgenHangingModel) model(onFirstCall func(), responses ...func(*provider.GenerateOptions) *types.GenerateResult) *testutil.MockLanguageModel {
+	return &testutil.MockLanguageModel{
+		ProviderName: "p", ModelName: "m", ToolSupport: true,
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			m.mu.Lock()
+			m.calls = append(m.calls, opts)
+			m.ctxs = append(m.ctxs, ctx)
+			n := len(m.calls)
+			m.mu.Unlock()
+			if n == 1 {
+				if onFirstCall != nil {
+					onFirstCall()
+				}
+				<-ctx.Done()
+				return nil, context.Cause(ctx)
+			}
+			return responses[n-2](opts), nil
+		},
+	}
+}
+
+func portgenText(text string, output int64) *types.GenerateResult {
+	return &types.GenerateResult{Text: text, FinishReason: types.FinishReasonStop, Usage: types.Usage{OutputTokens: &output}}
+}
+
+func TestPortgenSteeringInterruptRedoesTheStep(t *testing.T) {
+	steering := NewSteering()
+	var handle *SteerHandle
+	h := &portgenHangingModel{}
+	model := h.model(func() { handle = steering.Steer("Use Paris, Texas instead.", WithSteerInterrupt()) },
+		func(*provider.GenerateOptions) *types.GenerateResult {
+			return portgenText("It is sunny in Paris, Texas.", 10)
+		})
+	var stepStarts int
+	result, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: model, Prompt: "What is the weather in Paris?", ExperimentalSteering: steering,
+		OnStepStart: func(context.Context, OnStepStartEvent) { stepStarts++ },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(h.calls) != 2 || h.ctxs[0].Err() == nil {
+		t.Fatalf("calls = %d, first cancelled = %v", len(h.calls), h.ctxs[0].Err() != nil)
+	}
+	if got := portgenUserTexts(h.calls[1]); !reflect.DeepEqual(got, []string{"What is the weather in Paris?", "Use Paris, Texas instead."}) {
+		t.Fatalf("second call users = %v", got)
+	}
+	if len(result.Steps) != 1 || result.Text != "It is sunny in Paris, Texas." || stepStarts != 1 {
+		t.Fatalf("steps = %d, text = %q, stepStarts = %d", len(result.Steps), result.Text, stepStarts)
+	}
+	if len(result.Steps[0].ExperimentalSteeringMessages) != 1 {
+		t.Fatalf("steering messages = %+v", result.Steps[0].ExperimentalSteeringMessages)
+	}
+	// the cancelled call is left out of the usage
+	if result.TotalUsage.OutputTokens == nil || *result.TotalUsage.OutputTokens != 10 {
+		t.Fatalf("total usage = %+v", result.TotalUsage)
+	}
+	if o := waitOutcome(t, handle); !o.Delivered || o.StepNumber != 0 {
+		t.Fatalf("outcome = %+v", o)
+	}
+}
+
+func TestPortgenSteeringInterruptKeepsEarlierMessagesAndRepeats(t *testing.T) {
+	steering := NewSteering()
+	earlier := steering.Steer("Answer in Celsius.")
+	var outcomes []*SteerHandle
+	var mu sync.Mutex
+	calls := 0
+	var secondCallUsers []string
+	model := &testutil.MockLanguageModel{ProviderName: "p", ModelName: "m", ToolSupport: true,
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			mu.Lock()
+			calls++
+			n := calls
+			mu.Unlock()
+			if n <= 2 {
+				outcomes = append(outcomes, steering.Steer(fmt.Sprintf("Correction %d.", n), WithSteerInterrupt()))
+				<-ctx.Done()
+				return nil, context.Cause(ctx)
+			}
+			secondCallUsers = portgenUserTexts(opts)
+			return portgenText("done", 10), nil
+		}}
+	result, err := GenerateText(context.Background(), GenerateTextOptions{Model: model, Prompt: "q", ExperimentalSteering: steering})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 3 || len(result.Steps) != 1 {
+		t.Fatalf("calls = %d, steps = %d", calls, len(result.Steps))
+	}
+	if !reflect.DeepEqual(secondCallUsers, []string{"q", "Answer in Celsius.", "Correction 1.", "Correction 2."}) {
+		t.Fatalf("users = %v", secondCallUsers)
+	}
+	if len(result.Steps[0].ExperimentalSteeringMessages) != 3 {
+		t.Fatalf("steering messages = %+v", result.Steps[0].ExperimentalSteeringMessages)
+	}
+	for _, h := range append([]*SteerHandle{earlier}, outcomes...) {
+		if o := waitOutcome(t, h); !o.Delivered || o.StepNumber != 0 {
+			t.Fatalf("outcome = %+v", o)
+		}
+	}
+}
+
+func TestPortgenSteeringInterruptPrepareStepRunsAgainWithStartContexts(t *testing.T) {
+	steering := NewSteering()
+	h := &portgenHangingModel{}
+	model := h.model(func() { steering.Steer("Use Paris, Texas instead.", WithSteerInterrupt()) },
+		func(*provider.GenerateOptions) *types.GenerateResult { return portgenText("sunny", 10) })
+	var inputs []interface{}
+	var startEvents, endEvents int
+	_, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: model, Prompt: "q", ExperimentalSteering: steering,
+		RuntimeContext: map[string]interface{}{"prepareStepCalls": 0},
+		PrepareStep: func(_ context.Context, step PrepareStepOptions) PrepareStepOptions {
+			inputs = append(inputs, step.RuntimeContext)
+			step.RuntimeContext = map[string]interface{}{"prepareStepCalls": len(inputs)}
+			return step
+		},
+		OnLanguageModelCallStart: func(context.Context, LanguageModelCallStartEvent) { startEvents++ },
+		OnLanguageModelCallEnd:   func(context.Context, LanguageModelCallEndEvent) { endEvents++ },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]interface{}{"prepareStepCalls": 0}
+	if len(inputs) != 2 || !reflect.DeepEqual(inputs[0], want) || !reflect.DeepEqual(inputs[1], want) {
+		t.Fatalf("prepareStep runtime contexts = %v", inputs)
+	}
+	if startEvents != 2 || endEvents != 1 {
+		t.Fatalf("model call start/end = %d/%d", startEvents, endEvents)
+	}
+}
+
+func TestPortgenSteeringInterruptSentDuringPrepareStepOrBeforeTheRun(t *testing.T) {
+	t.Run("during prepareStep", func(t *testing.T) {
+		// The interrupt waits for the model call and cancels it right away.
+		// TS still calls doGenerate with the aborted signal; Go does not
+		// call a model whose context is already cancelled, so this test
+		// checks the call that ran: it carries the message (known
+		// difference, S1).
+		steering := NewSteering()
+		var handle *SteerHandle
+		var users [][]string
+		model := &testutil.MockLanguageModel{ProviderName: "p", ModelName: "m", DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			if ctx.Err() != nil {
+				return nil, context.Cause(ctx)
+			}
+			users = append(users, portgenUserTexts(opts))
+			return portgenText("sunny", 10), nil
+		}}
+		result, err := GenerateText(context.Background(), GenerateTextOptions{
+			Model: model, Prompt: "q", ExperimentalSteering: steering,
+			PrepareStep: func(_ context.Context, step PrepareStepOptions) PrepareStepOptions {
+				if handle == nil {
+					handle = steering.Steer("Use Paris, Texas instead.", WithSteerInterrupt())
+				}
+				return step
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(users) != 1 || !reflect.DeepEqual(users[0], []string{"q", "Use Paris, Texas instead."}) || len(result.Steps) != 1 {
+			t.Fatalf("users = %v, steps = %d", users, len(result.Steps))
+		}
+		if o := waitOutcome(t, handle); !o.Delivered || o.StepNumber != 0 {
+			t.Fatalf("outcome = %+v", o)
+		}
+	})
+	t.Run("before the run: no extra call", func(t *testing.T) {
+		steering := NewSteering()
+		handle := steering.Steer("Use Paris, Texas instead.", WithSteerInterrupt())
+		calls := 0
+		model := &testutil.MockLanguageModel{ProviderName: "p", ModelName: "m", DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			calls++
+			return portgenText("Sunny.", 1), nil
+		}}
+		if _, err := GenerateText(context.Background(), GenerateTextOptions{Model: model, Prompt: "q", ExperimentalSteering: steering}); err != nil {
+			t.Fatal(err)
+		}
+		if o := waitOutcome(t, handle); calls != 1 || !o.Delivered || o.StepNumber != 0 {
+			t.Fatalf("calls = %d, outcome = %+v", calls, o)
+		}
+	})
+}
+
+func TestPortgenSteeringInterruptFallsBackWhenTheModelCallReturned(t *testing.T) {
+	steering := NewSteering()
+	var handle *SteerHandle
+	calls := 0
+	model := &testutil.MockLanguageModel{ProviderName: "p", ModelName: "m", ToolSupport: true,
+		DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			calls++
+			if calls == 1 {
+				return toolCallResult(), nil
+			}
+			return portgenText("answer", 1), nil
+		}}
+	executed := 0
+	result, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: model, Prompt: "q", StopWhen: []StopCondition{IsStepCount(3)}, ExperimentalSteering: steering,
+		Tools: []types.Tool{{Name: "tool1", Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			executed++
+			handle = steering.Steer("Use Paris, Texas instead.", WithSteerInterrupt())
+			return "ok", nil
+		}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if executed != 1 || calls != 2 || len(result.Steps) != 2 {
+		t.Fatalf("executed = %d, calls = %d, steps = %d", executed, calls, len(result.Steps))
+	}
+	if o := waitOutcome(t, handle); !o.Delivered || o.StepNumber != 1 {
+		t.Fatalf("outcome = %+v", o)
+	}
+}
+
+func TestPortgenSteeringWithoutInterruptDoesNotCancelTheModelCall(t *testing.T) {
+	steering := NewSteering()
+	var handle *SteerHandle
+	calls := 0
+	cancelled := false
+	model := &testutil.MockLanguageModel{ProviderName: "p", ModelName: "m",
+		DoGenerateFunc: func(ctx context.Context, _ *provider.GenerateOptions) (*types.GenerateResult, error) {
+			calls++
+			if calls == 1 {
+				handle = steering.Steer("Use Paris, Texas instead.")
+				time.Sleep(5 * time.Millisecond)
+				cancelled = ctx.Err() != nil
+			}
+			return portgenText("sunny", 1), nil
+		}}
+	result, err := GenerateText(context.Background(), GenerateTextOptions{Model: model, Prompt: "q", StopWhen: []StopCondition{IsStepCount(3)}, ExperimentalSteering: steering})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cancelled || len(result.Steps) != 2 {
+		t.Fatalf("cancelled = %v, steps = %d", cancelled, len(result.Steps))
+	}
+	if o := waitOutcome(t, handle); !o.Delivered || o.StepNumber != 1 {
+		t.Fatalf("outcome = %+v", o)
+	}
+}
+
+func TestPortgenSteeringInterruptCallerAbortIsNotAnInterrupt(t *testing.T) {
+	steering := NewSteering()
+	ctx, cancel := context.WithCancelCause(context.Background())
+	var handle *SteerHandle
+	calls := 0
+	model := &testutil.MockLanguageModel{ProviderName: "p", ModelName: "m",
+		DoGenerateFunc: func(c context.Context, _ *provider.GenerateOptions) (*types.GenerateResult, error) {
+			calls++
+			handle = steering.Steer("Use Paris, Texas instead.", WithSteerInterrupt())
+			cancel(errors.New("stopped by user"))
+			<-c.Done()
+			return nil, context.Cause(c)
+		}}
+	_, err := GenerateText(ctx, GenerateTextOptions{Model: model, Prompt: "q", ExperimentalSteering: steering, MaxRetries: intPtr(0)})
+	if err == nil || !strings.Contains(err.Error(), "stopped by user") || calls != 1 {
+		t.Fatalf("err = %v, calls = %d", err, calls)
+	}
+	if o := waitOutcome(t, handle); o.Delivered || o.Reason != SteeringAborted {
+		t.Fatalf("outcome = %+v", o)
+	}
+}
+
+func TestPortgenSteeringInterruptRepeatedIDInterruptsOnce(t *testing.T) {
+	steering := NewSteering()
+	h := &portgenHangingModel{}
+	send := func() { steering.Steer("Use Paris, Texas instead.", WithSteerID("steer-1"), WithSteerInterrupt()) }
+	model := h.model(send, func(*provider.GenerateOptions) *types.GenerateResult {
+		send()
+		return portgenText("sunny", 1)
+	})
+	result, err := GenerateText(context.Background(), GenerateTextOptions{Model: model, Prompt: "q", ExperimentalSteering: steering})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(h.calls) != 2 || len(result.Steps) != 1 {
+		t.Fatalf("calls = %d, steps = %d", len(h.calls), len(result.Steps))
 	}
 }
