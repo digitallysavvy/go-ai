@@ -435,3 +435,81 @@ func TestPortStreamStoppedBy(t *testing.T) {
 		})
 	}
 }
+
+// TS d834c5bb35: OnWarning receives the call's warnings instead of the global
+// logger, prompt conversion warnings are part of the step warnings and repeat
+// on every step, and OnWarning is never called with an empty list.
+func TestPortStreamOnWarning(t *testing.T) {
+	var global int32
+	SetLogWarnings(func(LogWarningsOptions) { atomic.AddInt32(&global, 1) })
+	t.Cleanup(func() { SetLogWarnings(nil) })
+
+	var calls int32
+	model := &testutil.MockLanguageModel{DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+		n := atomic.AddInt32(&calls, 1)
+		first := []provider.StreamChunk{
+			{Type: provider.ChunkTypeStreamStart, Warnings: []types.Warning{{Type: "unsupported", Feature: "seed"}}},
+			{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "c1", ToolName: "t", Arguments: map[string]interface{}{}}},
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls},
+		}
+		second := []provider.StreamChunk{
+			{Type: provider.ChunkTypeStreamStart, Warnings: []types.Warning{{Type: "unsupported", Feature: "seed"}}},
+			{Type: provider.ChunkTypeText, ID: "1", Text: "hi"},
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+		}
+		if n == 1 {
+			return testutil.NewMockTextStream(first), nil
+		}
+		return testutil.NewMockTextStream(second), nil
+	}}
+	var mu sync.Mutex
+	var got []LogWarningsOptions
+	res, err := StreamText(context.Background(), StreamTextOptions{
+		Model: model,
+		Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{
+			types.ImageContent{Image: []byte{1, 2}, MimeType: "image/png"},
+		}}},
+		Tools: []types.Tool{{Name: "t", Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			return 1, nil
+		}}},
+		StopWhen: []StopCondition{StepCountIs(3)},
+		OnWarning: func(o LogWarningsOptions) {
+			mu.Lock()
+			got = append(got, o)
+			mu.Unlock()
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := res.ConsumeStream(); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	// per step: the prompt deprecation (no provider), then the provider warning
+	if len(got) != 4 {
+		t.Fatalf("OnWarning calls = %d (%+v), want 4", len(got), got)
+	}
+	for i, o := range got {
+		if len(o.Warnings) == 0 {
+			t.Fatalf("call %d has no warnings", i)
+		}
+		wantDeprecation := i%2 == 0
+		if (o.Warnings[0].Type == "deprecated") != wantDeprecation || (o.Provider == "") != wantDeprecation {
+			t.Fatalf("call %d = %+v, want a prompt deprecation without provider: %v", i, o, wantDeprecation)
+		}
+	}
+	if n := atomic.LoadInt32(&global); n != 0 {
+		t.Fatalf("global logger called %d times, want 0 when OnWarning is set", n)
+	}
+	steps := res.Steps()
+	if len(steps) != 2 {
+		t.Fatalf("steps = %d, want 2", len(steps))
+	}
+	for i, step := range steps {
+		if len(step.Warnings) != 2 || step.Warnings[0].Type != "deprecated" || step.Warnings[1].Feature != "seed" {
+			t.Fatalf("step %d warnings = %+v, want [image deprecation, seed]", i, step.Warnings)
+		}
+	}
+}

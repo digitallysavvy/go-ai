@@ -291,6 +291,13 @@ type StreamTextOptions struct {
 	lowMemory      bool
 	collectContent bool
 
+	// OnWarning receives the warnings of this call instead of the global
+	// warning logger (SetLogWarnings, AI_SDK_LOG_WARNINGS): provider warnings
+	// and prompt conversion deprecations. It is never called with an empty
+	// list. The warnings are also part of each step's Warnings. Mirrors TS
+	// onWarning (#25389).
+	OnWarning LogWarningsFunction
+
 	// OnStepError is called when a step that started fails before it produces
 	// a step result: the provider call fails, or the model stream ends
 	// without output (NoOutputGeneratedError). OnStepEnd is not called for
@@ -737,6 +744,9 @@ type StreamTextResult struct {
 	// those of PrepareStep and steering messages), logged before each step's
 	// prompt conversion.
 	promptDeprecations stepPromptDeprecations
+	// stepPromptWarnings are the prompt conversion warnings of the step that
+	// is about to start; they lead the step's warnings (TS promptWarnings).
+	stepPromptWarnings []types.Warning
 
 	// cbModel and cbStreamOpts are retained so that processStream can start
 	// additional streaming steps when deferred provider tool results are pending.
@@ -1388,7 +1398,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		}
 	}
 
-	logPromptDeprecations(r.promptDeprecations.forStep(stepMessages))
+	r.stepPromptWarnings = r.logPromptWarnings(opts.OnWarning, r.promptDeprecations.forStep(stepMessages))
 	stepPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(stepCtx, types.Prompt{System: stepSystem, Messages: messagesForModel(stepMessages)}, allowSystem, effectiveDownload(opts.ExperimentalDownload), supportedURLChecker(stepModel))
 	if normErr != nil {
 		if stepCancel != nil {
@@ -2382,7 +2392,11 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		stepSourcesStart := len(r.sources)
 		// Track how many files existed before this step so we can slice per-step files.
 		stepFilesStart := len(r.files)
+		// The prompt conversion warnings lead the step's warnings, also when
+		// the provider sends no stream-start (TS model-call-start).
+		stepPromptWarnings := r.stepPromptWarnings
 		stepWarningsStart := len(r.warnings)
+		r.warnings = append(r.warnings, stepPromptWarnings...)
 		// stepTextPartsStart: like the slices above, but for the call-level
 		// accumulatedTextParts (used for r.text below) — a retried attempt
 		// (see the ChunkTypeError branch) truncates back to this marker too,
@@ -3245,7 +3259,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					r.mu.Lock()
 					r.sources = r.sources[:stepSourcesStart]
 					r.files = r.files[:stepFilesStart]
-					r.warnings = r.warnings[:stepWarningsStart]
+					r.warnings = append(r.warnings[:stepWarningsStart], stepPromptWarnings...)
 					r.partialOutput = nil
 					r.mu.Unlock()
 					accumulatedTextParts = accumulatedTextParts[:stepTextPartsStart]
@@ -4106,7 +4120,12 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// Log this step's model warnings once per model call (TS
 		// stream-text.ts logWarnings, called per step just after the
 		// step-finish notify).
-		logModelWarnings(stepWarnings, stepProvider, stepModelID)
+		// The prompt warnings were logged when the step was prepared.
+		modelWarnings := stepWarnings
+		if len(stepPromptWarnings) <= len(modelWarnings) {
+			modelWarnings = modelWarnings[len(stepPromptWarnings):]
+		}
+		logCallWarnings(opts.OnWarning, LogWarningsOptions{Warnings: modelWarnings, Provider: stepProvider, Model: stepModelID})
 		cancelStep()
 
 		// TS's outer stream checks the abort signal whenever it reads the next
@@ -4383,7 +4402,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			break
 		}
 		r.stepStartedAt = r.now()
-		logPromptDeprecations(r.promptDeprecations.forStep(nextMessages))
+		r.stepPromptWarnings = r.logPromptWarnings(opts.OnWarning, r.promptDeprecations.forStep(nextMessages))
 		nextPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(nextStepCtx, types.Prompt{
 			Messages: messagesForModel(nextMessages),
 			System:   nextSystem,
@@ -6892,4 +6911,31 @@ func finalStepOutputOptions(text string, steps []types.StepResult, finishReason 
 			Body:      step.Response.Body,
 		},
 	}
+}
+
+// logCallWarnings sends warnings to the call's OnWarning when it is set, and
+// to the global logger otherwise (TS createLogWarnings). OnWarning is never
+// called with an empty list, and a panic in it does not break the call.
+func logCallWarnings(onWarning LogWarningsFunction, options LogWarningsOptions) {
+	if onWarning == nil {
+		LogWarnings(options)
+		return
+	}
+	if len(options.Warnings) == 0 {
+		return
+	}
+	safeInvoke(func() { onWarning(options) })
+}
+
+// logPromptWarnings logs the prompt conversion warnings of a step once, as one
+// batch without provider scope (logging them with the step's provider would
+// turn the stable deprecation code into a provider-scoped one), and returns
+// them for the step's warnings.
+func (r *StreamTextResult) logPromptWarnings(onWarning LogWarningsFunction, batches [][]types.Warning) []types.Warning {
+	var warnings []types.Warning
+	for _, batch := range batches {
+		warnings = append(warnings, batch...)
+	}
+	logCallWarnings(onWarning, LogWarningsOptions{Warnings: warnings})
+	return warnings
 }

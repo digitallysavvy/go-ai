@@ -43,8 +43,10 @@ func TestR86integStreamTextImageDeprecationFollowsStepMessages(t *testing.T) {
 			}), nil
 		}}
 		read(t, StreamTextOptions{Model: model, Messages: []types.Message{r86genImageMessage(1)}, ExperimentalSteering: steering, StopWhen: []StopCondition{StepCountIs(2)}})
-		if got := *batches; len(got) != 3 || got[0] != 1 || got[1] != 1 || got[2] != 2 {
-			t.Fatalf("batches = %v, want [1 1 2]", got)
+		// TS d834c5bb35: one logWarnings call per step with all of its
+		// prompt conversion warnings.
+		if got := *batches; len(got) != 2 || got[0] != 1 || got[1] != 3 {
+			t.Fatalf("batches = %v, want [1 3]", got)
 		}
 	})
 	t.Run("prepareStep", func(t *testing.T) {
