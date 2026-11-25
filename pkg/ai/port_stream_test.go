@@ -151,3 +151,58 @@ func TestPortStreamValidateUIMessagesAcceptsLargeValidPartArrays(t *testing.T) {
 		t.Fatalf("got %d messages / %d parts, want 1 / 2500", len(msgs), len(msgs[0].Parts))
 	}
 }
+
+func portstreamNestedArrays() string {
+	elem := strings.Repeat("[", 100) + "[]" + strings.Repeat("]", 100)
+	return portstreamRepeat(20, elem)
+}
+
+// TS 718824cd59 "valid JSON values in metadata": nested JSON values in provider,
+// tool and citation metadata are accepted and keep their shape.
+func TestPortStreamValidateUIMessagesAcceptsNestedJSONMetadata(t *testing.T) {
+	t.Parallel()
+	nested := portstreamNestedArrays()
+	for name, part := range map[string]string{
+		"provider metadata": `{"type":"text","text":"Hello","providerMetadata":{"provider":{"key":` + nested + `}}}`,
+		"tool metadata and call/result provider metadata": `{"type":"tool-foo","toolCallId":"1","state":"output-available","input":{},"output":"result",` +
+			`"callProviderMetadata":{"provider":{"key":` + nested + `}},"resultProviderMetadata":{"provider":{"key":` + nested + `}},"toolMetadata":{"key":` + nested + `}}`,
+		"citation provider metadata": `{"type":"text","text":"Hello","citations":[{"source":{"type":"source","sourceType":"url","id":"source-1","url":"https://example.com","providerMetadata":{"provider":{"key":` + nested + `}}}}]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			msgs, err := ValidateUIMessages(context.Background(), ValidateUIMessagesOptions{
+				Messages: json.RawMessage(`[{"id":"1","role":"assistant","parts":[` + part + `]}]`),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			out, err := json.Marshal(msgs[0].Parts[0])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(out), nested) {
+				t.Fatalf("validated part lost the nested value: %.200s", out)
+			}
+		})
+	}
+}
+
+// TS 718824cd59 "should reject provider metadata that is an array / a provider
+// without an object / an undefined provider" and "should reject tool metadata
+// that is not an object".
+func TestPortStreamValidateUIMessagesRejectsMalformedMetadataShapes(t *testing.T) {
+	t.Parallel()
+	cases := []struct{ name, part, path string }{
+		{"array provider metadata", `{"type":"text","text":"Hello","providerMetadata":[]}`, "[0].parts[0]"},
+		{"provider without an object", `{"type":"text","text":"Hello","providerMetadata":{"provider":"value"}}`, "[0].parts[0]"},
+		{"null provider", `{"type":"text","text":"Hello","providerMetadata":{"provider":null}}`, "[0].parts[0]"},
+		{"tool metadata array", `{"type":"dynamic-tool","toolName":"foo","toolCallId":"1","state":"input-available","input":{},"toolMetadata":["value"]}`, "[0].parts[0]"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			msg := portstreamValidationMessage(t, `[{"id":"1","role":"assistant","parts":[`+tc.part+`]}]`)
+			if !strings.Contains(msg, tc.path) {
+				t.Fatalf("message %.200q does not report %s", msg, tc.path)
+			}
+		})
+	}
+}
