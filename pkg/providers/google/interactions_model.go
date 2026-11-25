@@ -128,6 +128,7 @@ func (m *InteractionsLanguageModel) SupportsImageInput() bool { return true }
 // Interactions API, mirroring the TypeScript SDK supportedUrls capability.
 func (m *InteractionsLanguageModel) SupportedURLs() map[string][]string {
 	return map[string][]string{
+		"*":               {`^https://generativelanguage\.googleapis\.com/v1beta/files/.*$`},
 		"image/*":         {`^https?://.+`},
 		"application/pdf": {`^https?://.+`},
 		"audio/*":         {`^https?://.+`},
@@ -391,7 +392,7 @@ func (m *InteractionsLanguageModel) buildArgs(opts *provider.GenerateOptions, _ 
 			"seed":               derefInt(opts.Seed),
 			"stop_sequences":     nonEmptyStrings(opts.StopSequences),
 			"max_output_tokens":  derefInt(opts.MaxTokens),
-			"thinking_level":     emptyToNil(interactionsOpts.ThinkingLevel),
+			"thinking_level":     emptyToNil(gemini.MapThinkingLevel(opts.Reasoning, interactionsOpts.ThinkingLevel, m.modelID, &warnings)),
 			"thinking_summaries": emptyToNil(interactionsOpts.ThinkingSummaries),
 			"tool_choice":        toolChoice,
 		})
@@ -979,7 +980,7 @@ func validateInteractionsProviderOptions(opts GoogleInteractionsProviderOptions)
 	if opts.ServiceTier != "" && !containsString([]string{"flex", "standard", "priority"}, opts.ServiceTier) {
 		return fmt.Errorf("google.interactions: serviceTier %q is not supported", opts.ServiceTier)
 	}
-	if opts.ThinkingLevel != "" && !containsString([]string{"minimal", "low", "medium", "high"}, opts.ThinkingLevel) {
+	if opts.ThinkingLevel != "" && !containsString([]string{"minimal", "low", "medium", "high", "xhigh"}, opts.ThinkingLevel) {
 		return fmt.Errorf("google.interactions: thinkingLevel %q is not supported", opts.ThinkingLevel)
 	}
 	if opts.ThinkingSummaries != "" && !containsString([]string{"auto", "none"}, opts.ThinkingSummaries) {
@@ -1173,6 +1174,9 @@ func droppedAgentGenerationFields(opts *provider.GenerateOptions, googleOpts Goo
 	}
 	if opts.MaxTokens != nil {
 		dropped = append(dropped, "maxOutputTokens")
+	}
+	if providerutils.IsCustomReasoning(opts.Reasoning) {
+		dropped = append(dropped, "reasoning")
 	}
 	if googleOpts.ThinkingLevel != "" {
 		dropped = append(dropped, "thinkingLevel")

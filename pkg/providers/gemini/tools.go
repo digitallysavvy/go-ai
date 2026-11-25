@@ -122,6 +122,30 @@ func VertexRagStoreTool(ragCorpus string, topK ...int) types.Tool {
 	}
 }
 
+// MCPServerTool connects a remote MCP server so the model can call its tools
+// (TS google.tools.mcpServer, b0fccbda62). Only google.interactions sends it.
+// args takes name, url, headers (map[string]string or map[string]interface{})
+// and allowedTools.
+//
+// headers carry connector credentials: telemetry copies of the tool and of
+// the Interactions request body show every header name with the value
+// "[redacted]" (pkg/telemetry), while the API still receives the real values.
+func MCPServerTool(args ...map[string]interface{}) types.Tool {
+	var providerArgs map[string]interface{}
+	if len(args) > 0 {
+		providerArgs = args[0]
+	}
+	return types.Tool{
+		Name:             "mcp_server",
+		Type:             "provider",
+		ProviderExecuted: true,
+		ProviderID:       "google.mcp_server",
+		OutputSchema:     emptyObjectOutputSchema(),
+		Parameters:       emptyObjectInputSchema(),
+		ProviderArgs:     providerArgs,
+	}
+}
+
 // buildNativeToolEntry converts a provider Tool to the Gemini API native tool
 // entry format. Returns nil for unrecognized ProviderIDs.
 func buildNativeToolEntry(t types.Tool) map[string]interface{} {

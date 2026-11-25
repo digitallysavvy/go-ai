@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -25,35 +26,26 @@ func TestIdentSuffix(t *testing.T) {
 	}
 }
 
-func TestParseUnion(t *testing.T) {
-	multi := "export type GatewaySpeechModelId =\n  | 'openai/tts-1'\n  | 'openai/tts-1-hd'\n  | (string & {});\n"
-	got, err := parseUnion(multi, "GatewaySpeechModelId")
-	if err != nil {
-		t.Fatal(err)
+func TestParseCatalog(t *testing.T) {
+	src := "export const gatewayModelIds = {\n  language: [\n    'openai/gpt-5.5',\n    'openai/gpt-6',\n  ],\n  decision: ['typesafe-ai/jev'],\n  extraction: ['scaledown/extract-1'],\n  speech: [],\n} as const;\n"
+	for key, want := range map[string][]string{
+		"language":   {"openai/gpt-5.5", "openai/gpt-6"},
+		"decision":   {"typesafe-ai/jev"},
+		"extraction": {"scaledown/extract-1"},
+		"speech":     nil,
+	} {
+		got, err := parseCatalog(src, key)
+		if err != nil {
+			t.Fatalf("%s: %v", key, err)
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s = %v, want %v", key, got, want)
+		}
 	}
-	if want := []string{"openai/tts-1", "openai/tts-1-hd"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("multi-line union = %v, want %v", got, want)
+	if _, err := parseCatalog(src, "video"); !errors.Is(err, errKindMissing) {
+		t.Fatalf("missing kind error = %v", err)
 	}
-
-	single := "export type GatewayDecisionModelId = 'typesafe-ai/jev' | (string & {});\n"
-	got, err = parseUnion(single, "GatewayDecisionModelId")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := []string{"typesafe-ai/jev"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("single-line union = %v, want %v", got, want)
-	}
-
-	open := "export type GatewaySpeechModelId = string & {};\n"
-	got, err = parseUnion(open, "GatewaySpeechModelId")
-	if err != nil || len(got) != 0 {
-		t.Fatalf("open union = %v, %v; want empty", got, err)
-	}
-
-	if _, err := parseUnion(multi, "Missing"); err == nil {
-		t.Fatal("expected error for missing type")
-	}
-	if _, err := parseUnion("export type X = 'a/b' | 'a/b';", "X"); err == nil {
+	if _, err := parseCatalog("export const gatewayModelIds = {\n  language: ['a/b', 'a/b'],\n};", "language"); err == nil {
 		t.Fatal("expected error for duplicate ID")
 	}
 }
@@ -81,6 +73,7 @@ func TestRenderEmitsAllKinds(t *testing.T) {
 		`GatewayDecisionModelTypesafeAiJev GatewayDecisionModelID = "typesafe-ai/jev"`,
 		"var GatewaySpeechModelIDs = []GatewaySpeechModelID{}",
 		"var GatewayRealtimeModelIDs = []GatewayRealtimeModelID{}",
+		"var GatewayExtractionModelIDs = []GatewayExtractionModelID{}",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("rendered output missing %q", want)
@@ -94,7 +87,7 @@ func TestResolveSrcDir(t *testing.T) {
 	if err := os.MkdirAll(src, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(src, "gateway-language-model-settings.ts"), nil, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(src, "gateway-model-catalog.ts"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	for _, dir := range []string{root, src} {

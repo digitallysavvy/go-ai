@@ -615,6 +615,7 @@ Inline `[]byte` file data in Gateway language-model requests is base64-encoded e
 Gateway response errors are decoded into typed errors under `pkg/providers/gateway/errors`. The common `GatewayError` interface exposes status code, public type, generation ID, and retryability. Unknown Gateway error types preserve the raw type through `GatewayErrorDetails`.
 
 - `GatewayForbiddenError.RuleID` identifies which routing rule denied the request, when the Gateway reports one.
+- `GatewayAccessPolicyDeniedError` (type `access_policy_denied`, HTTP 403) is returned when an access policy denies the requested model or provider. It is not a `GatewayForbiddenError`. `PolicyIDs`, `RemovedModels` and `RemovedProviders` hold what the Gateway reported in the error param and are nil when absent.
 - `GatewayNotFoundError` (type `not_found`) is returned for unknown Gateway resources (e.g. an async batch/video job id) and is distinct from `GatewayModelNotFoundError`, which is model-specific.
 
 ```go

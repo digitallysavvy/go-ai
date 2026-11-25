@@ -60,27 +60,29 @@ func resolveThinkingConfig(reasoning *types.ReasoningLevel, modelID string, warn
 	if !providerutils.IsCustomReasoning(reasoning) {
 		return nil
 	}
-	if GetModelCapabilities(modelID).UsesGemini3Features && !strings.Contains(modelID, "gemini-3-pro-image") {
-		return resolveGemini3ThinkingConfig(*reasoning, modelID, warnings)
+	if caps := LanguageModelCapabilitiesFor(modelID); caps.ThinkingLevels != nil {
+		return resolveThinkingLevelConfig(*reasoning, caps.ThinkingLevels, warnings)
 	}
 	return resolveGemini25ThinkingConfig(*reasoning, modelID, warnings)
 }
 
-// resolveGemini3ThinkingConfig mirrors TS (61a315e333): thinking cannot be
-// disabled on Gemini 3, so reasoning "none" rounds to the lowest supported
-// thinking level, like every other unsupported level, with a compatibility
+// thinkingLevelEffortMap is TS Object.fromEntries(levels.map(l => [l, l])).
+func thinkingLevelEffortMap(levels []string) map[types.ReasoningLevel]string {
+	effortMap := make(map[types.ReasoningLevel]string, len(levels))
+	for _, level := range levels {
+		effortMap[types.ReasoningLevel(level)] = level
+	}
+	return effortMap
+}
+
+// resolveThinkingLevelConfig mirrors TS resolveThinkingLevelConfig (61a315e333,
+// 4e43721f73): the model's thinking levels are its effort map, thinking cannot
+// be disabled on these models, so reasoning "none" rounds to the lowest
+// supported level, like every other unsupported level, with a compatibility
 // warning.
-func resolveGemini3ThinkingConfig(reasoning types.ReasoningLevel, modelID string, warnings *[]types.Warning) map[string]interface{} {
-	effortMap := map[types.ReasoningLevel]string{
-		types.ReasoningLow:    "low",
-		types.ReasoningMedium: "medium",
-		types.ReasoningHigh:   "high",
-	}
-	if minimumThinkingLevelForGemini3Model(modelID) == "minimal" {
-		effortMap[types.ReasoningMinimal] = "minimal"
-	}
+func resolveThinkingLevelConfig(reasoning types.ReasoningLevel, levels []string, warnings *[]types.Warning) map[string]interface{} {
 	before := len(*warnings)
-	mapped, ok := providerutils.MapReasoningToProviderEffort(&reasoning, effortMap, nil, warnings)
+	mapped, ok := providerutils.MapReasoningToProviderEffort(&reasoning, thinkingLevelEffortMap(levels), nil, warnings)
 	mirrorReasoningWarnings(warnings, before)
 	if !ok {
 		return nil
@@ -88,19 +90,37 @@ func resolveGemini3ThinkingConfig(reasoning types.ReasoningLevel, modelID string
 	return map[string]interface{}{"thinkingLevel": mapped}
 }
 
+// MapThinkingLevel is the thinking level of the Interactions API (TS 8e60cb4ba3):
+// an explicit providerOptions thinkingLevel wins as given; otherwise the
+// call-level reasoning maps onto the levels of the model's catalog row
+// (nothing for a model configured with a thinking budget, which warns
+// "unsupported"; a level the model lacks maps to the nearest one with a
+// "compatibility" warning). Returns "" when there is no level to send.
+func MapThinkingLevel(reasoning *types.ReasoningLevel, explicit string, modelID string, warnings *[]types.Warning) string {
+	var explicitLevel *string
+	if explicit != "" {
+		explicitLevel = &explicit
+	}
+	before := len(*warnings)
+	level, _ := providerutils.MapReasoningToProviderEffort(reasoning, thinkingLevelEffortMap(LanguageModelCapabilitiesFor(modelID).ThinkingLevels), explicitLevel, warnings)
+	mirrorReasoningWarnings(warnings, before)
+	return level
+}
+
 // resolveGemini25ThinkingConfig mirrors TS: "none" disables thinking with a
 // budget of 0 where the model allows it; otherwise (and on 2.5 Pro for
 // "none") the budget is mapReasoningToProviderBudget over 65536 output tokens,
 // clamped to [minBudget, maxBudget].
 func resolveGemini25ThinkingConfig(reasoning types.ReasoningLevel, modelID string, warnings *[]types.Warning) map[string]interface{} {
-	minBudget := minThinkingTokensForGemini25Model(modelID)
+	caps := LanguageModelCapabilitiesFor(modelID)
+	minBudget := caps.MinThinkingBudget
 	if reasoning == types.ReasoningNone && minBudget == 0 {
 		return map[string]interface{}{"thinkingBudget": 0}
 	}
 	before := len(*warnings)
 	budget := providerutils.MapReasoningToProviderBudget(reasoning, providerutils.ReasoningBudgetOptions{
 		MaxOutputTokens:    maxOutputTokensForGemini25Model,
-		MaxReasoningBudget: maxThinkingTokensForModel(modelID),
+		MaxReasoningBudget: caps.MaxThinkingBudget,
 		MinReasoningBudget: &minBudget,
 	}, warnings)
 	mirrorReasoningWarnings(warnings, before)

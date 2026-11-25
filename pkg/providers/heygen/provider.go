@@ -133,3 +133,9 @@ func (p *Provider) Video(modelID string) (provider.VideoModelV3, error) {
 
 // Client returns the HTTP client used for API requests.
 func (p *Provider) Client() *internalhttp.Client { return p.client }
+
+// DecisionModel returns an experimental decision model backed by the HeyGen
+// Decision API (TS heygen.decisionModel).
+func (p *Provider) DecisionModel(modelID string) (provider.DecisionModel, error) {
+	return NewDecisionModel(p, modelID), nil
+}

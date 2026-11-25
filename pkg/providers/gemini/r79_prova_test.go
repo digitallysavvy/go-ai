@@ -19,7 +19,7 @@ const (
 	r79provaTSSafety      = `[{"category":"HARM_CATEGORY_HATE_SPEECH","probability":"NEGLIGIBLE","blocked":false}]`
 	r79provaWireURL       = `{"urlMetadata":[{"retrievedUrl":"https://b.example","urlRetrievalStatus":"URL_RETRIEVAL_STATUS_SUCCESS","x":1}],"y":2}`
 	r79provaTSURL         = `{"urlMetadata":[{"retrievedUrl":"https://b.example","urlRetrievalStatus":"URL_RETRIEVAL_STATUS_SUCCESS"}]}`
-	r79provaWireFeedback  = `{"blockReasonMessage":"m","safetyRatings":` + r79provaWireSafety + `}`
+	r79provaWireFeedback  = `{"undeclaredKey":"m","safetyRatings":` + r79provaWireSafety + `}`
 	r79provaTSFeedback    = `{"safetyRatings":` + r79provaTSSafety + `}`
 	r79provaWireBody      = `{"candidates":[{"content":{"parts":[{"text":"hi"}],"role":"model"},"finishReason":"STOP","groundingMetadata":` + r79provaWireGrounding + `,"urlContextMetadata":` + r79provaWireURL + `,"safetyRatings":` + r79provaWireSafety + `}],"promptFeedback":` + r79provaWireFeedback + `}`
 )

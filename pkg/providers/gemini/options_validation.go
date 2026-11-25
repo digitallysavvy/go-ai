@@ -57,7 +57,7 @@ func checkLanguageModelOptions(opts map[string]interface{}) error {
 		if err := boolField("thinkingConfig.includeThoughts", m["includeThoughts"]); err != nil {
 			return err
 		}
-		if err := enumValue("thinkingConfig.thinkingLevel", m["thinkingLevel"], "minimal", "low", "medium", "high"); err != nil {
+		if err := enumValue("thinkingConfig.thinkingLevel", m["thinkingLevel"], "minimal", "low", "medium", "high", "xhigh"); err != nil {
 			return err
 		}
 	}

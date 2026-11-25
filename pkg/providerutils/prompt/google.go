@@ -437,56 +437,126 @@ func googleVideoFPS(v interface{}, present bool, path []interface{}) *zodlite.Is
 	return nil
 }
 
-// googleVideoMetadataSchema mirrors TS googleVideoMetadataSchema
-// (google-prompt.ts): z.object({startOffset, endOffset, fps}).
-var googleVideoMetadataSchema = zodlite.Object(
-	zodlite.F("startOffset", zodlite.Optional(zodlite.String)),
-	zodlite.F("endOffset", zodlite.Optional(zodlite.String)),
-	zodlite.F("fps", zodlite.Optional(googleVideoFPS)),
+// googlePositiveInt is z.number().int().min(1).
+var googlePositiveInt = zodlite.Min(zodlite.Int, 1)
+
+// googleFilePartOptionsSchema mirrors TS googleFilePartOptionsSchema
+// (google-file-part-options.ts, afb4e69924): the per-file options of a user
+// file part and of a tool-result file.
+var googleFilePartOptionsSchema = zodlite.Object(
+	zodlite.F("mediaResolution", zodlite.Optional(zodlite.Object(
+		zodlite.F("level", zodlite.Enum("MEDIA_RESOLUTION_LOW", "MEDIA_RESOLUTION_MEDIUM", "MEDIA_RESOLUTION_HIGH")),
+	))),
+	zodlite.F("documentMetadata", zodlite.Optional(zodlite.Object(
+		zodlite.F("startPage", zodlite.Optional(googlePositiveInt)),
+		zodlite.F("endPage", zodlite.Optional(googlePositiveInt)),
+		zodlite.F("contentLayers", zodlite.Optional(zodlite.Array(zodlite.Enum("PAGE_IMAGE", "PAGE_TEXT")))),
+	))),
+	zodlite.F("spreadsheetMetadata", zodlite.Optional(zodlite.Object(
+		zodlite.F("sheetIndex", zodlite.Optional(googlePositiveInt)),
+		zodlite.F("visibleCells", zodlite.Optional(zodlite.String)),
+		zodlite.F("contentLayers", zodlite.Optional(zodlite.Array(zodlite.Enum("DATA", "FORMULAS", "VISUAL")))),
+	))),
+	zodlite.F("audioMetadata", zodlite.Optional(zodlite.Object(
+		zodlite.F("startOffset", zodlite.Optional(zodlite.String)),
+		zodlite.F("endOffset", zodlite.Optional(zodlite.String)),
+	))),
+	zodlite.F("videoMetadata", zodlite.Optional(zodlite.Object(
+		zodlite.F("startOffset", zodlite.Optional(zodlite.String)),
+		zodlite.F("endOffset", zodlite.Optional(zodlite.String)),
+		zodlite.F("fps", zodlite.Optional(googleVideoFPS)),
+		zodlite.F("contentLayers", zodlite.Optional(zodlite.Array(zodlite.Enum("FRAMES", "AUDIO", "TRANSCRIPT")))),
+	))),
 )
 
-// googleVideoMetadata parses a user file part's
-// providerOptions.<google>.videoMetadata (TS b1bcea13b8). It returns nil when
-// the option is absent or null. Like TS googleVideoMetadataSchema.parse, only
-// the known keys are kept, in schema order, and an invalid value is an error
-// (TS throws the ZodError; Go returns a validation error with its issues).
-func (c *googleConverter) googleVideoMetadata(providerOptions map[string]interface{}) (interface{}, error) {
-	raw, ok := c.readProviderOpts(providerOptions, nil)["videoMetadata"]
-	if !ok || raw == nil {
-		return nil, nil
+// googleOptionPick lists the keys zod keeps, in schema order, for one object.
+type googleOptionPick struct {
+	key      string
+	children []googleOptionPick
+}
+
+var googleFilePartOptionsPick = []googleOptionPick{
+	{"mediaResolution", []googleOptionPick{{"level", nil}}},
+	{"documentMetadata", []googleOptionPick{{"startPage", nil}, {"endPage", nil}, {"contentLayers", nil}}},
+	{"spreadsheetMetadata", []googleOptionPick{{"sheetIndex", nil}, {"visibleCells", nil}, {"contentLayers", nil}}},
+	{"audioMetadata", []googleOptionPick{{"startOffset", nil}, {"endOffset", nil}}},
+	{"videoMetadata", []googleOptionPick{{"startOffset", nil}, {"endOffset", nil}, {"fps", nil}, {"contentLayers", nil}}},
+}
+
+// pickGoogleOptions is zod's object output: only the declared keys, in
+// declaration order.
+func pickGoogleOptions(value map[string]interface{}, picks []googleOptionPick) *jsonorder.Object {
+	out := jsonorder.New()
+	for _, pick := range picks {
+		v, ok := value[pick.key]
+		if !ok {
+			continue
+		}
+		if nested, isMap := v.(map[string]interface{}); isMap && pick.children != nil {
+			out.Set(pick.key, pickGoogleOptions(nested, pick.children))
+			continue
+		}
+		out.Set(pick.key, v)
 	}
-	data := jsonStringify(raw)
+	return out
+}
+
+// googleFilePartOptions parses a file part's per-file Google options (TS
+// getGoogleFilePartOptions): entries with a null value are dropped, then the
+// rest is validated; the result holds only the declared keys, in schema
+// order, ready to be spread next to fileData / inlineData. An invalid value
+// is an error (TS throws the ZodError; Go returns a validation error with its
+// issues). Absent options give nil.
+func (c *googleConverter) googleFilePartOptions(providerOptions map[string]interface{}) (*jsonorder.Object, error) {
+	raw := c.readProviderOpts(providerOptions, nil)
+	filtered := make(map[string]interface{}, len(raw))
+	for key, value := range raw {
+		if value != nil {
+			filtered[key] = value
+		}
+	}
+	data := jsonStringify(filtered)
 	// TS schema.parse of the caller's object: no secureJsonParse, so a
 	// __proto__ / constructor.prototype key is an ordinary (stripped) key.
-	if message := zodlite.ValidationMessagePlain(googleVideoMetadataSchema, data); message != "" {
+	if message := zodlite.ValidationMessagePlain(googleFilePartOptionsSchema, data); message != "" {
 		return nil, providererrors.NewValidationErrorWithContext(zodlite.CompactJSON(data), zodlite.IssueText(message), nil, &providererrors.ValidationContext{})
 	}
 	var parsed map[string]interface{}
 	if err := json.Unmarshal([]byte(data), &parsed); err != nil {
 		return nil, err
 	}
-	out := jsonorder.New()
-	for _, key := range []string{"startOffset", "endOffset", "fps"} {
-		if v, ok := parsed[key]; ok {
-			out.Set(key, v)
-		}
+	out := pickGoogleOptions(parsed, googleFilePartOptionsPick)
+	if len(out.Keys()) == 0 {
+		return nil, nil
 	}
 	return out, nil
+}
+
+// spreadGoogleFilePartOptions adds the options to a file / inline data part
+// (TS `...metadata`).
+func spreadGoogleFilePartOptions(part map[string]interface{}, options *jsonorder.Object) {
+	if options == nil {
+		return
+	}
+	for _, key := range options.Keys() {
+		value, _ := options.Get(key)
+		part[key] = value
+	}
 }
 
 // fileContentPart converts a file part. assistant=true applies the TS
 // assistant-side rules (URLs rejected, thought flag honored).
 func (c *googleConverter) fileContentPart(file types.FileContent, assistant bool) (map[string]interface{}, error) {
 	if !assistant {
-		videoMetadata, err := c.googleVideoMetadata(file.ProviderOptions)
+		options, err := c.googleFilePartOptions(file.ProviderOptions)
 		if err != nil {
 			return nil, err
 		}
 		part, err := c.fileContentPartData(file, assistant)
-		if err == nil && videoMetadata != nil {
-			// TS spreads videoMetadata next to fileData / inlineData in all
-			// four user file branches.
-			part["videoMetadata"] = videoMetadata
+		if err == nil {
+			// TS spreads the file options next to fileData / inlineData in
+			// all four user file branches.
+			spreadGoogleFilePartOptions(part, options)
 		}
 		return part, err
 	}
@@ -1068,6 +1138,10 @@ func (c *googleConverter) functionResponseWithKey(toolName, toolCallID string, c
 	return fr
 }
 
+// googleFilesURLPattern is TS googleFilesUrlPattern (google-supported-file-url.ts):
+// a Gemini Files API URL.
+var googleFilesURLPattern = regexp.MustCompile(`^https://generativelanguage\.googleapis\.com/v1beta/files/.*$`)
+
 var googleDataURLRegex = regexp.MustCompile(`(?s)^data:([^;,]+);base64,(.+)$`)
 
 // isFunctionResponseURLSupported reports whether url may be forwarded
@@ -1093,28 +1167,68 @@ func (c *googleConverter) appendToolResultParts(parts *[]map[string]interface{},
 		case types.TextContentBlock:
 			textParts = append(textParts, b.Text)
 		case types.ImageContentBlock:
-			responseParts = append(responseParts, map[string]interface{}{
+			options, err := c.googleFilePartOptions(b.ProviderOptions)
+			if err != nil {
+				return err
+			}
+			part := map[string]interface{}{
 				"inlineData": map[string]interface{}{"mimeType": b.MediaType, "data": base64.StdEncoding.EncodeToString(b.Data)},
-			})
+			}
+			spreadGoogleFilePartOptions(part, options)
+			responseParts = append(responseParts, part)
 		case types.FileContentBlock:
+			// TS getGoogleFilePartOptions: the per-file options of a
+			// tool-result file go next to its inlineData / fileData (an
+			// invalid value fails the conversion, also for a part that ends
+			// up as text).
+			options, err := c.googleFilePartOptions(b.ProviderOptions)
+			if err != nil {
+				return err
+			}
 			f := c.resolveFile(fileBlockToContent(b))
 			switch {
 			case f.url != "":
 				if m := googleDataURLRegex.FindStringSubmatch(f.url); m != nil {
-					responseParts = append(responseParts, map[string]interface{}{
+					part := map[string]interface{}{
 						"inlineData": map[string]interface{}{"mimeType": m[1], "data": m[2]},
-					})
-				} else if supported := f.fileURI(); isFullMediaType(f.mediaType) && c.isFunctionResponseURLSupported(f.mediaType, supported) {
-					// Forward a supported non-data URL (e.g. gs:// on Vertex,
-					// Gemini 3+) directly instead of inlining it as text.
+					}
+					spreadGoogleFilePartOptions(part, options)
+					responseParts = append(responseParts, part)
+				} else if supported := f.fileURI(); isFullMediaType(f.mediaType) &&
+					((!c.isVertexLike && googleFilesURLPattern.MatchString(supported)) || c.isFunctionResponseURLSupported(f.mediaType, supported)) {
+					// Forward a supported non-data URL (a Gemini Files API
+					// URL on the Gemini API, gs:// on Vertex, Gemini 3+)
+					// directly instead of inlining it as text.
 					// Ports TS convert-to-google-messages.ts appendToolResultParts
-					// (ai@7.0.118 commit bc49f786f0).
-					responseParts = append(responseParts, map[string]interface{}{
+					// (ai@7.0.118 commit bc49f786f0, afb4e69924).
+					part := map[string]interface{}{
 						"fileData": map[string]interface{}{"mimeType": f.mediaType, "fileUri": supported},
-					})
+					}
+					spreadGoogleFilePartOptions(part, options)
+					responseParts = append(responseParts, part)
 				} else {
 					textParts = append(textParts, googleJSONText(b))
 				}
+			case (f.reference != "" || len(f.referenceMap) > 0) && !c.isVertexLike:
+				// TS: a provider reference becomes fileData with the Google
+				// file URI (not on Vertex, where it stays text).
+				mediaType, err := googleResolveFullMediaType(f.mediaType, nil, false)
+				if err != nil {
+					return err
+				}
+				fileURI := f.reference
+				if len(f.referenceMap) > 0 {
+					id, err := providerutils.ResolveProviderReference(f.referenceMap, "google")
+					if err != nil {
+						return err
+					}
+					fileURI = id
+				}
+				part := map[string]interface{}{
+					"fileData": map[string]interface{}{"mimeType": mediaType, "fileUri": fileURI},
+				}
+				spreadGoogleFilePartOptions(part, options)
+				responseParts = append(responseParts, part)
 			case f.hasData():
 				// TS resolveFullMediaType: complete a top-level media type by
 				// sniffing the bytes; it throws when that fails.
@@ -1122,9 +1236,11 @@ func (c *googleConverter) appendToolResultParts(parts *[]map[string]interface{},
 				if err != nil {
 					return err
 				}
-				responseParts = append(responseParts, map[string]interface{}{
+				part := map[string]interface{}{
 					"inlineData": map[string]interface{}{"mimeType": mediaType, "data": f.base64Data()},
-				})
+				}
+				spreadGoogleFilePartOptions(part, options)
+				responseParts = append(responseParts, part)
 			default:
 				textParts = append(textParts, googleJSONText(b))
 			}

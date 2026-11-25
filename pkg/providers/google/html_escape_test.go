@@ -10,7 +10,7 @@ func TestInteractionsToolResultJSONIsNotHTMLEscaped(t *testing.T) {
 	block, _, err := toolResultToInteractionBlock(types.ToolResultContent{
 		ToolCallID: "c", ToolName: "t",
 		Output: &types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: map[string]interface{}{"html": "<b>&</b>"}},
-	})
+	}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,7 +33,7 @@ func TestInteractionsToolResultErrorJSONIsStringified(t *testing.T) {
 	block, _, err := toolResultToInteractionBlock(types.ToolResultContent{
 		ToolCallID: "c", ToolName: "t",
 		Output: &types.ToolResultOutput{Type: types.ToolResultOutputErrorJSON, Value: map[string]interface{}{"code": 7}},
-	})
+	}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +50,7 @@ func TestInteractionsToolResultBareImageMediaTypeKept(t *testing.T) {
 		Output: &types.ToolResultOutput{Type: types.ToolResultOutputContent, Content: []types.ToolResultContentBlock{
 			types.FileContentBlock{MediaType: "image", URL: "https://x/y.png"},
 		}},
-	})
+	}, "")
 	if err != nil {
 		t.Fatal(err)
 	}

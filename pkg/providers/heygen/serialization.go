@@ -8,6 +8,26 @@ import (
 
 func init() {
 	provider.RegisterVideoModelDeserializer("heygen.video", deserializeVideoModel)
+	provider.RegisterDecisionModelDeserializer(decisionProviderName, deserializeDecisionModel)
+}
+
+// Serialize implements provider.SerializableModel for workflow boundaries.
+// Mirrors TS heygen-decision-model.ts [WORKFLOW_SERIALIZE]. Credentials are not
+// serialized; the restored model reads HEYGEN_API_KEY.
+func (m *DecisionModel) Serialize() provider.SerializedModel {
+	return provider.SerializedModel{Provider: m.Provider(), ModelID: m.ModelID(), Config: provider.SerializableConfig(m.prov.config)}
+}
+
+func deserializeDecisionModel(serialized provider.SerializedModel) (provider.DecisionModel, error) {
+	var cfg Config
+	data, err := json.Marshal(serialized.Config)
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil, err
+	}
+	return New(cfg).DecisionModel(serialized.ModelID)
 }
 
 // Serialize implements provider.SerializableModel for workflow boundaries.

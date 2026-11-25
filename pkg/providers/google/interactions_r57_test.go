@@ -47,7 +47,7 @@ func TestR57InteractionsToolResultImageWithTextDataDropped(t *testing.T) {
 		"legacy":   {MediaType: "image/png", Text: "x"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			out, warnings, err := toolResultContentBlocks([]types.ToolResultContentBlock{block})
+			out, warnings, err := toolResultContentBlocks([]types.ToolResultContentBlock{block}, "")
 			if err != nil {
 				t.Fatal(err)
 			}

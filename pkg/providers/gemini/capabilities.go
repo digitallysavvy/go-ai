@@ -55,12 +55,6 @@ func GetModelCapabilities(modelID string) ModelCapabilities {
 	}
 }
 
-// isGemini25Model reports whether the model is a Gemini 2.5 model
-// (TS gemini25ModelPattern).
-func isGemini25Model(modelID string) bool {
-	return gemini25ModelPattern.MatchString(modelID)
-}
-
 // minimumThinkingLevelForGemini3Model returns the lowest thinkingLevel a
 // Gemini 3+ model accepts. Pro models from 3 on, Flash models from 3.7 on (and
 // gemini-flash-latest) no longer accept "minimal". Mirrors TS getMinimumThinkingLevelForGemini3Model.

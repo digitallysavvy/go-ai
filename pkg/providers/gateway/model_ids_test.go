@@ -81,20 +81,20 @@ func catalogs() map[string][]string {
 
 func TestGatewayModelIDCatalogsExposeAllModelKinds(t *testing.T) {
 	want := map[string]int{
-		"language":      325, // + claude-fable-5.2-fast, deepseek-v4.1-flash-1017-ultrafast, gemini-4-carbon, ampersand-v0.1 (TS c160b74576, eaeb37e514, 5497ff78eb)
+		"language":      322, // 325 at 2ebc78b654; a457990a33 adds 12 (gemini-4 hydrogen / neon, gpt-6.2 astra / sol x4, ...) and removes 15
 		"embedding":     28,
-		"image":         39,
+		"image":         43,
 		"video":         37,
 		"reranking":     9,
 		"speech":        24,
 		"transcription": 16,
-		"realtime":      10,
-		"decision":      18, // + nace-ai drex x3, parallel-decisions-fast (TS eaeb37e514, 5497ff78eb)
+		"realtime":      11,
+		"decision":      26, // 18 at 2ebc78b654; + gemini-decision-1, heygen x2, liquid d1.2 x2, microsoft, modaic, perplexity x2; - liquid/d1
 	}
 	got := catalogs()
 	for kind, n := range want {
 		if len(got[kind]) != n {
-			t.Errorf("%s catalog length = %d, want %d (TS 2ebc78b654)", kind, len(got[kind]), n)
+			t.Errorf("%s catalog length = %d, want %d (TS a457990a33)", kind, len(got[kind]), n)
 		}
 	}
 }
