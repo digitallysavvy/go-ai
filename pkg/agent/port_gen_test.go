@@ -171,3 +171,25 @@ func TestPortgenLogDefaultStopConditionWarning(t *testing.T) {
 		t.Fatalf("warning = %+v", w)
 	}
 }
+
+// Port of stopped-by.test.ts 'reports stop-condition when a ToolLoopAgent
+// reaches its default step limit' (TS 7760e33531).
+func TestPortgenToolLoopAgentDefaultStepLimitStoppedBy(t *testing.T) {
+	captureWarnings(t)
+	responses := toolLoopResponses(21, 0)
+	model := &testutil.MockLanguageModel{ToolSupport: true}
+	call := 0
+	model.DoGenerateFunc = func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+		r := responses[call]
+		call++
+		return &r, nil
+	}
+	agent := NewToolLoopAgent(AgentConfig{Model: model, Tools: []types.Tool{defaultStopTestTool()}})
+	result, err := agent.Generate(context.Background(), AgentGenerateOptions{Prompt: "What is the weather in Paris?"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Steps) != 20 || result.StoppedBy != ai.StoppedByStopCondition {
+		t.Fatalf("steps = %d, stoppedBy = %q", len(result.Steps), result.StoppedBy)
+	}
+}

@@ -866,3 +866,65 @@ func TestPortgenGetBatchResultsRejectsANonOutputSpecification(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// Port of stopped-by.test.ts 'stoppedBy (generate)' cases (TS 7760e33531).
+func TestPortgenGenerateTextStoppedBy(t *testing.T) {
+	weatherCall := func(finish types.FinishReason) *types.GenerateResult {
+		return &types.GenerateResult{
+			FinishReason: finish,
+			ToolCalls:    []types.ToolCall{{ID: "call-1", ToolName: "weather", Arguments: map[string]interface{}{"city": "Paris"}, RawArguments: `{ "city": "Paris" }`}},
+		}
+	}
+	answer := func(finish types.FinishReason) *types.GenerateResult {
+		return &types.GenerateResult{Text: "It is sunny.", Content: []types.ContentPart{types.TextContent{Text: "It is sunny."}}, FinishReason: finish}
+	}
+	schemaCity := map[string]interface{}{"type": "object", "properties": map[string]interface{}{"city": map[string]interface{}{"type": "string"}}, "required": []interface{}{"city"}}
+	exec := func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) { return "sunny", nil }
+	weather := types.Tool{Name: "weather", Parameters: schemaCity, Execute: exec}
+	noExecute := types.Tool{Name: "weather", Parameters: schemaCity}
+	needsApproval := types.Tool{Name: "weather", Parameters: schemaCity, Execute: exec, ToolApproval: types.ToolApprovalStatusUserApproval}
+	mcp := types.Tool{Name: "mcp_tool", ProviderExecuted: true, Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{"query": map[string]interface{}{"type": "string"}}}}
+
+	cases := []struct {
+		name      string
+		responses []*types.GenerateResult
+		tools     []types.Tool
+		stop      []StopCondition
+		want      StoppedBy
+	}{
+		{"model: final answer", []*types.GenerateResult{answer(types.FinishReasonStop)}, nil, nil, StoppedByModel},
+		{"model: answers after tool results", []*types.GenerateResult{weatherCall(types.FinishReasonToolCalls), answer(types.FinishReasonStop)}, []types.Tool{weather}, []StopCondition{IsStepCount(5)}, StoppedByModel},
+		{"stop-condition", []*types.GenerateResult{weatherCall(types.FinishReasonToolCalls), weatherCall(types.FinishReasonToolCalls), weatherCall(types.FinishReasonToolCalls)}, []types.Tool{weather}, []StopCondition{IsStepCount(2)}, StoppedByStopCondition},
+		{"tool-without-execute", []*types.GenerateResult{weatherCall(types.FinishReasonToolCalls)}, []types.Tool{noExecute}, []StopCondition{IsStepCount(5)}, StoppedByToolWithoutExecute},
+		{"approval", []*types.GenerateResult{weatherCall(types.FinishReasonToolCalls)}, []types.Tool{needsApproval}, []StopCondition{IsStepCount(5)}, StoppedByApproval},
+		{"approval: provider-executed tool", []*types.GenerateResult{{
+			FinishReason: types.FinishReasonToolCalls,
+			ToolCalls:    []types.ToolCall{{ID: "mcp-call-1", ToolName: "mcp_tool", Arguments: map[string]interface{}{"query": "test"}, ProviderExecuted: true}},
+			Content: []types.ContentPart{
+				types.ToolApprovalRequestContent{ApprovalID: "mcp-approval-1", ToolCallID: "mcp-call-1"},
+			},
+		}}, []types.Tool{mcp}, []StopCondition{IsStepCount(3)}, StoppedByApproval},
+		{"model: output limit cuts off a tool call", []*types.GenerateResult{weatherCall(types.FinishReasonLength)}, []types.Tool{weather}, []StopCondition{IsStepCount(5)}, StoppedByModel},
+		{"model: interrupted", []*types.GenerateResult{answer(types.FinishReasonInterrupted)}, nil, nil, StoppedByModel},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			call := 0
+			model := &testutil.MockLanguageModel{
+				ToolSupport: true,
+				DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+					r := tc.responses[call]
+					call++
+					return r, nil
+				},
+			}
+			result, err := GenerateText(context.Background(), GenerateTextOptions{Model: model, Prompt: "What is the weather in Paris?", Tools: tc.tools, StopWhen: tc.stop})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.StoppedBy != tc.want {
+				t.Fatalf("StoppedBy = %q, want %q", result.StoppedBy, tc.want)
+			}
+		})
+	}
+}

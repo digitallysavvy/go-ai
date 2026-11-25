@@ -1271,6 +1271,7 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 		if !shouldContinue {
 			result.Text = stepResult.Text
 			result.FinishReason = stepResult.FinishReason
+			result.StoppedBy = agentLoopStoppedBy(*stepResult)
 
 			// Call OnAgentFinish callback when agent reaches final answer
 			if a.config.OnAgentFinish != nil {
@@ -1305,6 +1306,7 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 			}
 			if reason := ai.EvaluateStopConditions(callConfig.StopWhen, state); reason != "" {
 				result.StopReason = reason
+				result.StoppedBy = ai.StoppedByStopCondition
 				result.Text = stepResult.Text
 				result.FinishReason = stepResult.FinishReason
 
@@ -1336,6 +1338,7 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 		// Check if we've hit max steps
 		if stepNum == a.config.MaxSteps {
 			result.Text = stepResult.Text
+			result.StoppedBy = ai.StoppedByStopCondition
 			result.FinishReason = types.FinishReasonLength
 			result.Warnings = append(result.Warnings, types.Warning{
 				Type:    "max_steps_reached",
@@ -3946,4 +3949,31 @@ func agentModelCallRequest(rawURL string) *ai.LanguageModelCallRequest {
 		return nil
 	}
 	return &ai.LanguageModelCallRequest{URL: origin}
+}
+
+// agentLoopStoppedBy says why the legacy loop stopped without a stop condition
+// (TS getPendingToolCallStoppedBy / getModelStoppedBy): an approval request
+// that waits for a user, a client tool call left without a result, or the
+// model.
+func agentLoopStoppedBy(step types.StepResult) ai.StoppedBy {
+	pendingApproval := false
+	for _, part := range step.Content {
+		switch p := part.(type) {
+		case types.ToolApprovalRequestContent:
+			pendingApproval = pendingApproval || !p.IsAutomatic
+		case *types.ToolApprovalRequestContent:
+			pendingApproval = pendingApproval || (p != nil && !p.IsAutomatic)
+		}
+	}
+	if pendingApproval {
+		return ai.StoppedByApproval
+	}
+	if step.FinishReason == types.FinishReasonToolCalls || step.FinishReason == types.FinishReasonStop {
+		for _, call := range step.ToolCalls {
+			if !call.ProviderExecuted {
+				return ai.StoppedByToolWithoutExecute
+			}
+		}
+	}
+	return ai.StoppedByModel
 }

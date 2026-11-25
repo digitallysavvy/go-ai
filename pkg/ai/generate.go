@@ -741,6 +741,12 @@ type GenerateTextResult struct {
 	// NoOutputGeneratedError on access).
 	Output any `json:"output,omitempty"`
 
+	// StoppedBy says why the tool loop stopped: the model, a stop condition,
+	// a tool without an Execute function, or a tool approval. Unlike
+	// FinishReason, which describes the last model call, it tells what ended
+	// the loop (TS stoppedBy). GenerateText always sets it.
+	StoppedBy StoppedBy `json:"stoppedBy,omitempty"`
+
 	// Tool calls made across all steps.
 	ToolCalls []types.ToolCall `json:"toolCalls"`
 
@@ -1014,6 +1020,8 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	// steeringEndReason says why waiting steering messages are not delivered
 	// when the loop ends.
 	steeringEndReason := SteeringFinished
+	// stoppedBy says why the tool loop ended (TS stoppedBy, 7760e33531).
+	stoppedBy := StoppedByModel
 
 	// openStep is the step that has started but not ended; it is reported to
 	// OnStepError when the call fails before the step produces a result.
@@ -2142,6 +2150,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			result.Text = stepResult.Text
 			result.FinishReason = stepResult.FinishReason
 			steeringEndReason = SteeringWaitingForToolResults
+			stoppedBy = pendingToolCallStoppedBy(result.Steps[len(result.Steps)-1])
 			break
 		}
 
@@ -2161,6 +2170,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		// left unexecuted because of an unsafe finish reason stop the loop.
 		if hasUnresolvedLocalToolCalls(genResult.ToolCalls, toolsByName, rawStepToolResults) {
 			steeringEndReason = SteeringWaitingForToolResults
+			stoppedBy = pendingToolCallStoppedBy(result.Steps[len(result.Steps)-1])
 			break
 		}
 		if !hasLocalToolCalls && !hasPendingDeferred {
@@ -2169,6 +2179,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			// task that was not cut off (TS generate-text.ts 984-992).
 			isTruncated := genResult.FinishReason == types.FinishReasonLength || genResult.FinishReason == types.FinishReasonContentFilter
 			if !steeringRun.hasPendingMessages() && (isTruncated || !steeringRun.promoteQueuedMessage()) {
+				stoppedBy = modelStoppedBy(result.Steps[len(result.Steps)-1])
 				break
 			}
 			if genResult.FinishReason == types.FinishReasonError {
@@ -2192,6 +2203,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				result.Text = lastStep.Text
 				result.FinishReason = lastStep.FinishReason
 				steeringEndReason = SteeringStopCondition
+				stoppedBy = StoppedByStopCondition
 				break
 			}
 		}
@@ -2206,6 +2218,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	}
 
 	steeringRun.end(steeringEndReason)
+	result.StoppedBy = stoppedBy
 
 	// Populate TotalUsage and final shortcuts before finish callbacks observe the result.
 	result.TotalUsage = result.Usage

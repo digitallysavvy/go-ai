@@ -58,6 +58,10 @@ type AgentResult struct {
 	// Final finish reason
 	FinishReason types.FinishReason
 
+	// StoppedBy says why the loop stopped: the model, a stop condition, a
+	// tool without an Execute function, or a tool approval (TS stoppedBy).
+	StoppedBy ai.StoppedBy
+
 	// StopReason is the reason string from the StopCondition that stopped the loop.
 	// Empty if the agent ended naturally or was not using custom stop conditions.
 	StopReason string
