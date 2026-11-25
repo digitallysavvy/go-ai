@@ -2,6 +2,7 @@ package claudecode_test
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"sync"
 	"testing"
@@ -162,5 +163,71 @@ func TestPortcarryharFailedAttachStopsRecordedBridgeBeforeRespawn(t *testing.T) 
 	}
 	if ts.SpawnCount() != 1 {
 		t.Fatalf("SpawnCount = %d, want 1", ts.SpawnCount())
+	}
+}
+
+// TS 31120c50b0 'preserves session ID from init events': the bridge's reduced
+// init raw event carries the session ID; a turn that never finishes still
+// records it, so detach puts it into the resume state. An init without a
+// usable ID (empty, or another event) records nothing.
+func TestPortcarryharInitRawEventRecordsSessionID(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  map[string]any
+		want string
+	}{
+		{"init with id", map[string]any{"type": "system", "subtype": "init", "sessionId": "claude-init-1"}, "claude-init-1"},
+		{"empty id", map[string]any{"type": "system", "subtype": "init", "sessionId": ""}, ""},
+		{"status event", map[string]any{"type": "system", "subtype": "status", "sessionId": "ignored"}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := bridgetest.NewServer(bridgetest.Options{PublicKey: claudecode.R91carryTestKeys.PublicKey, OnStart: func(turn *bridgetest.Turn, _ map[string]any) {
+				turn.Emit(map[string]any{"type": "stream-start"})
+				turn.Emit(map[string]any{"type": "raw", "rawValue": tc.raw})
+			}})
+			t.Cleanup(srv.Close)
+			sandbox := newTestSandbox(srv)
+			wireSpawn(sandbox)
+			h, err := claudecode.New(claudecode.Settings{StartupTimeout: 2 * time.Second})
+			if err != nil {
+				t.Fatal(err)
+			}
+			sess, err := h.DoStart(context.Background(), harness.StartOptions{SessionID: "s1", SandboxSession: sandbox, SessionWorkDir: "/workdir"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			sawRaw := make(chan struct{}, 1)
+			if _, err := sess.DoPromptTurn(context.Background(), harness.PromptTurnOptions{
+				Prompt: harness.TextPrompt("hi"),
+				Emit: func(p harness.StreamPart) {
+					if _, ok := p.(*harness.RawPart); ok {
+						select {
+						case sawRaw <- struct{}{}:
+						default:
+						}
+					}
+				},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-sawRaw:
+			case <-time.After(3 * time.Second):
+				t.Fatal("no raw event")
+			}
+			resume, err := sess.DoDetach(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			var data struct {
+				ClaudeSessionID string `json:"claudeSessionId"`
+			}
+			if err := json.Unmarshal(resume.Data, &data); err != nil {
+				t.Fatal(err)
+			}
+			if data.ClaudeSessionID != tc.want {
+				t.Fatalf("claudeSessionId = %q, want %q", data.ClaudeSessionID, tc.want)
+			}
+		})
 	}
 }
