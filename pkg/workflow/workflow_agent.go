@@ -1000,6 +1000,7 @@ type workflowApprovalResumeOptions struct {
 	experimentalSandbox interface{}
 	toolApprovalSecret  []byte
 	toolApproval        types.ToolApprovalConfig
+	refineToolInput     map[string]ai.ToolInputRefiner
 	onToolStart         ToolExecutionStartCallback
 	onToolEnd           ToolExecutionEndCallback
 	// telemetrySettings, when set, dispatches each approved tool's execution
@@ -1113,6 +1114,7 @@ func processWorkflowApprovalResume(ctx context.Context, opts workflowApprovalRes
 			ToolsContext:          opts.toolsContext,
 			RuntimeContext:        opts.runtimeContext,
 			ToolApprovalSecret:    opts.toolApprovalSecret,
+			RefineToolInput:       opts.refineToolInput,
 		})
 		// TS getErrorMessage: an error renders as its toString(),
 		// "<name>: <message>".
@@ -2328,13 +2330,7 @@ func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenera
 	if ovr.ExperimentalSandbox != nil {
 		sandbox = ovr.ExperimentalSandbox
 	}
-	refineToolInput := w.ExperimentalRefineToolInput
-	if govr.ExperimentalRefineToolInput != nil {
-		refineToolInput = govr.ExperimentalRefineToolInput
-	}
-	if ovr.ExperimentalRefineToolInput != nil {
-		refineToolInput = ovr.ExperimentalRefineToolInput
-	}
+	refineToolInput := w.effectiveRefineToolInput(ovr, govr)
 	repairToolCall := w.RepairToolCall
 	if repairToolCall == nil {
 		repairToolCall = w.ExperimentalRepairToolCall
@@ -2752,6 +2748,20 @@ func withFinishReasonStop(conditions []ai.StopCondition) []ai.StopCondition {
 }
 
 // effectiveToolApproval is TS `options.toolApproval ?? this.toolApproval`.
+// effectiveRefineToolInput is the call's experimental_refineToolInput, else the
+// agent's. The same refiners run when an approved call is revalidated on resume
+// (TS 9307549d51: the approved input is the refined input).
+func (w *WorkflowAgent) effectiveRefineToolInput(ovr WorkflowStreamOptions, govr WorkflowGenerateOptions) map[string]ai.ToolInputRefiner {
+	refine := w.ExperimentalRefineToolInput
+	if govr.ExperimentalRefineToolInput != nil {
+		refine = govr.ExperimentalRefineToolInput
+	}
+	if ovr.ExperimentalRefineToolInput != nil {
+		refine = ovr.ExperimentalRefineToolInput
+	}
+	return refine
+}
+
 func (w *WorkflowAgent) effectiveToolApproval(ovr WorkflowStreamOptions, govr WorkflowGenerateOptions) types.ToolApprovalConfig {
 	if ovr.ToolApproval != nil {
 		return ovr.ToolApproval
@@ -2950,6 +2960,7 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 		experimentalSandbox: sandbox,
 		toolApprovalSecret:  w.effectiveToolApprovalSecret(WorkflowStreamOptions{}, opts),
 		toolApproval:        w.effectiveToolApproval(WorkflowStreamOptions{}, opts),
+		refineToolInput:     w.effectiveRefineToolInput(WorkflowStreamOptions{}, opts),
 		onToolStart:         mergeToolStart(w.OnToolExecutionStart, opts.OnToolExecutionStart),
 		onToolEnd:           mergeToolEnd(w.OnToolExecutionEnd, opts.OnToolExecutionEnd),
 		telemetrySettings:   telemetrySettings,
@@ -3237,6 +3248,7 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 		experimentalSandbox: sandbox,
 		toolApprovalSecret:  w.effectiveToolApprovalSecret(opts, WorkflowGenerateOptions{}),
 		toolApproval:        w.effectiveToolApproval(opts, WorkflowGenerateOptions{}),
+		refineToolInput:     w.effectiveRefineToolInput(opts, WorkflowGenerateOptions{}),
 		onToolStart:         mergeToolStart(w.OnToolExecutionStart, opts.OnToolExecutionStart),
 		onToolEnd:           mergeToolEnd(w.OnToolExecutionEnd, opts.OnToolExecutionEnd),
 		telemetrySettings:   telemetrySettings,
