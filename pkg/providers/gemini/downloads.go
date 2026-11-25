@@ -14,11 +14,17 @@ import (
 // remote tool-result files (TS toolResultDownloads.maxBytes default, 7 MiB).
 const DefaultToolResultDownloadMaxBytes = 7 * 1024 * 1024
 
-func defaultToolResultDownload(ctx context.Context, url string, maxBytes int64) ([]byte, string, error) {
-	opts := fileutil.DefaultDownloadOptions()
+// toolResultDownloadOptions is TS downloadBlob
+// (google/src/download-tool-result-files.ts:124): no timeout and no SDK
+// user-agent tag (downloadBlob sends no headers).
+func toolResultDownloadOptions(maxBytes int64) fileutil.DownloadOptions {
+	opts := fileutil.NoTimeoutDownloadOptions()
 	opts.MaxSize = maxBytes
-	opts.Timeout = fileutil.NoTimeout // TS download sets no timeout
-	res, err := fileutil.DownloadWithMetadata(ctx, url, opts)
+	return opts
+}
+
+func defaultToolResultDownload(ctx context.Context, url string, maxBytes int64) ([]byte, string, error) {
+	res, err := fileutil.DownloadWithMetadata(ctx, url, toolResultDownloadOptions(maxBytes))
 	if err != nil {
 		return nil, "", err
 	}
