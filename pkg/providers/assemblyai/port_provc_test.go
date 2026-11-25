@@ -544,3 +544,18 @@ func TestPortProvcTranscriptionInvalidBase64FailsBeforeUpload(t *testing.T) {
 		t.Fatalf("upload happened: %v", s.upload)
 	}
 }
+
+// The v0.5.2 constants still compile (deprecated) and reach the wire as
+// given, with no Go-side special case.
+func TestPortProvcDeprecatedModelConstantsReachTheWire(t *testing.T) {
+	for _, id := range []string{ModelBest, ModelUniversal3Pro} { //nolint:staticcheck // deprecated on purpose
+		s := portprovcTranscriptionSetup(t)
+		portprovcTranscribe(t, s, id, nil)
+		if !reflect.DeepEqual(s.submit["speech_models"], []interface{}{id}) {
+			t.Fatalf("%s: submit = %v", id, s.submit)
+		}
+	}
+	if ModelBest != "best" || ModelUniversal3Pro != "universal-3-pro" { //nolint:staticcheck // deprecated on purpose
+		t.Fatal("constant values changed")
+	}
+}

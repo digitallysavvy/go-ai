@@ -18,6 +18,20 @@ const (
 	// ModelUniversal35Pro is deprecated in favor of ModelAssemblyAISTT37.
 	ModelUniversal35Pro = "universal-3-5-pro"
 
+	// ModelBest is the legacy default model ID of v0.5.2. AssemblyAI no
+	// longer accepts it; the ID is sent as given and the API reports the
+	// error.
+	//
+	// Deprecated: use ModelAssemblyAISTT37.
+	ModelBest = "best"
+
+	// ModelUniversal3Pro is the universal-3-pro model ID of v0.5.2. AssemblyAI
+	// no longer lists it; the ID is sent as given and the API reports any
+	// error.
+	//
+	// Deprecated: use ModelAssemblyAISTT37.
+	ModelUniversal3Pro = "universal-3-pro"
+
 	// SpeechModelTTS1 is AssemblyAI's text-to-speech model.
 	SpeechModelTTS1 = "assemblyai-tts-1"
 )
