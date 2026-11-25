@@ -73,3 +73,66 @@ func TestPortToolsSessionRunBoundedAbortedBeforeStart(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// TS 8956ca55ed (vercel-sandbox.test.ts "names the template with templateName
+// and the fork with its live name", "keeps the derived template name when
+// templateName is absent", "ignores templateName when there is no template").
+func TestPortToolsTemplateNameNamesTemplateAndLiveSandbox(t *testing.T) {
+	f := newFakeServer()
+	defer f.Close()
+	f.snapshotOnStop = true
+	prepared := 0
+	template := &Template{Identity: "recipe-one", Prepare: func(context.Context, providerutils.SandboxSession) error {
+		prepared++
+		return nil
+	}}
+	create := func(opts CreateSessionOptions) {
+		opts.Credentials, opts.BaseURL, opts.Runtime, opts.Template, opts.TemplateName = testCreds(), f.URL(), "node24", template, "app-template"
+		if _, err := CreateNetworkSandboxSession(context.Background(), opts); err != nil {
+			t.Fatal(err)
+		}
+	}
+	create(CreateSessionOptions{SandboxID: "live-sandbox-id"})
+	create(CreateSessionOptions{Name: "live-name"})
+
+	var names []string
+	for _, req := range f.createRequests {
+		names = append(names, req.Name)
+	}
+	if got := strings.Join(names, ","); got != "app-template,live-sandbox-id,live-name" {
+		t.Fatalf("created sandboxes = %s", got)
+	}
+	if prepared != 1 {
+		t.Fatalf("prepared %d times, want once (second call reuses the named template)", prepared)
+	}
+}
+
+func TestPortToolsTemplateNameAbsentKeepsDerivedName(t *testing.T) {
+	f := newFakeServer()
+	defer f.Close()
+	f.snapshotOnStop = true
+	_, err := CreateNetworkSandboxSession(context.Background(), CreateSessionOptions{
+		Credentials: testCreds(), BaseURL: f.URL(), Runtime: "node24", SandboxID: "live",
+		Template: &Template{Identity: "recipe-one", Prepare: func(context.Context, providerutils.SandboxSession) error { return nil }},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.createRequests) < 1 || !strings.HasPrefix(f.createRequests[0].Name, "ai-sdk-harness-v3-") {
+		t.Fatalf("requests = %#v", f.createRequests)
+	}
+}
+
+func TestPortToolsTemplateNameIgnoredWithoutTemplate(t *testing.T) {
+	f := newFakeServer()
+	defer f.Close()
+	_, err := CreateNetworkSandboxSession(context.Background(), CreateSessionOptions{
+		Credentials: testCreds(), BaseURL: f.URL(), Runtime: "node24", SandboxID: "live-name", TemplateName: "app-template",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.createRequests) != 1 || f.createRequests[0].Name != "live-name" {
+		t.Fatalf("requests = %#v", f.createRequests)
+	}
+}
