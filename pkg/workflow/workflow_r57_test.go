@@ -48,20 +48,24 @@ func (m *r57UAModel) DoStream(ctx context.Context, o *provider.GenerateOptions) 
 }
 
 // TS appends the ai-sdk-agent/workflow user-agent suffix to the call's
-// generation settings before the loop; a prepareStep that returns headers
-// replaces them (mergePrepareStepGenerationSettings), so the suffix is gone
-// from that step on. A hook that leaves the headers alone keeps it.
-func TestWorkflowPrepareStepHeadersOverrideDropsUserAgentSuffix(t *testing.T) {
+// generation settings before the loop; headers a prepareStep returns are
+// merged over them for that step only (mergePrepareStepHeaders, TS
+// f6809e38ef), so the suffix stays unless the hook sets its own user-agent,
+// which gets the suffix again.
+func TestWorkflowPrepareStepHeadersMergeOverCallHeaders(t *testing.T) {
 	cases := []struct {
 		name     string
 		override int // step whose hook replaces the headers; -1 for none
 		inPlace  bool
-		want     string
+		// userAgent makes the hook return its own user-agent too.
+		userAgent bool
+		want      string
 	}{
 		{name: "no override", override: -1, want: "ua/ ua/"},
-		{name: "step 0 override", override: 0, want: "-/1 -/1"},
-		{name: "step 1 override", override: 1, want: "ua/ -/1"},
-		{name: "step 0 in-place edit", override: 0, inPlace: true, want: "-/1 -/1"},
+		{name: "step 0 override", override: 0, want: "ua/1 ua/"},
+		{name: "step 1 override", override: 1, want: "ua/ ua/1"},
+		{name: "step 0 in-place edit", override: 0, inPlace: true, want: "ua/1 ua/"},
+		{name: "step 0 user-agent", override: 0, userAgent: true, want: "mine/1 ai-sdk-agent/workflow/1 ua/"},
 	}
 	for _, tc := range cases {
 		for _, stream := range []bool{false, true} {
@@ -75,6 +79,9 @@ func TestWorkflowPrepareStepHeadersOverrideDropsUserAgentSuffix(t *testing.T) {
 								o.Headers["x-h"] = "1"
 							} else {
 								o.Headers = map[string]string{"x-h": "1"}
+							}
+							if tc.userAgent {
+								o.Headers["user-agent"] = "mine/1"
 							}
 						}
 						return o, nil

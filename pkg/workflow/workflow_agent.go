@@ -1887,7 +1887,8 @@ func (w *WorkflowAgent) makePrepareCall(pctx prepareCallContext, stepsInline boo
 		if callActive == nil {
 			callActive = pctx.activeTools
 		}
-		headersOverridden := false
+		var stepHeaders map[string]string
+		haveStepHeaders := false
 		if stepsInline && stepHook != nil {
 			opts = persist.apply(opts)
 			opts.Headers = maps.Clone(opts.Headers)
@@ -1897,7 +1898,8 @@ func (w *WorkflowAgent) makePrepareCall(pctx prepareCallContext, stepsInline boo
 				return failStep(err)
 			}
 			mutated = keepUnsetHookFields(opts, mutated)
-			headersOverridden = persist.record(opts, mutated, inHeaders)
+			persist.record(opts, mutated)
+			stepHeaders, haveStepHeaders = workflowMergeStepHeaders(inHeaders, mutated.Headers), true
 			opts = mutated
 		}
 		if opts.Model != nil {
@@ -1916,7 +1918,11 @@ func (w *WorkflowAgent) makePrepareCall(pctx prepareCallContext, stepsInline boo
 		}
 		c.Temperature, c.MaxTokens, c.TopP, c.TopK = opts.Temperature, opts.MaxTokens, opts.TopP, opts.TopK
 		c.FrequencyPenalty, c.PresencePenalty, c.StopSequences, c.Seed = opts.FrequencyPenalty, opts.PresencePenalty, opts.StopSequences, opts.Seed
-		c.Headers, c.Reasoning, c.SendReasoning, c.ProviderOptions = workflowStepHeaders(opts.Headers, headersOverridden), opts.Reasoning, opts.SendReasoning, opts.ProviderOptions
+		callHeaders := stepHeaders
+		if !haveStepHeaders {
+			callHeaders = workflowStepHeaders(opts.Headers)
+		}
+		c.Headers, c.Reasoning, c.SendReasoning, c.ProviderOptions = callHeaders, opts.Reasoning, opts.SendReasoning, opts.ProviderOptions
 		c.RuntimeContext, c.ToolsContext, c.ExperimentalSandbox, c.CustomData = opts.RuntimeContext, opts.ToolsContext, opts.ExperimentalSandbox, opts.CustomData
 		c.StopWhen, c.ExperimentalDownload, c.MaxRetries, c.Timeout = withFinishReasonStop(opts.StopWhen), opts.ExperimentalDownload, opts.MaxRetries, opts.Timeout
 		if w.FilterActiveTools != nil {
@@ -1947,22 +1953,40 @@ type stepPersistence struct {
 	mu   sync.Mutex
 	set  bool
 	last LanguageModelCallOptions
-	// headersOverridden records that a PrepareStep hook replaced the headers
-	// (see record); it stays set for the rest of the run.
-	headersOverridden bool
 }
 
 // workflowStepHeaders returns the headers for a step's model call: the
-// call's headers tagged with the ai-sdk-agent/workflow user-agent suffix, or,
-// once a PrepareStep hook replaced them, the hook's headers as they are. TS
-// appends the suffix to the call's generation settings before the loop, and
-// mergePrepareStepGenerationSettings then replaces the headers with the
-// hook's, so the suffix is gone after an override.
-func workflowStepHeaders(headers map[string]string, overridden bool) map[string]string {
-	if overridden {
-		return headers
-	}
+// call's headers tagged with the ai-sdk-agent/workflow user-agent suffix.
+func workflowStepHeaders(headers map[string]string) map[string]string {
 	return version.WithUserAgentSuffix(headers, "ai-sdk-agent/workflow")
+}
+
+// workflowMergeStepHeaders is TS mergePrepareStepHeaders (f6809e38ef): the
+// headers a PrepareStep hook changed (entries it added or whose value differs
+// from the headers it was given) are merged over the call's tagged headers,
+// for that step only. A user-agent the hook sets replaces the call value and
+// gets the agent suffix again, so usage stays attributed to WorkflowAgent.
+func workflowMergeStepHeaders(in, out map[string]string) map[string]string {
+	merged := workflowStepHeaders(in)
+	setsUserAgent := false
+	for k, v := range out {
+		if old, ok := in[k]; ok && old == v {
+			continue
+		}
+		for existing := range merged {
+			if strings.EqualFold(existing, k) {
+				delete(merged, existing)
+			}
+		}
+		merged[k] = v
+		if strings.EqualFold(k, "user-agent") {
+			setsUserAgent = true
+		}
+	}
+	if setsUserAgent {
+		merged = version.WithUserAgentSuffix(merged, "ai-sdk-agent/workflow")
+	}
+	return merged
 }
 
 // keepUnsetHookFields returns a hook's result with every field it left nil
@@ -2073,15 +2097,11 @@ func (p *stepPersistence) apply(opts LanguageModelCallOptions) LanguageModelCall
 	if !p.set {
 		return opts
 	}
+	// Only the instructions and the contexts carry into later steps; the
+	// model, tool choice, active tools and generation settings apply to one
+	// step only, as in core (TS ec23d2d15c, f6809e38ef).
 	l := p.last
-	if l.Model != nil {
-		opts.Model = l.Model
-	}
 	opts.System, opts.InstructionMessages = l.System, l.InstructionMessages
-	opts.Temperature, opts.MaxTokens, opts.TopP, opts.TopK = l.Temperature, l.MaxTokens, l.TopP, l.TopK
-	opts.FrequencyPenalty, opts.PresencePenalty, opts.StopSequences, opts.Seed = l.FrequencyPenalty, l.PresencePenalty, l.StopSequences, l.Seed
-	opts.MaxRetries, opts.Headers, opts.Reasoning, opts.ProviderOptions = l.MaxRetries, l.Headers, l.Reasoning, l.ProviderOptions
-	opts.ToolChoice, opts.ActiveTools = l.ToolChoice, l.ActiveTools
 	opts.RuntimeContext, opts.ToolsContext = l.RuntimeContext, l.ToolsContext
 	return opts
 }
@@ -2092,19 +2112,14 @@ func (p *stepPersistence) apply(opts LanguageModelCallOptions) LanguageModelCall
 // other headers replaced them (TS prepareStep `headers`, which drops the
 // user-agent suffix). It returns whether the headers were replaced in this or
 // an earlier step.
-func (p *stepPersistence) record(in, out LanguageModelCallOptions, inHeaders map[string]string) bool {
-	changed := !reflect.DeepEqual(inHeaders, out.Headers)
+func (p *stepPersistence) record(in, out LanguageModelCallOptions) {
 	if p == nil {
-		return changed
+		return
 	}
 	out.System, out.InstructionMessages, _ = resolveInstructionChange(in.System, in.InstructionMessages, out.System, out.InstructionMessages)
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.set, p.last = true, out
-	if changed {
-		p.headersOverridden = true
-	}
-	return p.headersOverridden
 }
 
 // stepCallSettings hands the headers and maxRetries a PrepareStep hook left
@@ -2191,8 +2206,8 @@ func (w *WorkflowAgent) makePrepareStep(pctx prepareCallContext, allTools []type
 			return o
 		}
 		mutated = keepUnsetHookFields(opts, mutated)
-		overridden := persist.record(opts, mutated, inHeaders)
-		settings.put(workflowStepHeaders(mutated.Headers, overridden), mutated.MaxRetries)
+		persist.record(opts, mutated)
+		settings.put(workflowMergeStepHeaders(inHeaders, mutated.Headers), mutated.MaxRetries)
 		if mutated.Model != nil {
 			o.Model = mutated.Model
 		}

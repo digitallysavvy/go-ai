@@ -103,10 +103,9 @@ func (m *r55OptsModel) DoStream(ctx context.Context, o *provider.GenerateOptions
 	return m.scriptedModel.DoStream(ctx, o)
 }
 
-// TS's iterator keeps prepareStep's model, instructions and generation
-// settings for the following steps (currentModel, conversationPrompt[0],
-// currentGenerationSettings). Go reset them each step (generate) or kept only
-// the model and instructions (stream).
+// TS's iterator keeps prepareStep's instructions (conversationPrompt[0]) for
+// the following steps, but the model and the generation settings apply to one
+// step only, as in core (TS ec23d2d15c).
 func TestWorkflowPrepareStepOverridesPersistToLaterSteps(t *testing.T) {
 	for _, stream := range []bool{false, true} {
 		name := "generate"
@@ -154,10 +153,10 @@ func TestWorkflowPrepareStepOverridesPersistToLaterSteps(t *testing.T) {
 			}
 			mu.Lock()
 			defer mu.Unlock()
-			if have, want := strings.Join(log, " | "), "B temp=0.5 sys=Step sys. | B temp=0.5 sys=Step sys."; have != want {
+			if have, want := strings.Join(log, " | "), "B temp=0.5 sys=Step sys. | A temp=nil sys=Step sys. | A temp=nil sys=Step sys."; have != want {
 				t.Fatalf("model calls = %q, want %q", have, want)
 			}
-			if have, want := strings.Join(hookTemps, ","), "nil,0.5"; have != want {
+			if have, want := strings.Join(hookTemps, ","), "nil,nil,nil"; have != want {
 				t.Fatalf("hook temperatures = %q, want %q", have, want)
 			}
 		})

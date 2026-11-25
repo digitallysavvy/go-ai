@@ -30,8 +30,10 @@ func TestWorkflowPrepareStepEveryPersistedValueReachesNextStep(t *testing.T) {
 				o.ToolChoice, o.ActiveTools = types.ToolChoice{Type: types.ToolChoiceType("auto")}, []string{"t"}
 				o.RuntimeContext, o.ToolsContext = "rc", map[string]interface{}{"t": "tc"}
 			}
+			// Only the contexts carry into the next step; every other
+			// override applies to one step (TS ec23d2d15c, f6809e38ef).
 			var want LanguageModelCallOptions
-			set(&want)
+			want.RuntimeContext, want.ToolsContext = "rc", map[string]interface{}{"t": "tc"}
 			describe := func(o LanguageModelCallOptions) string {
 				deref := func(p interface{}) interface{} {
 					v := reflect.ValueOf(p)

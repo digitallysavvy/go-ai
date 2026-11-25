@@ -17,14 +17,16 @@ func TestWorkflowPrepareHooksCanOverrideTheModel(t *testing.T) {
 			t.Run(name, func(t *testing.T) {
 				base, alt := &wfMockModel{}, &wfMockModel{}
 				hook := func(_ context.Context, o LanguageModelCallOptions) (LanguageModelCallOptions, error) {
-					// Later steps start from the override: TS's iterator keeps
-					// currentModel across steps.
-					if want := interface{}(base); o.StepNumber > 0 {
+					// A prepareCall model runs the whole call, so later steps
+					// start from it. A prepareStep model applies to that step
+					// only (TS ec23d2d15c): later steps start from the call's
+					// model again.
+					if want := interface{}(base); o.StepNumber > 0 && hookName == "prepareCall" {
 						if o.Model != alt {
 							t.Errorf("step %d hook saw model %v, want the override", o.StepNumber, o.Model)
 						}
 					} else if o.Model != want {
-						t.Errorf("hook saw model %v, want the agent model", o.Model)
+						t.Errorf("step %d hook saw model %v, want the agent model", o.StepNumber, o.Model)
 					}
 					o.Model = alt
 					return o, nil
@@ -49,6 +51,14 @@ func TestWorkflowPrepareHooksCanOverrideTheModel(t *testing.T) {
 					}
 				} else if _, err := w.GenerateWithOptions(context.Background(), WorkflowGenerateOptions{Prompt: "hi"}); err != nil {
 					t.Fatal(err)
+				}
+				if hookName == "prepareStep" {
+					// The override runs the first step only; the hook returns it
+					// for every step here, so each step runs on alt.
+					if len(alt.opts) == 0 {
+						t.Fatalf("alt model calls = %d, base model calls = %d; want the override to run the step", len(alt.opts), len(base.opts))
+					}
+					return
 				}
 				if len(alt.opts) == 0 || len(base.opts) != 0 {
 					t.Fatalf("alt model calls = %d, base model calls = %d; want the override to run the step", len(alt.opts), len(base.opts))
