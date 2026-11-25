@@ -45,12 +45,16 @@ func xaiSchema(s string) map[string]interface{} {
 	return out
 }
 
-// The tool schemas below are the TS xai tool schemas (packages/xai/src/tool/*.ts at 30548ee7f9, unchanged since e64ed82f27) as zod toJSONSchema
+// The tool schemas below are the TS xai tool schemas (packages/xai/src/tool/*.ts at a457990a33; x_search and mcp take a loose input object since 61ce23efab / 6f56c29ff6) as zod toJSONSchema
 // renders them (target draft-7, io "input", reused "inline"). Provider tool
 // calls are validated against the input schema and ValidateUIMessages checks
 // tool outputs against the output schema.
 const (
 	xaiEmptyInputSchemaJSON = `{"type":"object","properties":{}}`
+
+	// xaiLooseInputSchemaJSON is z.looseObject({}) (x_search and mcp, TS 61ce23efab
+	// and 6f56c29ff6): the model's tool-call input keeps its keys.
+	xaiLooseInputSchemaJSON = `{"type":"object","properties":{},"additionalProperties":{}}`
 
 	xaiNoInputSchemaJSON = `{"type":"object","properties":{},"description":"no input parameters"}`
 

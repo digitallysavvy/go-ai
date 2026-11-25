@@ -11,8 +11,8 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 )
 
-// r72provTSSchemas: TS zod schemas of xai.mcp, xai.file_search at e64ed82f27.
-const r72provTSSchemas = `{"xai.mcp":{"input":{"type":"object","properties":{}},"output":{"type":"object","properties":{"name":{"type":"string"},"arguments":{"type":"string"},"result":{}},"required":["name","arguments","result"]}},"xai.file_search":{"input":{"type":"object","properties":{}},"output":{"type":"object","properties":{"queries":{"type":"array","items":{"type":"string"}},"results":{"anyOf":[{"type":"array","items":{"type":"object","properties":{"fileId":{"type":"string"},"filename":{"type":"string"},"score":{"type":"number","minimum":0,"maximum":1},"text":{"type":"string"}},"required":["fileId","filename","score","text"]}},{"type":"null"}]}},"required":["queries","results"]}}}`
+// r72provTSSchemas: TS zod schemas of xai.mcp, xai.file_search at a457990a33 (mcp input is z.looseObject({}), 6f56c29ff6).
+const r72provTSSchemas = `{"xai.mcp":{"input":{"type":"object","properties":{},"additionalProperties":{}},"output":{"type":"object","properties":{"name":{"type":"string"},"arguments":{"type":"string"},"result":{}},"required":["name","arguments","result"]}},"xai.file_search":{"input":{"type":"object","properties":{}},"output":{"type":"object","properties":{"queries":{"type":"array","items":{"type":"string"}},"results":{"anyOf":[{"type":"array","items":{"type":"object","properties":{"fileId":{"type":"string"},"filename":{"type":"string"},"score":{"type":"number","minimum":0,"maximum":1},"text":{"type":"string"}},"required":["fileId","filename","score","text"]}},{"type":"null"}]}},"required":["queries","results"]}}}`
 
 // r72provNormalize round-trips v through JSON, drops "description" (the
 // provider tool descriptions are not part of validation) and sorts

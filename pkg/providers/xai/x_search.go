@@ -54,7 +54,7 @@ func XSearch(config XSearchConfig) types.Tool {
 	return xaiProviderTool(types.Tool{
 		Name:             "xai.x_search",
 		Description:      "Search X (Twitter) posts for current information.",
-		Parameters:       xaiSchema(xaiEmptyInputSchemaJSON),
+		Parameters:       xaiSchema(xaiLooseInputSchemaJSON),
 		OutputSchema:     xaiSchema(xaiXSearchOutputSchemaJSON),
 		ProviderExecuted: true,
 		ProviderOptions:  config,

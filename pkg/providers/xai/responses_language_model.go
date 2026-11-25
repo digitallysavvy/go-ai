@@ -2086,7 +2086,7 @@ func isXAIProviderExecutedItem(t string) bool {
 // provider-executed output items (web/x search, code execution, file search,
 // image generation, custom and MCP tools): on the first sighting of an item
 // it streams tool-input-start / delta / end followed by the tool-call, and on
-// done it adds the tool-result. custom_tool_call is only emitted on done.
+// done it adds the tool-result. custom_tool_call and mcp_call are only emitted on done.
 func (s *xaiResponsesStream) queueProviderExecutedItem(itemType string, raw json.RawMessage, done bool) {
 	var item struct {
 		ID        string          `json:"id"`
@@ -2132,7 +2132,9 @@ func (s *xaiResponsesStream) queueProviderExecutedItem(itemType string, raw json
 		}
 	}
 	emit := !s.seenToolCalls[item.ID]
-	if itemType == "custom_tool_call" {
+	// TS 6f56c29ff6: an mcp_call, like a custom_tool_call, is emitted when
+	// it is done, so the tool call carries its arguments.
+	if itemType == "custom_tool_call" || itemType == "mcp_call" {
 		emit = emit && done
 	}
 	if emit {
