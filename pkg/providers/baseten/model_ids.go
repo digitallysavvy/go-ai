@@ -14,3 +14,13 @@ const (
 	ModelGLM46                      = "zai-org/GLM-4.6"
 	ModelGLM47                      = "zai-org/GLM-4.7"
 )
+
+// Baseten Model APIs decision model IDs (TS BasetenModelIds['decision'],
+// baseten-model-catalog.ts). DecisionModel accepts any other string too.
+const (
+	DecisionModelBisonLatest      = "decision-models/baseten-bison-latest"
+	DecisionModelGroundhogLatest  = "decision-models/baseten-groundhog-latest"
+	DecisionModelMammoth27BLatest = "decision-models/baseten-mammoth-27b-latest"
+	DecisionModelElephant9BLatest = "decision-models/baseten-elephant-9b-latest"
+	DecisionModelJoey2BLatest     = "decision-models/baseten-joey-2b-latest"
+)

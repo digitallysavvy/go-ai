@@ -10,6 +10,32 @@ import (
 func init() {
 	provider.RegisterModelDeserializer("baseten.chat", deserializeModel)
 	provider.RegisterEmbeddingModelDeserializer("baseten.embedding", deserializeEmbeddingModel)
+	provider.RegisterDecisionModelDeserializer(decisionProviderName, deserializeDecisionModel)
+}
+
+// Serialize implements provider.SerializableModel for workflow boundaries.
+// Mirrors TS baseten-decision-model.ts [WORKFLOW_SERIALIZE]: the endpoint
+// (the Model APIs base URL) and the static headers; the API key and any
+// authorization header are not serialized, so a restored model resolves the
+// key from BASETEN_API_KEY.
+func (m *DecisionModel) Serialize() provider.SerializedModel {
+	return provider.SerializedModel{
+		Provider: m.Provider(),
+		ModelID:  m.ModelID(),
+		Config:   provider.SerializableConfig(Config{BaseURL: m.provider.decisionBaseURL, Headers: m.provider.headers}),
+	}
+}
+
+func deserializeDecisionModel(serialized provider.SerializedModel) (provider.DecisionModel, error) {
+	var cfg Config
+	data, err := json.Marshal(serialized.Config)
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil, err
+	}
+	return New(Config{BaseURL: cfg.BaseURL, Headers: cfg.Headers}).DecisionModel(serialized.ModelID)
 }
 
 // deserializeModel restores a serialized Baseten chat model.
