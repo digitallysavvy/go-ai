@@ -205,8 +205,9 @@ func FireOnExtractionModelCallEnd(ctx context.Context, e ExtractionModelCallEndE
 	}
 }
 
-// redactFileLocations is TS redactFileLocations: in a state that is a list
-// of parts, every file part whose data is a location (a URL that is not a
+// redactFileLocations is TS redactFileLocations (with 797dc0254e): in a state
+// that is a list of parts, every file part loses its provider options and
+// every file part whose data is a location (a URL that is not a
 // data: URL, or a provider reference) gets its data replaced by
 // "[redacted]". Any other state is returned as is. state itself is never
 // modified.
@@ -238,18 +239,23 @@ func redactFileLocations(state interface{}) interface{} {
 			continue
 		}
 		file, _ := part.FieldByName("File").Interface().(*types.FileContent)
-		if file == nil || !isFileLocation(file) {
+		location := file != nil && isFileLocation(file)
+		if file == nil || (!location && file.ProviderOptions == nil) {
 			continue
 		}
 		if !out.IsValid() {
 			out = reflect.MakeSlice(v.Type(), v.Len(), v.Len())
 			reflect.Copy(out, v)
 		}
+		// TS 797dc0254e: part-level provider options never reach telemetry.
 		redacted := *file
-		redacted.URL = ""
-		redacted.Data = nil
-		redacted.Text = ""
-		redacted.FileData = types.FileData{Type: types.FileDataTypeData, DataString: redactedToolValue, MediaType: file.FileData.MediaType}
+		redacted.ProviderOptions = nil
+		if location {
+			redacted.URL = ""
+			redacted.Data = nil
+			redacted.Text = ""
+			redacted.FileData = types.FileData{Type: types.FileDataTypeData, DataString: redactedToolValue, MediaType: file.FileData.MediaType}
+		}
 		cp := reflect.New(elem).Elem()
 		cp.Set(part)
 		cp.FieldByName("File").Set(reflect.ValueOf(&redacted))

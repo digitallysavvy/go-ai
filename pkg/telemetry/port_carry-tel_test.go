@@ -231,3 +231,112 @@ func TestPortcarrytelRedactionKeepsBodyWithoutCredentials(t *testing.T) {
 		t.Errorf("body is not the caller's value")
 	}
 }
+
+type portcarrytelBodyEvent struct {
+	Request  *portcarrytelBody
+	Response *portcarrytelBody
+}
+
+type portcarrytelBody struct {
+	Body interface{}
+}
+
+func portcarrytelRedactBody(t *testing.T, body interface{}) interface{} {
+	t.Helper()
+	return redactCredentials(portcarrytelBodyEvent{Request: &portcarrytelBody{Body: body}}).Request.Body
+}
+
+// TS b0fccbda62 (provg CR): the Interactions wire tool in a request body and
+// Google MCP tools in Tools lose header values; header-less ones are as given.
+func TestPortcarrytelGoogleMCPWireAndToolsRedacted(t *testing.T) {
+	body := map[string]interface{}{"tools": []interface{}{
+		map[string]interface{}{"type": "mcp_server", "headers": map[string]interface{}{"A": "secret", "B": "secret"}},
+		map[string]interface{}{"type": "google_search"},
+	}}
+	before := r88carryJSON(t, body)
+	got := r88carryJSON(t, portcarrytelRedactBody(t, body))
+	if strings.Contains(got, "secret") || strings.Count(got, "[redacted]") != 2 || !strings.Contains(got, "google_search") {
+		t.Errorf("got %s", got)
+	}
+	if r88carryJSON(t, body) != before {
+		t.Errorf("body mutated")
+	}
+	plain := map[string]interface{}{"tools": []interface{}{map[string]interface{}{"type": "mcp_server", "url": "u"}}}
+	if out := portcarrytelRedactBody(t, plain); r88carryJSON(t, out) != r88carryJSON(t, plain) {
+		t.Errorf("header-less wire tool changed: %v", out)
+	}
+	tools := []types.Tool{{Type: types.ToolTypeProviderDefined, Name: "c", ProviderID: "google.mcp_server",
+		ProviderArgs: map[string]interface{}{"name": "m", "headers": map[string]string{"Authorization": "Bearer secret"}}}}
+	redacted := redactCredentials(TelemetryStepStartEvent{StepTools: tools}).StepTools
+	if strings.Contains(r88carryJSON(t, redacted[0].ProviderArgs), "secret") {
+		t.Errorf("tool args leak: %v", redacted[0].ProviderArgs)
+	}
+	if tools[0].ProviderArgs["headers"].(map[string]string)["Authorization"] != "Bearer secret" {
+		t.Errorf("tool args mutated")
+	}
+}
+
+// TS 83026e8e0f gateway-byok-telemetry / redact-gateway-request-credentials
+// tests: BYOK values are redacted in single and batch bodies, JSON text
+// included; names, shape and unrelated options stay.
+func TestPortcarrytelGatewayByokRedacted(t *testing.T) {
+	body := map[string]interface{}{"prompt": "p", "providerOptions": map[string]interface{}{
+		"gateway": map[string]interface{}{"order": []interface{}{"a"}, "byok": map[string]interface{}{
+			"anthropic": []interface{}{map[string]interface{}{"apiKey": "secret"}},
+			"bedrock":   []interface{}{map[string]interface{}{"accessKeyId": "secret"}}}},
+		"openai": map[string]interface{}{"x": "keep"}}}
+	before := r88carryJSON(t, body)
+	got := r88carryJSON(t, portcarrytelRedactBody(t, body))
+	want := `{"prompt":"p","providerOptions":{"gateway":{"byok":{"anthropic":[{"apiKey":"[redacted]"}],"bedrock":[{"accessKeyId":"[redacted]"}]},"order":["a"]},"openai":{"x":"keep"}}}`
+	if got != want {
+		t.Errorf("got  %s\nwant %s", got, want)
+	}
+	if r88carryJSON(t, body) != before {
+		t.Errorf("body mutated")
+	}
+
+	batch := map[string]interface{}{"requests": []interface{}{
+		map[string]interface{}{"id": "1", "options": map[string]interface{}{"providerOptions": map[string]interface{}{
+			"gateway": map[string]interface{}{"byok": map[string]interface{}{"openai": []interface{}{map[string]interface{}{"apiKey": "secret"}}}}}}},
+		"x"}}
+	got = r88carryJSON(t, portcarrytelRedactBody(t, batch))
+	if strings.Contains(got, "secret") || !strings.Contains(got, `"x"`) || !strings.Contains(got, `"openai":[{"apiKey":"[redacted]"}]`) {
+		t.Errorf("batch = %s", got)
+	}
+
+	text := `{"providerOptions":{"gateway":{"byok":{"a":"secret"}}}}`
+	out, ok := portcarrytelRedactBody(t, text).(string)
+	if !ok || strings.Contains(out, "secret") || !strings.Contains(out, "[redacted]") {
+		t.Errorf("text body = %v", out)
+	}
+
+	none := map[string]interface{}{"providerOptions": map[string]interface{}{"gateway": map[string]interface{}{"order": []interface{}{"a"}}}}
+	if out := portcarrytelRedactBody(t, none).(map[string]interface{}); r88carryJSON(t, out) != r88carryJSON(t, none) {
+		t.Errorf("byok-free body changed")
+	}
+}
+
+// TS 797dc0254e: part-level provider options never reach extract telemetry,
+// whether or not the file is a location.
+func TestPortcarrytelExtractStateStripsPartProviderOptions(t *testing.T) {
+	opts := map[string]interface{}{"anthropic": map[string]interface{}{"title": "private"}}
+	in := []portcarrytelStatePart{
+		{Type: "file", File: &types.FileContent{FileData: types.FileData{Type: types.FileDataTypeData, Data: []byte{1}}, ProviderOptions: opts}},
+		{Type: "file", File: &types.FileContent{FileData: types.FileData{Type: types.FileDataTypeURL, URL: "https://x/a?sig=secret"}, ProviderOptions: opts}},
+	}
+	out := redactFileLocations(in).([]portcarrytelStatePart)
+	for i, p := range out {
+		if p.File.ProviderOptions != nil {
+			t.Errorf("part %d keeps provider options", i)
+		}
+	}
+	if out[0].File.FileData.Type != types.FileDataTypeData || out[0].File.FileData.DataString == "[redacted]" {
+		t.Errorf("inline data part redacted: %+v", out[0].File.FileData)
+	}
+	if out[1].File.FileData.DataString != "[redacted]" {
+		t.Errorf("url part not redacted")
+	}
+	if in[0].File.ProviderOptions == nil || in[1].File.ProviderOptions == nil {
+		t.Errorf("input modified")
+	}
+}

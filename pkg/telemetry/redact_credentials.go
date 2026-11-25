@@ -429,7 +429,10 @@ func redactToolDefinitions(list []interface{}, wire bool) ([]interface{}, bool) 
 		}
 		next, changed := rec, false
 		if wire {
-			if kind, _ := rec["type"].(string); kind != "" {
+			if kind, _ := rec["type"].(string); kind == "mcp_server" {
+				// Google Interactions wire tool (TS b0fccbda62).
+				next, changed = redactGoogleMCPServerArgs(next)
+			} else if kind != "" {
 				next, changed = redactOpenAIToolArgs(kind, next, true)
 			}
 		}
@@ -503,22 +506,112 @@ func redactBody(body interface{}) (interface{}, bool) {
 	if !ok {
 		return body, false
 	}
-	tools, ok := asToolList(rec["tools"])
-	if !ok {
-		return body, false
+	out, changed := rec, false
+	if tools, ok := asToolList(rec["tools"]); ok {
+		if redacted, toolsChanged := redactToolDefinitions(tools, true); toolsChanged {
+			out, changed = copyRecord(rec), true
+			out["tools"] = redacted
+		}
 	}
-	redacted, changed := redactToolDefinitions(tools, true)
+	if next, byokChanged := redactGatewayByok(out); byokChanged {
+		out, changed = next, true
+	}
 	if !changed {
 		return body, false
 	}
-	out := copyRecord(rec)
-	out["tools"] = redacted
 	return out, true
+}
+
+// redactGatewayByok is TS withGatewayRequestTelemetryRedaction
+// (redact-gateway-request-credentials.ts, 83026e8e0f): in a Gateway request
+// body every value under providerOptions.gateway.byok, and under each batch
+// request's options.providerOptions.gateway.byok, becomes "[redacted]" while
+// provider names and the credential shape (objects, lists) stay. rec is not
+// modified; the result is a copy when something changed. TS annotates only
+// Gateway bodies; Go has no annotation, so any body with that key is
+// redacted (known difference S2, as for the OpenAI wire rule).
+func redactGatewayByok(rec map[string]interface{}) (map[string]interface{}, bool) {
+	out, changed := rec, false
+	if po, ok := redactProviderOptionsByok(rec["providerOptions"]); ok {
+		out, changed = copyRecord(rec), true
+		out["providerOptions"] = po
+	}
+	if requests, ok := asToolList(rec["requests"]); ok {
+		var redacted []interface{}
+		for i, item := range requests {
+			request, ok := asToolRecord(item)
+			if !ok {
+				continue
+			}
+			options, ok := asToolRecord(request["options"])
+			if !ok {
+				continue
+			}
+			po, ok := redactProviderOptionsByok(options["providerOptions"])
+			if !ok {
+				continue
+			}
+			if redacted == nil {
+				redacted = append([]interface{}(nil), requests...)
+			}
+			newOptions := copyRecord(options)
+			newOptions["providerOptions"] = po
+			newRequest := copyRecord(request)
+			newRequest["options"] = newOptions
+			redacted[i] = newRequest
+		}
+		if redacted != nil {
+			if !changed {
+				out, changed = copyRecord(rec), true
+			}
+			out["requests"] = redacted
+		}
+	}
+	return out, changed
+}
+
+func redactProviderOptionsByok(value interface{}) (map[string]interface{}, bool) {
+	po, ok := asToolRecord(value)
+	if !ok {
+		return nil, false
+	}
+	gateway, ok := asToolRecord(po["gateway"])
+	if !ok {
+		return nil, false
+	}
+	byok, present := gateway["byok"]
+	if !present {
+		return nil, false
+	}
+	newGateway := copyRecord(gateway)
+	newGateway["byok"] = redactByokValue(byok)
+	out := copyRecord(po)
+	out["gateway"] = newGateway
+	return out, true
+}
+
+// redactByokValue keeps objects and lists and replaces every leaf.
+func redactByokValue(v interface{}) interface{} {
+	if list, ok := asToolList(v); ok {
+		out := make([]interface{}, len(list))
+		for i, item := range list {
+			out[i] = redactByokValue(item)
+		}
+		return out
+	}
+	if rec, ok := asToolRecord(v); ok {
+		out := make(map[string]interface{}, len(rec))
+		for k, item := range rec {
+			out[k] = redactByokValue(item)
+		}
+		return out
+	}
+	return redactedToolValue
 }
 
 func redactJSONTextBody(raw []byte) ([]byte, bool) {
 	trimmed := bytes.TrimSpace(raw)
-	if len(trimmed) == 0 || trimmed[0] != '{' || !bytes.Contains(trimmed, []byte(`"tools"`)) {
+	if len(trimmed) == 0 || trimmed[0] != '{' || (!bytes.Contains(trimmed, []byte(`"tools"`)) && !bytes.Contains(trimmed, []byte(`"byok"`))) {
 		return raw, false
 	}
 	var decoded map[string]interface{}
