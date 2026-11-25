@@ -32,7 +32,6 @@ var r94integDirectDecodes = map[string]struct {
 	count  int
 	reason string
 }{
-	"alibaba/video_model.go|*VideoModel.DoStatus":                             {1, "operation reference the SDK built"},
 	"anthropic/call_options.go|decodeAnthropicCallOptions":                    {1, "caller option (fallbacks)"},
 	"anthropic/context_management_json.go|*ContextManagement.UnmarshalJSON":   {6, "caller option providerOptions.anthropic.contextManagement"},
 	"anthropic/tools/code_execution_20260120.go|UnmarshalCodeExecutionInput":  {4, "public helper on the SDK's tool-call input"},
@@ -44,26 +43,16 @@ var r94integDirectDecodes = map[string]struct {
 	"anthropic/tools/web_search_20260209.go|ParseWebSearchResults":            {1, "public helper on the SDK-built tool result"},
 	"anthropic/tools/web_search_20260318.go|ParseWebSearch20260318Results":    {1, "public helper on the SDK-built tool result"},
 	"bfl/video_model.go|*VideoModel.DoGenerate":                               {1, "operation reference the SDK built"},
-	"bfl/video_model.go|*VideoModel.DoStatus":                                 {1, "operation reference the SDK built"},
-	"bytedance/video_model.go|*VideoModel.DoStatus":                           {1, "operation reference the SDK built"},
 	"deepgram/speech_model.go|extractSpeechModelOptions":                      {1, "caller option sampleRate"},
-	"fal/video_model.go|*VideoModel.DoStatus":                                 {1, "operation reference the SDK built"},
 	"gateway/decision_fallback.go|*GatewayModelFallback.UnmarshalJSON":        {1, "caller option (model fallback)"},
-	"google/video_model.go|*VideoModel.DoStatus":                              {1, "operation reference the SDK built"},
-	"googlevertex/video_model.go|*VideoModel.DoStatus":                        {1, "operation reference the SDK built"},
 	"heygen/video_model.go|*VideoModel.DoGenerate":                            {1, "operation reference the SDK built"},
-	"heygen/video_model.go|*VideoModel.DoStatus":                              {1, "operation reference the SDK built"},
-	"klingai/video_model.go|*VideoModel.DoStatus":                             {1, "operation reference the SDK built"},
 	"minimax/video_model.go|*VideoModel.DoGenerate":                           {1, "operation reference the SDK built"},
 	"minimax/video_model.go|*VideoModel.getStatus":                            {1, "operation reference the SDK built"},
 	"mistral/conversation_inputs.go|convertToMistralConversationInputs":       {1, "prompt tool-call input"},
 	"openai/responses/convert.go|appendAdditionalTools":                       {1, "caller option (additional tool definitions)"},
 	"openai/responses/provider_tool_args.go|openAICustomToolConfig":           {1, "caller tool args (custom tool definition, through toolConfig)"},
-	"replicate/video_model.go|*VideoModel.DoStatus":                           {1, "operation reference the SDK built"},
-	"tencent/video_model.go|*VideoModel.DoStatus":                             {1, "operation reference the SDK built"},
 	"topaz/video_model.go|*VideoModel.DoGenerate":                             {1, "operation reference the SDK built"},
 	"topaz/video_model.go|*VideoModel.DoStatus":                               {1, "operation reference the SDK built"},
-	"xai/video_model.go|*VideoModel.DoStatus":                                 {1, "operation reference the SDK built"},
 }
 
 var r94integUserInputType = regexp.MustCompile(`(?i)(option|setting|config|param)`)

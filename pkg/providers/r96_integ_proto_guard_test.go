@@ -61,7 +61,7 @@ var r97integResponseJSONDecodes = map[string]struct {
 	"assemblyai/transcription_model.go|*TranscriptionModel.convertResponse": {1, "the in-memory transcript of the response.json() poll above, re-read"},
 	"cartesia/realtime_model.go|*RealtimeModel.DoCreateClientSecret":        {1, "cartesia-realtime-model.ts:110 await response.json()"},
 	"fal/transcription_model.go|*TranscriptionModel.pollForResult":          {1, "fal-transcription-model.ts:167 clone.json() (still-in-progress detail)"},
-	"fal/video_model.go|*VideoModel.DoStatus":                               {1, "fal-video-model.ts:289 response.clone().json() (still-in-progress detail)"},
+	"fal/video_model.go|*VideoModel.DoStatus":                               {2, "fal-video-model.ts:96 options.operation (the caller's in-memory operation object, no parse) and :289 response.clone().json() (still-in-progress detail)"},
 	"google/files_api.go|*FilesAPI.UploadFile":                              {1, "google-files.ts:126 await uploadResponse.json()"},
 	"google/files_api.go|googleFilesUploadResultShape":                      {1, "google-files.ts:126 await uploadResponse.json() (uploadResult.file.state)"},
 	"google/realtime_model.go|*GoogleRealtimeModel.DoCreateClientSecret":    {1, "google realtime client secret: await response.json()"},
@@ -104,6 +104,42 @@ var r97integResponseJSONDecodes = map[string]struct {
 	"openai/responses/strict_payloads.go|validateToolPayload":           {1, "convert-to-openai-responses-input.ts:915 / 940 validateTypes on the tool-call input object (tool_search / program / computer inputs); caller value, no JSON parse"},
 	"openai/responses/tool_args_validation.go|zodIssueText":             {1, "openai-responses-prepare-tools.ts:239+ validateTypes({value: tool.args, schema}); caller value, no JSON parse"},
 	"xai/responses_prepare_tools.go|validateXAIResponsesToolArgs":       {1, "xai-responses-prepare-tools.ts:48+ validateTypes on tool.args; caller value, no JSON parse"},
+	// Round 99 (integrator): video doStatus reads options.operation, the
+	// caller's in-memory operation object (no JSON parse, no secureJsonParse).
+	"alibaba/video_model.go|*VideoModel.DoStatus":      {1, "alibaba-video-model.ts:648 options.operation (caller's in-memory object)"},
+	"bfl/video_model.go|*VideoModel.DoStatus":          {1, "black-forest-labs-video-model.ts:597 options.operation (caller's in-memory object)"},
+	"bytedance/video_model.go|*VideoModel.DoStatus":    {1, "bytedance-video-model.ts:404 options.operation (caller's in-memory object)"},
+	"google/video_model.go|*VideoModel.DoStatus":       {1, "google-video-model.ts:398 options.operation (caller's in-memory object)"},
+	"googlevertex/video_model.go|*VideoModel.DoStatus": {1, "google-vertex-video-model.ts:398 options.operation (caller's in-memory object)"},
+	"heygen/video_model.go|*VideoModel.DoStatus":       {1, "heygen-video-model.ts:373 validateTypes({value: options.operation}) (caller's in-memory object)"},
+	"klingai/video_model.go|*VideoModel.DoStatus":      {1, "klingai-video-model.ts:296 options.operation (caller's in-memory object)"},
+	"replicate/video_model.go|*VideoModel.DoStatus":    {1, "replicate-video-model.ts:236 options.operation (caller's in-memory object)"},
+	"tencent/video_model.go|*VideoModel.DoStatus":      {1, "tencent-video-model.ts:225 options.operation (caller's in-memory object)"},
+	"xai/video_model.go|*VideoModel.DoStatus":          {1, "xai-video-model.ts:668 options.operation (caller's in-memory object)"},
+	// Round 99 (integrator, carry CR §3 and the prova / provb / provg merges):
+	// providerMetadata / providerOptions objects TS holds in memory on the
+	// prompt or result parts (no JSON parse; a __proto__ key is an own
+	// property and a number past the double range is Infinity, ruling 4).
+	"deepseek/responses_convert.go|deepseekResponsesPartOption":           {1, "deepseek responses input conversion reads part.providerOptions / providerMetadata in memory"},
+	"google/interactions_stream.go|newSynthesizedInteractionsStream":      {1, "google-interactions-language-model.ts synthesized stream re-emits the generate result's content providerMetadata object"},
+	"mistral/conversation_inputs.go|convertToMistralConversationInputs":   {1, "convert-to-mistral-conversation-inputs.ts reads the prompt tool-call part's providerOptions in memory"},
+	"mistral/transcription_model.go|*TranscriptionModel.DoTranscribe":     {1, "re-reads usage null keys after the body's jsonexact.Unmarshal (prototype check) succeeded"},
+	"openai/responses/convert.go|toolResultCaller":                        {1, "convert-to-openai-responses-input.ts part.providerOptions/providerMetadata (in-memory object)"},
+	"openai/responses/convert.go|openAIReasoningItemID":                   {1, "convert-to-openai-responses-input.ts part.providerOptions?.[providerOptionsName]?.itemId (in-memory object)"},
+	"openai/responses/convert.go|openAIReasoningEncryptedContent":         {1, "convert-to-openai-responses-input.ts reasoningEncryptedContent from part.providerOptions (in-memory object)"},
+	"openai/responses/convert.go|openAIToolResultItemID":                  {1, "convert-to-openai-responses-input.ts tool-result part.providerOptions itemId (in-memory object)"},
+	"openai/responses/convert.go|openAICompactionMetadata":                {1, "convert-to-openai-responses-input.ts compaction part.providerOptions (in-memory object)"},
+	"openai/responses/convert.go|openAITextMetadata":                      {1, "convert-to-openai-responses-input.ts text part.providerOptions itemId / phase (in-memory object)"},
+	"openai/responses/convert.go|toolCallContentProviderMetadata":         {1, "openai-responses-language-model.ts providerMetadata object built in memory"},
+	"openai/responses/convert.go|toolResultContentProviderMetadata":       {1, "openai-responses-language-model.ts providerMetadata object built in memory"},
+	"openai/responses/xai_input.go|xaiPartString":                         {1, "convert-to-xai-responses-input.ts part.providerOptions?.xai (in-memory object)"},
+	"openresponses/convert.go|openResponsesProviderData":                  {1, "convert-to-open-responses-input.ts part.providerOptions (in-memory object)"},
+	"openresponses/convert.go|extensionReplay":                            {1, "convert-to-open-responses-input.ts part.providerOptions[providerName] (in-memory object)"},
+	"openresponses/extension_decode.go|mergeExtensionReference":           {1, "open-responses-language-model.ts merges into the in-memory providerMetadata object"},
+	"openresponses/extension_decode.go|extensionToolCallProviderMetadata": {1, "open-responses-language-model.ts tool-call providerMetadata object (in memory)"},
+	"pkg/providerutils/prompt/anthropic.go|rawMetadataMap":                {1, "convert-to-anthropic-prompt.ts reads part.providerOptions / providerMetadata in memory (cr-r99-carry-to-integrator §3)"},
+	"pkg/providerutils/prompt/google.go|googleMetadataMap":                {1, "convert-to-google-messages.ts reads part.providerOptions?.[providerOptionsName] in memory"},
+	"pkg/providerutils/response_message.go|providerMetadataOptions":       {1, "to-response-messages.ts passes the providerMetadata object on as providerOptions (no parse)"},
 }
 
 // TestR96integNetworkDecodesRejectForbiddenPrototype is the class guard for
