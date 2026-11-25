@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -202,6 +203,70 @@ func TestPortStreamValidateUIMessagesRejectsMalformedMetadataShapes(t *testing.T
 			msg := portstreamValidationMessage(t, `[{"id":"1","role":"assistant","parts":[`+tc.part+`]}]`)
 			if !strings.Contains(msg, tc.path) {
 				t.Fatalf("message %.200q does not report %s", msg, tc.path)
+			}
+		})
+	}
+}
+
+// TS 63593a7f6a: approval requests of user-approval and approved tool calls are
+// signed; the request of an automatically denied call is not.
+func TestPortStreamApprovalSignatureNotIssuedForDeniedCalls(t *testing.T) {
+	t.Parallel()
+	secret := []byte("test-hmac-secret-do-not-use-in-production")
+	for _, status := range []types.ToolApprovalStatus{types.ToolApprovalStatusUserApproval, types.ToolApprovalStatusApproved, types.ToolApprovalStatusDenied} {
+		t.Run(string(status), func(t *testing.T) {
+			t.Parallel()
+			tool := types.Tool{
+				Name: "tool1",
+				Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+					return "result", nil
+				},
+			}
+			model := &testutil.MockLanguageModel{DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+				return testutil.NewMockTextStream([]provider.StreamChunk{
+					{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "tool1", Arguments: map[string]interface{}{"value": "test"}}},
+					{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls},
+				}), nil
+			}}
+			maxSteps := 1
+			var mu sync.Mutex
+			var requests []types.ToolApprovalRequestContent
+			res, err := StreamText(context.Background(), StreamTextOptions{
+				Model: model, Prompt: "x", Tools: []types.Tool{tool}, MaxSteps: &maxSteps,
+				ExperimentalToolApprovalSecret: secret,
+				ToolApproval:                   map[string]types.ToolApprovalValue{"tool1": status},
+				OnChunk: func(c provider.StreamChunk) {
+					if c.Type == provider.ChunkTypeToolApprovalRequest && c.ToolApprovalRequest != nil {
+						mu.Lock()
+						requests = append(requests, *c.ToolApprovalRequest)
+						mu.Unlock()
+					}
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := res.ConsumeStream(); err != nil {
+				t.Fatal(err)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if len(requests) != 1 {
+				t.Fatalf("approval requests = %d, want 1", len(requests))
+			}
+			req := requests[0]
+			if status == types.ToolApprovalStatusDenied {
+				if req.Signature != "" || !req.IsAutomatic {
+					t.Fatalf("denied request = %+v, want automatic and unsigned", req)
+				}
+				return
+			}
+			want, err := SignToolApproval(secret, req.ApprovalID, "call-1", "tool1", map[string]interface{}{"value": "test"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if req.Signature == "" || req.Signature != want {
+				t.Fatalf("signature = %q, want %q", req.Signature, want)
 			}
 		})
 	}

@@ -439,8 +439,11 @@ func attachToolApprovalSignatures(results []types.ToolResult, secret []byte) {
 		return
 	}
 	for i := range results {
+		// A signature lets a later request execute the tool call by
+		// replaying the approval from client-supplied history, so an
+		// automatically denied call must not get one (TS 63593a7f6a).
 		switch results[i].ApprovalStatus {
-		case types.ToolApprovalStatusUserApproval, types.ToolApprovalStatusApproved, types.ToolApprovalStatusDenied:
+		case types.ToolApprovalStatusUserApproval, types.ToolApprovalStatusApproved:
 		default:
 			continue
 		}

@@ -89,7 +89,8 @@ type StreamTextOptions struct {
 	ToolApproval types.ToolApprovalConfig
 
 	// ExperimentalToolApprovalSecret signs server-issued approval requests so
-	// resumed approval responses can be verified before execution.
+	// resumed approval responses can be verified before execution. Approval
+	// requests for automatically denied tool calls are not signed.
 	ExperimentalToolApprovalSecret []byte
 
 	// MaxSteps is a convenience shorthand for StopWhen{StepCountIs(N)}.
