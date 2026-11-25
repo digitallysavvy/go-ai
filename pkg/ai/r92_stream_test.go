@@ -324,7 +324,7 @@ func TestR92streamValidateUIMessagesBoundedIssues(t *testing.T) {
 		"2524 tool state":     {`[{"id":"1","role":"assistant","parts":[{"type":"tool-foo","toolCallId":"1","state":"unknown"}]}]`, "[0].parts[0].state: " + uiToolStateMessage},
 		"2564 first message":  {`[{"id":"1","role":"user","parts":[{"type":"text","text":"valid"}]},{},{}]`, "[1].id: "},
 		"2581 first part":     {`[{"id":"1","role":"user","parts":[{"type":"text","text":"valid"},{},{}]}]`, "[0].parts[1].type: "},
-		"2596 steering part":  {`[{"id":"1","role":"assistant","parts":[{"type":"steering-message","id":"steer-1","parts":[{"type":"text","text":"valid"},{},{}]}]}]`, "[0].parts[0]: parts[1]: "},
+		"2596 steering part":  {`[{"id":"1","role":"assistant","parts":[{"type":"steering-message","id":"steer-1","parts":[{"type":"text","text":"valid"},{},{}]}]}]`, "[0].parts[0].parts[1].type: " + steeringTypeMessage},
 		"2619 first citation": {`[{"id":"1","role":"assistant","parts":[{"type":"text","text":"valid","citations":[{},{}]}]}]`, "citations[0].source"},
 		"2668 provider meta":  {`[{"id":"1","role":"user","parts":[{"type":"text","text":"Hello","providerMetadata":{"provider":{"key":[1e999]}}}]}]`, uiInvalidJSONValueMessage},
 		"2705 deep nested":    {`[{"id":"1","role":"user","parts":[{"type":"text","text":"Hello","providerMetadata":{"provider":{"key":` + nest("1e999", 300) + `}}}]}]`, uiInvalidJSONValueMessage},
