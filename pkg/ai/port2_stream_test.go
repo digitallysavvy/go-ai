@@ -13,6 +13,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
@@ -1193,5 +1194,84 @@ func TestPort2streamValidateUIMessagesSteeringPartTypePath(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "[0].parts[0]: ") || strings.Contains(err.Error(), ".type:") {
 		t.Fatalf("err = %v, want the id issue on the part", err)
+	}
+}
+
+type port2streamTelemetry struct {
+	telemetry.NoopTelemetryIntegration
+	mu                      sync.Mutex
+	stepStarts, callStarts  int
+	callEnds, errors        int
+	callIDs                 map[string]bool
+	stepNumbers, callPrompt []int
+}
+
+func (r *port2streamTelemetry) OnStepStart(ctx context.Context, e telemetry.TelemetryStepStartEvent) context.Context {
+	r.mu.Lock()
+	r.stepStarts++
+	r.stepNumbers = append(r.stepNumbers, e.StepNumber)
+	r.mu.Unlock()
+	return ctx
+}
+
+func (r *port2streamTelemetry) OnLanguageModelCallStart(ctx context.Context, e telemetry.LanguageModelCallStartEvent) context.Context {
+	r.mu.Lock()
+	r.callStarts++
+	if r.callIDs == nil {
+		r.callIDs = map[string]bool{}
+	}
+	r.callIDs[e.CallID] = true
+	r.callPrompt = append(r.callPrompt, len(e.Messages))
+	r.mu.Unlock()
+	return ctx
+}
+
+func (r *port2streamTelemetry) OnLanguageModelCallEnd(context.Context, telemetry.LanguageModelCallEndEvent) {
+	r.mu.Lock()
+	r.callEnds++
+	r.mu.Unlock()
+}
+
+func (r *port2streamTelemetry) OnError(context.Context, telemetry.TelemetryErrorEvent) {
+	r.mu.Lock()
+	r.errors++
+	r.mu.Unlock()
+}
+
+// TS e4039889ba telemetry: the redo starts a second model call in the same
+// step span (the step starts once, the call start fires again for the same
+// call id with the steering message in its messages) and the cancelled call
+// has no model-call end and no error.
+func TestPort2streamInterruptTelemetryStartsASecondModelCallInTheStep(t *testing.T) {
+	steering := NewSteering()
+	calls := &port2streamCalls{}
+	model := port2streamModel(calls, func(n int, ctx context.Context) (provider.TextStream, error) {
+		if n == 1 {
+			stream := port2streamHang(ctx, nil, provider.StreamChunk{Type: provider.ChunkTypeStreamStart})
+			steering.Steer(port2streamSteerText, WithSteerInterrupt())
+			return stream, nil
+		}
+		return testutil.NewMockTextStream(port2streamTextChunks("It is sunny in Paris, Texas.")), nil
+	})
+	rec := &port2streamTelemetry{}
+	enabled := true
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model: model, Prompt: "What is the weather in Paris?", ExperimentalSteering: steering,
+		ExperimentalTelemetry: &TelemetrySettings{IsEnabled: &enabled, Integrations: []telemetry.TelemetryIntegration{rec}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	port2streamCollect(t, result)
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if rec.stepStarts != 1 || !reflect.DeepEqual(rec.stepNumbers, []int{0}) {
+		t.Fatalf("step starts = %d at %v, want one at step 0", rec.stepStarts, rec.stepNumbers)
+	}
+	if rec.callStarts != 2 || len(rec.callIDs) != 1 || !reflect.DeepEqual(rec.callPrompt, []int{1, 2}) {
+		t.Fatalf("call starts = %d, call ids = %v, messages per call = %v", rec.callStarts, rec.callIDs, rec.callPrompt)
+	}
+	if rec.callEnds != 1 || rec.errors != 0 {
+		t.Fatalf("call ends = %d, errors = %d, want 1 and 0", rec.callEnds, rec.errors)
 	}
 }
