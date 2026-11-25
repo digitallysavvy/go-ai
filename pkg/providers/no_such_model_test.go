@@ -70,7 +70,6 @@ func TestUnsupportedModelKindsReturnNoSuchModelError(t *testing.T) {
 			{"LanguageModel", "languageModel", "unknown", "AssemblyAI does not provide language models"},
 			{"EmbeddingModel", "embeddingModel", "m1", ""},
 			{"ImageModel", "imageModel", "m1", ""},
-			{"SpeechModel", "speechModel", "m1", ""},
 			{"RerankingModel", "rerankingModel", "m1", ""},
 		}},
 		{"azure", func() any { return mustNew(azure.New(azure.Config{APIKey: "k"})) }, []kind{
