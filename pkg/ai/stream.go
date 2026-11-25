@@ -1187,7 +1187,11 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 
 	stepModel := opts.Model
 	stepSystem := system
-	stepMessages := prompt.Messages
+	// The messages array of a step is created for that step: a tool approval
+	// function tells the tool calls of one response from those of another by
+	// the slice it receives (TS 0b8cbfadb8), so a caller's slice (the prompt
+	// or a PrepareStep result) is never handed out itself.
+	stepMessages := cloneStepMessages(prompt.Messages)
 	if len(initialResponseMessages) > 0 {
 		stepMessages = append(append([]types.Message(nil), prompt.Messages...), initialResponseMessages...)
 	}
@@ -1281,7 +1285,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 			stepInstructionMessages = nil
 		}
 		if prepared.Messages != nil {
-			stepMessages = prepared.Messages
+			stepMessages = cloneStepMessages(prepared.Messages)
 		}
 		stepTools, stepActiveTools = applyPreparedTools(opts.Tools, stepTools, stepActiveTools, prepared)
 		if prepared.ToolChoice.Type != "" {
@@ -4274,7 +4278,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				nextInstructionMessages = nil
 			}
 			if prepared.Messages != nil {
-				nextMessages = prepared.Messages
+				nextMessages = cloneStepMessages(prepared.Messages)
 			}
 			nextTools, nextActiveTools = applyPreparedTools(opts.Tools, nextTools, nextActiveTools, prepared)
 			if prepared.ToolChoice.Type != "" {
@@ -5023,6 +5027,15 @@ func findToolCallByID(toolCalls []types.ToolCall, toolCallID string) (types.Tool
 		}
 	}
 	return types.ToolCall{}, false
+}
+
+// cloneStepMessages copies a step's messages, keeping a nil slice nil and an
+// empty one non-nil.
+func cloneStepMessages(messages []types.Message) []types.Message {
+	if messages == nil {
+		return nil
+	}
+	return append(make([]types.Message, 0, len(messages)), messages...)
 }
 
 // recordStreamedToolResult stores a provider-streamed tool result by call ID

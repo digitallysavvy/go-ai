@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -269,5 +270,99 @@ func TestPortStreamApprovalSignatureNotIssuedForDeniedCalls(t *testing.T) {
 				t.Fatalf("signature = %q, want %q", req.Signature, want)
 			}
 		})
+	}
+}
+
+// portstreamApprovalMessages runs a three-step StreamText whose first two steps
+// each call tool1 twice and records the Messages slice every approval function
+// call receives.
+func portstreamApprovalMessages(t *testing.T, prepare func(context.Context, PrepareStepOptions) PrepareStepOptions) [][]types.Message {
+	t.Helper()
+	var calls int32
+	model := &testutil.MockLanguageModel{DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+		step := int(atomic.AddInt32(&calls, 1)) - 1
+		if step < 2 {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: fmt.Sprintf("call-%d-1", step), ToolName: "tool1", Arguments: map[string]interface{}{"value": "value"}}},
+				{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: fmt.Sprintf("call-%d-2", step), ToolName: "tool1", Arguments: map[string]interface{}{"value": "value"}}},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls},
+			}), nil
+		}
+		return testutil.NewMockTextStream([]provider.StreamChunk{
+			{Type: provider.ChunkTypeText, Text: "done"},
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+		}), nil
+	}}
+	var mu sync.Mutex
+	var got [][]types.Message
+	res, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "test-input",
+		Tools: []types.Tool{{Name: "tool1", Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			return "result1", nil
+		}}},
+		ToolApproval: types.GenericToolApprovalFunc(func(o types.ToolApprovalOptions) types.ToolApprovalResult {
+			mu.Lock()
+			got = append(got, o.Messages)
+			mu.Unlock()
+			return types.ToolApprovalResult{Status: types.ToolApprovalStatusApproved}
+		}),
+		PrepareStep: prepare,
+		StopWhen:    []StopCondition{StepCountIs(3)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := res.ConsumeStream(); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	return got
+}
+
+func portstreamSameSlice(a, b []types.Message) bool {
+	return len(a) > 0 && len(b) > 0 && &a[0] == &b[0]
+}
+
+// TS 0b8cbfadb8 "should be the same for all tool calls of a step and new for
+// every step": a tool approval function can tell the responses apart by the
+// Messages slice it receives.
+func TestPortStreamApprovalMessagesSliceIsPerStep(t *testing.T) {
+	t.Parallel()
+	got := portstreamApprovalMessages(t, nil)
+	if len(got) != 4 {
+		t.Fatalf("approval calls = %d, want 4", len(got))
+	}
+	if !portstreamSameSlice(got[0], got[1]) || !portstreamSameSlice(got[2], got[3]) {
+		t.Fatal("tool calls of one step must receive the same messages slice")
+	}
+	if portstreamSameSlice(got[0], got[2]) {
+		t.Fatal("a later step must receive a new messages slice")
+	}
+}
+
+// TS 0b8cbfadb8 "should be new for every step when prepareStep returns the same
+// messages array".
+func TestPortStreamApprovalMessagesSliceWithPrepareStepResult(t *testing.T) {
+	t.Parallel()
+	prepared := []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "prepared-input"}}}}
+	got := portstreamApprovalMessages(t, func(_ context.Context, step PrepareStepOptions) PrepareStepOptions {
+		step.Messages = prepared
+		return step
+	})
+	if len(got) != 4 {
+		t.Fatalf("approval calls = %d, want 4", len(got))
+	}
+	for i, msgs := range got {
+		if len(msgs) != 1 {
+			t.Fatalf("call %d messages = %d, want the prepared messages", i, len(msgs))
+		}
+		if portstreamSameSlice(msgs, prepared) {
+			t.Fatalf("call %d received the slice prepareStep returned", i)
+		}
+	}
+	if !portstreamSameSlice(got[0], got[1]) || !portstreamSameSlice(got[2], got[3]) || portstreamSameSlice(got[0], got[2]) {
+		t.Fatal("messages slices must be shared within a step and new for every step")
 	}
 }
