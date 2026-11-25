@@ -1373,8 +1373,9 @@ func TestXAIResponsesDefaultReasoningSkipsGrok420Warning(t *testing.T) {
 	}
 }
 
-// TestXAIResponsesXHighEffortModelGating covers row 8e006de's effort map:
-// xhigh maps to "xhigh" only for grok-4.6, "high" for every other model.
+// TestXAIResponsesXHighEffortModelGating covers row 8e006de's effort map and
+// TS 565db6d2c8: xhigh maps to "xhigh" for the listed models that accept it
+// (grok-4.6, grok-4.3) and to "high" for an unlisted model.
 func TestXAIResponsesXHighEffortModelGating(t *testing.T) {
 	p := New(Config{APIKey: "test-key"})
 	xhigh := types.ReasoningXHigh
@@ -1393,8 +1394,17 @@ func TestXAIResponsesXHighEffortModelGating(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildRequestBody failed: %v", err)
 	}
+	if reasoning := body["reasoning"].(map[string]interface{}); reasoning["effort"] != "xhigh" {
+		t.Fatalf("grok-4.3 effort = %v, want xhigh", reasoning["effort"])
+	}
+
+	unlisted := NewResponsesLanguageModel(p, "grok-4.20-multi-agent")
+	body, _, err = unlisted.buildRequestBody(&provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}, Reasoning: &xhigh}, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody failed: %v", err)
+	}
 	if reasoning := body["reasoning"].(map[string]interface{}); reasoning["effort"] != "high" {
-		t.Fatalf("grok-4.3 effort = %v, want high", reasoning["effort"])
+		t.Fatalf("grok-4.20-multi-agent effort = %v, want high", reasoning["effort"])
 	}
 }
 
@@ -1786,11 +1796,11 @@ func TestXAIResponsesImageGenerationFailedStatus(t *testing.T) {
 }
 
 // TestXAIResponsesMaxEffortModelGating covers TS #22045: portable max maps
-// like xhigh ("xhigh" for grok-4.6, "high" otherwise).
+// like xhigh ("xhigh" for grok-4.6 and grok-4.3, "high" for an unlisted model).
 func TestXAIResponsesMaxEffortModelGating(t *testing.T) {
 	p := New(Config{APIKey: "test-key"})
 	level := types.ReasoningMax
-	for model, want := range map[string]string{"grok-4.6": "xhigh", "grok-4.3": "high"} {
+	for model, want := range map[string]string{"grok-4.6": "xhigh", "grok-4.3": "xhigh", "grok-4.20-multi-agent": "high"} {
 		body, _, err := NewResponsesLanguageModel(p, model).buildRequestBody(&provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}, Reasoning: &level}, false)
 		if err != nil {
 			t.Fatalf("buildRequestBody failed: %v", err)
