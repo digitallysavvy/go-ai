@@ -2585,13 +2585,9 @@ func (d *turnDriver) executeHostToolAsync(tool types.Tool, raw *ToolCallPart, ca
 		}
 		var output interface{}
 		var err error
-		if d.in.Telemetry == nil {
-			// No telemetry settings: no dispatcher, so globally registered
-			// integrations do not wrap the tool either (TS executeTool).
-			output, err = runTool(execTelCtx, execArgs)
-		} else {
-			output, err = telemetry.FireExecuteToolWithSettings(execTelCtx, d.in.Telemetry, raw.ToolName, execArgs, runTool)
-		}
+		// The dispatcher exists without telemetry settings too (TS
+		// 679b5b55e8), so globally registered integrations wrap the tool.
+		output, err = telemetry.FireExecuteToolWithSettings(execTelCtx, d.in.Telemetry, raw.ToolName, execArgs, runTool)
 		d.execMu.Lock()
 		d.toolExecMs[raw.ToolCallID] = time.Since(start).Milliseconds()
 		d.execMu.Unlock()
