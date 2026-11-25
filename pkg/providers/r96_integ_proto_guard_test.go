@@ -98,7 +98,9 @@ var r97integResponseJSONDecodes = map[string]struct {
 	"pkg/providerutils/prompt/google.go|*googleConverter.googleFilePartOptions": {1, "convert-to-google-messages.ts getGoogleFilePartOptions: googleFilePartOptionsSchema.parse of the caller's providerOptions object (no JSON parse, no secureJsonParse)"},
 	// Port wave 1 (provg CR, TS afb4e69924): same caller-value rule.
 	"google/interactions_file_options.go|parseInteractionsFileOptions": {1, "convert-to-google-interactions-input.ts googleInteractionsFileOptionsSchema.parse of the caller's providerOptions.google (no JSON parse)"},
-	"pkg/providerutils/prompt/google.go|googleParseCodeExecution":      {1, "convert-to-google-messages.ts:576 / 644 codeExecutionInput/OutputSchema.parse of the prompt's tool input / output value (no JSON parse)"},
+	// Port wave 1 (tools, TS 93c63f71a1): caller-value validation.
+	"pkg/mcp/create_mcp_tools.go|CreateMCPTools":                  {1, "create-mcp-tools.ts ListToolsResultSchema.safeParse({ tools: definitions }) of the caller's tool definitions (no JSON parse; zod strips __proto__)"},
+	"pkg/providerutils/prompt/google.go|googleParseCodeExecution": {1, "convert-to-google-messages.ts:576 / 644 codeExecutionInput/OutputSchema.parse of the prompt's tool input / output value (no JSON parse)"},
 	// Caller-value sites (round 98): TS validateTypes on an object the caller
 	// built, no JSON parse at all, so zod sees a __proto__ key as an ordinary
 	// own property and strips it.
