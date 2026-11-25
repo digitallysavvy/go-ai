@@ -31,31 +31,6 @@ func port2provgLiveModel(t *testing.T) *RealtimeModelLive {
 	return port2provgLiveProvider(t, "", "").ExperimentalLive("openai/gpt-live-1.1")
 }
 
-func port2provgJSONOf(t *testing.T, v interface{}) interface{} {
-	t.Helper()
-	b, err := json.Marshal(v)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var out interface{}
-	if err := json.Unmarshal(b, &out); err != nil {
-		t.Fatal(err)
-	}
-	return out
-}
-
-func port2provgRaw(t *testing.T, raw json.RawMessage, err error) interface{} {
-	t.Helper()
-	if err != nil {
-		t.Fatal(err)
-	}
-	var out interface{}
-	if err := json.Unmarshal(raw, &out); err != nil {
-		t.Fatalf("%v: %s", err, raw)
-	}
-	return out
-}
-
 func port2provgStr(s string) *string { return &s }
 
 func port2provgIsUnsupported(err error) bool {
