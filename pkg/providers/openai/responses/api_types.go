@@ -579,22 +579,43 @@ type FunctionCallOutputItem struct {
 	Caller *ToolCaller `json:"caller,omitempty"`
 }
 
-// AdditionalToolsItem loads extra function definitions immediately after an
-// ordinary function tool result (TS `additional_tools` input item), for tools
-// a result discovered at runtime (providerOptions.openai.additionalTools).
+// AdditionalToolsItem loads tool definitions at a position in the history
+// (TS `additional_tools` input item): right after an ordinary function tool
+// result, or at an empty system message. Tools holds AdditionalToolDef,
+// AdditionalCustomToolDef and AdditionalNamespaceToolDef values derived from
+// the tools registered for the request, never from the replayed history.
 type AdditionalToolsItem struct {
-	Type  string              `json:"type"` // "additional_tools"
-	Role  string              `json:"role"` // "developer"
-	Tools []AdditionalToolDef `json:"tools"`
+	Type  string        `json:"type"` // "additional_tools"
+	Role  string        `json:"role"` // "developer"
+	Tools []interface{} `json:"tools"`
 }
 
 // AdditionalToolDef is one function definition inside an AdditionalToolsItem.
 type AdditionalToolDef struct {
-	Type        string                 `json:"type"` // "function"
-	Name        string                 `json:"name"`
-	Description *string                `json:"description,omitempty"`
-	Parameters  map[string]interface{} `json:"parameters"`
-	Strict      *bool                  `json:"strict,omitempty"`
+	Type         string      `json:"type"` // "function"
+	Name         string      `json:"name"`
+	Description  *string     `json:"description,omitempty"`
+	Parameters   interface{} `json:"parameters"`
+	Strict       *bool       `json:"strict,omitempty"`
+	DeferLoading *bool       `json:"defer_loading,omitempty"`
+}
+
+// AdditionalCustomToolDef is one custom tool definition inside an
+// AdditionalToolsItem.
+type AdditionalCustomToolDef struct {
+	Type        string               `json:"type"` // "custom"
+	Name        string               `json:"name"`
+	Description *string              `json:"description,omitempty"`
+	Format      *CustomToolDefFormat `json:"format,omitempty"`
+}
+
+// AdditionalNamespaceToolDef is one namespace definition inside an
+// AdditionalToolsItem.
+type AdditionalNamespaceToolDef struct {
+	Type        string              `json:"type"` // "namespace"
+	Name        string              `json:"name"`
+	Description string              `json:"description"`
+	Tools       []AdditionalToolDef `json:"tools"`
 }
 
 // ImageGenerationCallItem represents a hosted image_generation tool call

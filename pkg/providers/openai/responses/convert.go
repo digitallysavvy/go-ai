@@ -1,7 +1,6 @@
 package responses
 
 import (
-	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -132,6 +131,18 @@ type ConvertOptions struct {
 	// Populated by ConvertPromptToInputWithOptions; do not set directly.
 	toolOutputWarnings *[]types.Warning
 
+	// FindAdditionalToolDefinition resolves an additionalTools entry from the
+	// prompt to the definition of the tool registered for the request (TS
+	// findAdditionalToolDefinition). Entries come from replayable
+	// conversation history, so they only select a registered tool; entries
+	// it cannot resolve (nil result) are dropped, and every entry is dropped
+	// when it is nil.
+	FindAdditionalToolDefinition func(ref AdditionalToolRef) (*AdditionalToolResolution, error)
+
+	// additionalTools is the per-conversion warning de-duplication and
+	// dropped-name state. Created by ConvertPromptToInputWithOptions.
+	additionalTools *additionalToolsState
+
 	// customToolOutput is set while converting a custom_tool_call_output,
 	// whose TS converter has its own (narrower) content handling: provider
 	// references are unsupported and warnings say "custom tool content part".
@@ -194,6 +205,7 @@ func ConvertPromptToInputWithOptions(prompt types.Prompt, systemMessageMode stri
 	opts.processedApprovalIDs = map[string]bool{}
 	var toolOutputWarnings []types.Warning
 	opts.toolOutputWarnings = &toolOutputWarnings
+	opts.additionalTools = newAdditionalToolsState()
 
 	// Prepend system message when present and not suppressed.
 	if prompt.System != "" && systemMessageMode != "remove" {
@@ -215,13 +227,11 @@ func ConvertPromptToInputWithOptions(prompt types.Prompt, systemMessageMode stri
 	for _, msg := range prompt.Messages {
 		switch msg.Role {
 		case types.RoleSystem:
-			item, itemWarnings, err := convertSystemMidConversationMessage(msg, systemMessageMode, opts)
+			systemItems, itemWarnings, err := convertSystemMidConversationMessage(msg, systemMessageMode, opts)
 			if err != nil {
 				return nil, warnings, err
 			}
-			if item != nil {
-				input = append(input, item)
-			}
+			input = append(input, systemItems...)
 			warnings = append(warnings, itemWarnings...)
 		case types.RoleUser:
 			userMessage, err := convertUserMessage(msg, opts)
@@ -254,6 +264,9 @@ func ConvertPromptToInputWithOptions(prompt types.Prompt, systemMessageMode stri
 		input = filtered
 		warnings = append(warnings, filterWarnings...)
 	}
+	if dropped := opts.additionalTools.droppedWarning(); dropped != nil {
+		warnings = append(warnings, *dropped)
+	}
 
 	return input, warnings, nil
 }
@@ -266,7 +279,7 @@ func ConvertPromptToInputWithOptions(prompt types.Prompt, systemMessageMode stri
 // item independent of systemMessageMode's text handling; a message with
 // empty reasoningEffortUpdate is handled as an ordinary system/developer
 // message (or dropped with a warning when systemMessageMode is "remove").
-func convertSystemMidConversationMessage(msg types.Message, systemMessageMode string, opts ConvertOptions) (interface{}, []types.Warning, error) {
+func convertSystemMidConversationMessage(msg types.Message, systemMessageMode string, opts ConvertOptions) ([]interface{}, []types.Warning, error) {
 	providerName := openAIProviderOptionsName(opts)
 	sysOpts := systemMessageProviderOptions(msg, providerName)
 	effort, _ := sysOpts["reasoningEffortUpdate"].(string)
@@ -275,8 +288,9 @@ func convertSystemMidConversationMessage(msg types.Message, systemMessageMode st
 	// string, a number or an explicit null is rejected, not ignored).
 	_, effortPresent := sysOpts["reasoningEffortUpdate"]
 	textFormatRaw, textFormatPresent := sysOpts["textFormatUpdate"]
+	additionalToolsRaw, additionalToolsPresent := sysOpts["additionalTools"]
 
-	if effortPresent || textFormatPresent {
+	if effortPresent || textFormatPresent || additionalToolsPresent {
 		// TS parses this field against a fixed schema enum
 		// (z.enum(['none','low','medium','high','xhigh','max']), row
 		// 94d5d6d3e6) before any model-specific handling, so an
@@ -297,17 +311,31 @@ func convertSystemMidConversationMessage(msg types.Message, systemMessageMode st
 			}
 			textFormat = parsed
 		}
+		var additionalEntries []additionalToolEntry
+		if additionalToolsPresent {
+			entries, err := parseAdditionalToolEntries(additionalToolsRaw, "providerOptions."+providerName+".additionalTools")
+			if err != nil {
+				return nil, nil, err
+			}
+			additionalEntries = entries
+		}
+		hasConfigurationUpdate := effortPresent || textFormatPresent
 
 		// TS 5a645e92d2: the feature named in the error is the effort
-		// update when set, else the format update.
-		feature := "reasoningEffortUpdate"
-		if !effortPresent {
+		// update when set, else the format update, else the tools.
+		feature := "additionalTools"
+		switch {
+		case effortPresent:
+			feature = "reasoningEffortUpdate"
+		case textFormatPresent:
 			feature = "textFormatUpdate"
 		}
 		var unsupportedReason string
 		if content != "" {
 			unsupportedReason = "Message-level " + feature + " requires empty system message content."
-		} else {
+		} else if hasConfigurationUpdate {
+			// additionalTools alone does not need configuration update
+			// support from the model.
 			unsupportedReason = opts.ConfigurationUpdateUnsupportedReason
 		}
 		if unsupportedReason != "" {
@@ -317,20 +345,31 @@ func convertSystemMidConversationMessage(msg types.Message, systemMessageMode st
 			}
 		}
 
-		// The control is independent of systemMessageMode's text handling.
-		update := map[string]interface{}{"type": "configuration_update"}
-		if effortPresent {
-			update["reasoning"] = map[string]interface{}{"effort": effort}
-		}
+		// The controls are independent of systemMessageMode's text handling.
+		var items []interface{}
 		var formatWarnings []types.Warning
-		if textFormat != nil {
-			normalized, err := NormalizeTextFormat(textFormat, opts.NormalizeTextFormatSchema, &formatWarnings)
-			if err != nil {
-				return nil, nil, err
+		if hasConfigurationUpdate {
+			update := map[string]interface{}{"type": "configuration_update"}
+			if effortPresent {
+				update["reasoning"] = map[string]interface{}{"effort": effort}
 			}
-			update["text"] = map[string]interface{}{"format": normalized}
+			if textFormat != nil {
+				normalized, err := NormalizeTextFormat(textFormat, opts.NormalizeTextFormatSchema, &formatWarnings)
+				if err != nil {
+					return nil, nil, err
+				}
+				update["text"] = map[string]interface{}{"format": normalized}
+			}
+			items = append(items, update)
 		}
-		return update, formatWarnings, nil
+		tools, err := filterAdditionalTools(additionalEntries, opts, &formatWarnings)
+		if err != nil {
+			return nil, nil, err
+		}
+		if len(tools) > 0 {
+			items = append(items, AdditionalToolsItem{Type: "additional_tools", Role: "developer", Tools: tools})
+		}
+		return items, formatWarnings, nil
 	}
 
 	switch systemMessageMode {
@@ -345,13 +384,13 @@ func convertSystemMidConversationMessage(msg types.Message, systemMessageMode st
 			if opts.ExplicitMessageItemType {
 				item["type"] = "message"
 			}
-			return item, nil, nil
+			return []interface{}{item}, nil, nil
 		}
 		sysMsg := SystemMessage{Role: systemMessageMode, Content: content}
 		if opts.ExplicitMessageItemType {
 			sysMsg.Type = "message"
 		}
-		return sysMsg, nil, nil
+		return []interface{}{sysMsg}, nil, nil
 	case "remove":
 		return nil, []types.Warning{{
 			Type:    "other",
@@ -1627,6 +1666,9 @@ func convertToolItems(msg types.Message, options ...ConvertOptions) ([]interface
 	if len(options) > 0 {
 		opts = options[0]
 	}
+	if opts.additionalTools == nil {
+		opts.additionalTools = newAdditionalToolsState()
+	}
 	items := make([]interface{}, 0, len(msg.Content))
 	processedApprovals := opts.processedApprovalIDs
 	if processedApprovals == nil {
@@ -1755,78 +1797,25 @@ func convertToolItems(msg types.Message, options ...ConvertOptions) ([]interface
 
 // appendAdditionalTools appends an `additional_tools` item right after the
 // function_call_output of part when providerOptions.<name>.additionalTools
-// lists function definitions (TS openaiResponsesToolResultOptionsSchema). The
-// option is validated like the TS strict schema: every entry needs
-// type "function", a non-empty name and a parameters object; description and
-// strict are optional; unknown keys are rejected.
+// lists tool definitions (TS resolveAdditionalTools). The entries are
+// validated like the TS strict schema and only select tools registered for
+// the request; the definition sent is derived from the registered tool.
 func appendAdditionalTools(items *[]interface{}, part types.ToolResultContent, opts ConvertOptions) error {
-	providerName := openAIProviderOptionsName(opts)
-	openaiOptions, ok := providerutils.NormalizeProviderOptionsObject(part.ProviderOptions[providerName])
-	if !ok {
-		return nil
-	}
-	raw, present := openaiOptions["additionalTools"]
-	if !present {
-		return nil
-	}
-	field := "providerOptions." + providerName + ".additionalTools"
-	invalid := func(message string) error {
-		return &providererrors.InvalidArgumentError{Field: field, Message: message}
-	}
-	if raw == nil {
-		return invalid("expected an array of function tool definitions")
-	}
-	encoded, err := json.Marshal(raw)
+	entries, err := toolResultAdditionalTools(part, openAIProviderOptionsName(opts))
 	if err != nil {
-		return invalid(err.Error())
+		return err
 	}
-	var entries []json.RawMessage
-	if err := json.Unmarshal(encoded, &entries); err != nil {
-		return invalid("expected an array of function tool definitions")
+	var warnings []types.Warning
+	tools, err := filterAdditionalTools(entries, opts, &warnings)
+	if opts.toolOutputWarnings != nil {
+		*opts.toolOutputWarnings = append(*opts.toolOutputWarnings, warnings...)
 	}
-	tools := make([]AdditionalToolDef, 0, len(entries))
-	for i, entry := range entries {
-		var def struct {
-			Type        *string                `json:"type"`
-			Name        *string                `json:"name"`
-			Description *string                `json:"description"`
-			Parameters  map[string]interface{} `json:"parameters"`
-			Strict      *bool                  `json:"strict"`
-		}
-		decoder := json.NewDecoder(bytes.NewReader(entry))
-		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(&def); err != nil {
-			return invalid(fmt.Sprintf("entry %d is not a valid function tool definition: %v", i, err))
-		}
-		switch {
-		case def.Type == nil || *def.Type != "function":
-			return invalid(fmt.Sprintf("entry %d: type must be \"function\"", i))
-		case def.Name == nil || *def.Name == "":
-			return invalid(fmt.Sprintf("entry %d: name must be a non-empty string", i))
-		case def.Parameters == nil:
-			return invalid(fmt.Sprintf("entry %d: parameters must be an object", i))
-		}
-		// description and strict are .optional(): a present null is invalid.
-		var present map[string]json.RawMessage
-		if json.Unmarshal(entry, &present) == nil {
-			for _, key := range []string{"description", "strict"} {
-				if string(present[key]) == "null" {
-					return invalid(fmt.Sprintf("entry %d: %s must not be null", i, key))
-				}
-			}
-		}
-		tools = append(tools, AdditionalToolDef{
-			Type:        "function",
-			Name:        *def.Name,
-			Description: def.Description,
-			Parameters:  def.Parameters,
-			Strict:      def.Strict,
-		})
+	if err != nil {
+		return err
 	}
-	if len(tools) == 0 {
-		return nil
+	if len(tools) > 0 {
+		*items = append(*items, AdditionalToolsItem{Type: "additional_tools", Role: "developer", Tools: tools})
 	}
-	*items = append(*items, AdditionalToolsItem{Type: "additional_tools", Role: "developer", Tools: tools})
 	return nil
 }
 
@@ -1847,6 +1836,12 @@ func appendParallelToolResult(items *[]interface{}, part types.ToolResultContent
 	if !opts.emittedParallelToolResults[group.metadata.ToolCallID] {
 		opts.emittedParallelToolResults[group.metadata.ToolCallID] = true
 		*items = append(*items, buildParallelFunctionCallOutput(group, opts))
+		// TS a279e86925: each child result keeps its additionalTools.
+		for _, result := range group.results {
+			if err := appendAdditionalTools(items, result, opts); err != nil {
+				return true, err
+			}
+		}
 	}
 	return true, nil
 }

@@ -361,6 +361,7 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 	var contextManagement []map[string]interface{}
 	contextManagementExplicit := false
 	var allowedToolNames []string
+	allowedToolsPresent := false
 	var allowedToolsMode string
 	providerOptionsName := m.provider.responsesProviderOptionsName()
 	var openaiOpts map[string]interface{}
@@ -501,6 +502,7 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 				contextManagement = responsesContextManagement(openaiOpts["contextManagement"])
 			}
 			if raw, ok := openaiOpts["allowedTools"].(map[string]interface{}); ok {
+				allowedToolsPresent = true
 				allowedToolNames = stringSliceFromInterface(raw["toolNames"])
 				allowedToolsMode, _ = raw["mode"].(string)
 			}
@@ -611,6 +613,43 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		includeWebSearchSources = false
 	}
 
+	// Prompts can contain client-supplied conversation history. Only the tools
+	// registered for this request may be loaded from such history through
+	// additionalTools; each entry resolves to the definition derived from its
+	// registered tool. The resolutions are cached because replayed history can
+	// repeat an entry (TS findAdditionalToolForRequest).
+	type additionalToolResolution struct {
+		resolution *responses.AdditionalToolResolution
+		err        error
+	}
+	additionalToolResolutions := map[string]additionalToolResolution{}
+	var additionalAllowedToolNames map[string]bool
+	if allowedToolsPresent {
+		providerToolNames := openAIProviderToolNames(opts.Tools)
+		additionalAllowedToolNames = map[string]bool{}
+		for _, name := range allowedToolNames {
+			if mapped, ok := providerToolNames[name]; ok {
+				name = mapped
+			}
+			additionalAllowedToolNames[name] = true
+		}
+	}
+	findAdditionalToolForRequest := func(ref responses.AdditionalToolRef) (*responses.AdditionalToolResolution, error) {
+		key := ref.Type + ":" + ref.Name
+		if cached, ok := additionalToolResolutions[key]; ok {
+			return cached.resolution, cached.err
+		}
+		resolution, err := responses.FindAdditionalToolDefinition(responses.FindAdditionalToolOptions{
+			Tools:               opts.Tools,
+			ProviderOptionsName: providerOptionsName,
+			Ref:                 ref,
+			AllowedToolNames:    additionalAllowedToolNames,
+			NormalizeSchema:     NormalizeOpenAISchemaValue,
+		})
+		additionalToolResolutions[key] = additionalToolResolution{resolution, err}
+		return resolution, err
+	}
+
 	// Convert prompt to Responses API input format.
 	input, inputWarnings, err := responses.ConvertPromptToInputWithOptions(opts.Prompt, systemMsgMode, responses.ConvertOptions{
 		PassThroughUnsupportedFiles:          passThroughUnsupportedFiles,
@@ -633,6 +672,7 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		NormalizeTextFormatSchema:            NormalizeOpenAISchemaValue,
 		IsReasoningModel:                     isReasoning,
 		WebSearchToolName:                    responsesWebSearchToolName(opts.Tools),
+		FindAdditionalToolDefinition:         findAdditionalToolForRequest,
 	})
 	if err != nil {
 		return nil, store, warnings, err
