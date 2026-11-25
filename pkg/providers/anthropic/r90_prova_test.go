@@ -17,7 +17,7 @@ func TestR90provaFable52Capabilities(t *testing.T) {
 	want := ModelCapabilities{
 		MaxOutputTokens: 128000, SupportsStructuredOutput: true, SupportsAdaptiveThinking: true,
 		RejectsSamplingParameters: true, SupportsXHighEffort: true,
-		RejectsThinkingDisabled: true, RejectsBudgetThinking: true, RejectsForcedToolUse: true, IsKnownModel: true,
+		RejectsThinkingDisabledAboveHighEffort: true, RejectsThinkingDisabled: true, RejectsBudgetThinking: true, RejectsForcedToolUse: true, IsKnownModel: true,
 	}
 	if got := GetModelCapabilities(ClaudeFable5_2); got != want {
 		t.Fatalf("GetModelCapabilities(%q) = %#v, want %#v", ClaudeFable5_2, got, want)
