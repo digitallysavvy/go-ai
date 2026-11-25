@@ -778,7 +778,7 @@ func portgenCollectBatch(t *testing.T, items []provider.BatchV4ItemResult, outpu
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 	var out []*BatchItemResult
 	for {
 		item, err := stream.Next()

@@ -122,9 +122,9 @@ func TestPortgenGenerateAgentApprovalMessagesSlicePerStep(t *testing.T) {
 			return &types.GenerateResult{Text: "done", FinishReason: types.FinishReasonStop}, nil
 		},
 	}
-	executed := 0
-	tool := approvalSecretTestTool(&executed)
-	tool.ToolApproval = ""
+	tool := types.Tool{Name: "tool1", Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+		return "ok", nil
+	}}
 	agent := NewToolLoopAgent(AgentConfig{
 		Model: model,
 		Tools: []types.Tool{tool},

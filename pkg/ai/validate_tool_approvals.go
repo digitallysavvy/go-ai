@@ -196,7 +196,7 @@ func revalidateApprovedInput(ctx context.Context, approval CollectedToolApproval
 	// edits its input in place would otherwise rewrite the approved input
 	// (and the caller's message history) and pass the equality check below.
 	approvedInput := cloneApprovalArguments(call.Arguments)
-	var value interface{} = cloneApprovalJSON(approvedInput)
+	value := cloneApprovalJSON(approvedInput)
 	// TS hasOwnProperty(approvalRequest, 'inputSchemaInput'): a null schema
 	// input is validated as null.
 	if approval.ApprovalRequest.InputSchemaInput != nil || approval.ApprovalRequest.InputSchemaInputSet {
