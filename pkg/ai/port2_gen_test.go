@@ -205,7 +205,7 @@ func (s *port2genResponsesServer) ServeHTTP(w http.ResponseWriter, r *http.Reque
 	events = append(events, map[string]interface{}{"type": "response.completed", "response": response})
 	for _, e := range events {
 		b, _ := json.Marshal(e)
-		fmt.Fprintf(w, "data: %s\n\n", b)
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", b)
 	}
 }
 

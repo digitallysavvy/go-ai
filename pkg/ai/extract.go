@@ -409,7 +409,7 @@ func resolveExtractionModel(model interface{}, resolver provider.ExtractionModel
 		return checkExtractionModelVersion(v)
 	case string:
 		if resolver == nil {
-			var candidate interface{} = configuredDefaultProvider()
+			candidate := configuredDefaultProvider()
 			if candidate == nil {
 				gw, err := gateway.Gateway()
 				if err != nil {
