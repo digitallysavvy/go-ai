@@ -516,6 +516,18 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc, startID s
 			if t == harness.PartTypeFinishStep {
 				pc.checkpoint.Record(e)
 			}
+			if rp, ok := f.Part.(*harness.RawPart); ok {
+				// The bridge's reduced `init` raw event carries the session ID
+				// of the turn, so a turn that ends before `finish` still
+				// records it for a later detach or suspend (TS 31120c50b0).
+				if raw, ok := rp.RawValue.(map[string]any); ok {
+					if id, ok := raw["sessionId"].(string); ok && id != "" && raw["type"] == "system" && raw["subtype"] == "init" {
+						s.mu.Lock()
+						s.lastSessionID = id
+						s.mu.Unlock()
+					}
+				}
+			}
 			forward(f.Part)
 		}))
 	}

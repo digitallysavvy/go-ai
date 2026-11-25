@@ -159,12 +159,9 @@ func telemetryToolsContext(settings *telemetry.Options, toolsContext map[string]
 // per turn and records the returned root ctx for span nesting. Called from
 // ensureStarted, which already guards against firing more than once.
 func (d *turnDriver) telStart() {
-	// TS createTurnLifecycle: `telemetry == null` -> no dispatcher at all, so
-	// an agent without Telemetry settings fires nothing, even when an
-	// integration is registered globally.
-	if d.in.Telemetry == nil {
-		return
-	}
+	// TS createTurnLifecycle always builds the restricted dispatcher
+	// (679b5b55e8): an agent without Telemetry settings still reaches the
+	// globally registered integrations.
 	// TS start event: `maxRetries: 0` (a harness turn never retries).
 	maxRetries := 0
 	d.telCtx = telemetry.FireOnStart(d.ctx, telemetry.TelemetryStartEvent{
@@ -187,9 +184,6 @@ func (d *turnDriver) telStart() {
 // firing more than once per step.
 func (d *turnDriver) telStepStart() {
 	d.telModelCallStartedAt = nowMs()
-	if d.in.Telemetry == nil {
-		return
-	}
 	provider := "harness:" + d.in.Harness.HarnessID()
 	d.telStepCtx = telemetry.FireOnStepStart(d.telCtx, telemetry.TelemetryStepStartEvent{
 		CallID:         d.telCallID,
@@ -484,9 +478,6 @@ func (d *turnDriver) telError(err error) {
 	}
 	d.ensureStarted()
 	d.telEnded = true
-	if d.in.Telemetry == nil {
-		return
-	}
 	// H5: CallID is now required so each registered integration can resolve
 	// ITS OWN root span by CallID instead of trace.SpanFromContext(ctx) —
 	// pkg/ai/generate.go's matching FireOnError call was updated the same way.
@@ -506,9 +497,6 @@ func (d *turnDriver) telAbort(err error) {
 	}
 	d.ensureStarted()
 	d.telEnded = true
-	if d.in.Telemetry == nil {
-		return
-	}
 	telemetry.FireOnAbort(d.telCtx, telemetry.TelemetryAbortEvent{
 		Settings: d.in.Telemetry, CallID: d.telCallID, Reason: err, Steps: d.completedSteps,
 	})

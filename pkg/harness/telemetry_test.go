@@ -525,11 +525,13 @@ func (c *countingIntegration) ExecuteTool(ctx context.Context, name string, args
 	return execute(ctx, args)
 }
 
-// TestAgent_NoTelemetrySettingsFiresNothingEvenWithGlobalIntegration mirrors
-// TS telemetry-integration.test.ts 'fires no telemetry when settings.telemetry
-// is unset': createTurnLifecycle builds no dispatcher when telemetry is null,
-// so an integration registered globally must not see the turn.
-func TestAgent_NoTelemetrySettingsFiresNothingEvenWithGlobalIntegration(t *testing.T) {
+// TestAgent_NoTelemetrySettingsDeliversGlobalIntegration mirrors TS
+// telemetry-integration.test.ts 'delivers global telemetry without per-call
+// settings' (679b5b55e8): createTurnLifecycle always builds the dispatcher, so
+// an integration registered globally sees the turn when settings.telemetry is
+// unset. It replaces the old 'fires no telemetry when settings.telemetry is
+// unset' case.
+func TestAgent_NoTelemetrySettingsDeliversGlobalIntegration(t *testing.T) {
 	rec := &countingIntegration{}
 	telemetry.ClearTelemetryIntegrations()
 	telemetry.RegisterTelemetryIntegration(rec)
@@ -557,22 +559,15 @@ func TestAgent_NoTelemetrySettingsFiresNothingEvenWithGlobalIntegration(t *testi
 		t.Fatal(err)
 	}
 	rec.mu.Lock()
-	n := len(rec.calls)
-	rec.mu.Unlock()
-	if n != 0 {
-		t.Fatalf("global integration saw %v with Telemetry unset", rec.calls)
-	}
-
-	// Control: the same agent with Telemetry set does reach the integration.
-	a2, _ := NewAgent(AgentSettings{Harness: mock.harness, Telemetry: telemetry.DefaultSettings()})
-	session2, _ := a2.CreateSession(context.Background(), CreateSessionOptions{SandboxSession: testSandbox()})
-	if _, err := a2.Generate(context.Background(), agent.AgentGenerateOptions{Prompt: "hi", HarnessSession: session2}); err != nil {
-		t.Fatal(err)
-	}
-	rec.mu.Lock()
 	defer rec.mu.Unlock()
-	if len(rec.calls) == 0 {
-		t.Fatal("control: integration saw nothing with Telemetry set")
+	got := map[string]bool{}
+	for _, c := range rec.calls {
+		got[c] = true
+	}
+	for _, want := range []string{"start", "stepStart", "end"} {
+		if !got[want] {
+			t.Fatalf("global integration saw %v with Telemetry unset, want %q among them", rec.calls, want)
+		}
 	}
 }
 

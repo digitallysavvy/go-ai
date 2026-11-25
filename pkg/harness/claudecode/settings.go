@@ -154,6 +154,11 @@ type Settings struct {
 	// Reconnect tunes reconnection after an established bridge connection
 	// drops.
 	Reconnect bridge.ReconnectOptions
+	// KeepAlive is the WebSocket ping interval (TS `keepAliveMs`, 04a8f3837e).
+	// Zero uses the default of 20s; a negative value disables the heartbeat
+	// (TS `keepAliveMs: 0`). Two unanswered pings with no inbound bytes
+	// terminate the socket and trigger the bounded reconnect.
+	KeepAlive time.Duration
 	// OnDebug is called with bridge connection lifecycle events: reconnect
 	// attempts, successful reconnects, and "reconnect-failed" once the
 	// connection is closed for good. Hosts that cache idle sessions can use it

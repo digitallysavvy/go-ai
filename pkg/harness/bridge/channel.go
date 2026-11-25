@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
@@ -56,6 +57,9 @@ const (
 	CloseReasonReconnectFailed = "reconnect failed"
 )
 
+// DefaultKeepAlive is the default WebSocket ping interval (TS 20_000 ms).
+const DefaultKeepAlive = 20 * time.Second
+
 // DefaultSelectiveFlushGrace is how long buffered events of a type nobody
 // listens to may hold back later, subscribed events. See ChannelOptions.
 const DefaultSelectiveFlushGrace = 5 * time.Millisecond
@@ -69,6 +73,14 @@ type ChannelOptions struct {
 	Decode func(data []byte) (OutboundMessage, *float64, error)
 	// Reconnect tunes the reconnect budget and backoff.
 	Reconnect ReconnectOptions
+	// KeepAlive is the interval between WebSocket pings (TS `keepAliveMs`).
+	// It keeps idle connections alive and terminates an unresponsive socket
+	// after two unanswered pings so reconnection can begin; inbound bytes also
+	// count as a sign of life, so a large frame still transferring on a slow
+	// link is not cut off (TS 3334b4d34b). Zero uses DefaultKeepAlive; a
+	// negative value disables the heartbeat (TS `keepAliveMs: 0`). Connections
+	// without ping support are left unchanged.
+	KeepAlive time.Duration
 	// OnDebug receives connection lifecycle events.
 	OnDebug func(ChannelDebugEvent)
 	// OnDiagnostic receives `sandbox-log` and `debug-event` frames. They are
@@ -283,6 +295,7 @@ type Channel struct {
 	initialDelay time.Duration
 	maxDelay     time.Duration
 	grace        time.Duration
+	keepAlive    time.Duration // <= 0: heartbeat disabled
 
 	mu sync.Mutex
 	// listeners
@@ -309,6 +322,7 @@ type Channel struct {
 	lastSeen          float64
 	pendingSends      []pendingSend
 	activeConnect     *cancelHandle
+	stopKeepAlive     func() // stops the current connection's heartbeat
 	reconnectAbort    *cancelHandle
 	done              chan struct{}
 
@@ -351,6 +365,12 @@ func NewChannel(opts ChannelOptions) *Channel {
 	if c.grace <= 0 {
 		c.grace = DefaultSelectiveFlushGrace
 	}
+	c.keepAlive = opts.KeepAlive
+	if c.keepAlive == 0 {
+		c.keepAlive = DefaultKeepAlive
+	} else if c.keepAlive < 0 {
+		c.keepAlive = 0
+	}
 	return c
 }
 
@@ -361,6 +381,11 @@ func (c *Channel) LastSeenEventID() float64 {
 	defer c.mu.Unlock()
 	return c.lastSeen
 }
+
+// KeepAlive returns the channel's resolved heartbeat interval (the default
+// filled in; zero or negative means disabled). Test-only, like
+// ReconnectOptions.
+func (c *Channel) KeepAlive() time.Duration { return c.keepAlive }
 
 // ReconnectOptions returns the channel's resolved reconnect budget/backoff
 // (defaults filled in by NewChannel). Test-only: exists so adapter tests can
@@ -538,6 +563,7 @@ func (c *Channel) SendWithOptions(cmd InboundCommand, opts SendOptions) error {
 func (c *Channel) BeginClose() {
 	c.mu.Lock()
 	c.closing = true
+	c.stopKeepAliveLocked()
 	c.mu.Unlock()
 	c.abortActiveConnect()
 }
@@ -550,6 +576,7 @@ func (c *Channel) Close() {
 		return
 	}
 	c.closing = true
+	c.stopKeepAliveLocked()
 	conn := c.ws
 	c.mu.Unlock()
 	c.abortActiveConnect()
@@ -584,6 +611,7 @@ func (c *Channel) Suspend() <-chan float64 {
 	}
 	c.suspended = true
 	c.closing = true
+	c.stopKeepAliveLocked()
 	var once sync.Once
 	c.closeHandlers = append(c.closeHandlers, func(int, string) {
 		once.Do(func() {
@@ -626,8 +654,28 @@ func (c *Channel) Done() <-chan struct{} { return c.done }
 
 // ─── internals ─────────────────────────────────────────────────────────
 
-// wire starts the reader for conn. c.mu must be held.
+// wire starts the reader for conn and its heartbeat. c.mu must be held.
 func (c *Channel) wire(conn Conn) {
+	// The reader and the heartbeat both report a drop; only the first counts
+	// (TS onDrop's `dropped` guard), so a heartbeat termination does not start
+	// a second reconnect loop when the closed socket's read then fails.
+	var dropped atomic.Bool
+	done := make(chan struct{})
+	var stopOnce sync.Once
+	stop := func() { stopOnce.Do(func() { close(done) }) }
+	drop := func(code int, reason string) {
+		if dropped.Swap(true) {
+			return
+		}
+		stop()
+		c.onDrop(conn, code, reason)
+	}
+	c.stopKeepAliveLocked()
+	c.startKeepAlive(conn, done, func() {
+		_ = conn.Close()
+		drop(1006, "heartbeat timeout")
+	})
+	c.stopKeepAlive = stop
 	go func() {
 		for {
 			data, err := conn.Receive()
@@ -637,7 +685,7 @@ func (c *Channel) wire(conn Conn) {
 				if errors.As(err, &ce) {
 					code, reason = ce.Code, ce.Reason
 				}
-				c.onDrop(conn, code, reason)
+				drop(code, reason)
 				return
 			}
 			c.mu.Lock()
@@ -647,6 +695,66 @@ func (c *Channel) wire(conn Conn) {
 				continue
 			}
 			c.enqueue(func() { c.handleIncoming(data) })
+		}
+	}()
+}
+
+// stopKeepAliveLocked stops the current heartbeat. c.mu must be held.
+func (c *Channel) stopKeepAliveLocked() {
+	if c.stopKeepAlive != nil {
+		c.stopKeepAlive()
+		c.stopKeepAlive = nil
+	}
+}
+
+// heartbeatConn is a Conn that can send WebSocket pings and report how many
+// bytes it has read from the network (TS `ws.ping()` and the underlying
+// socket's `bytesRead`). A pong is inbound bytes, so counting bytes covers
+// both the pong and a frame still in transit.
+type heartbeatConn interface {
+	Ping() error
+	BytesRead() int64
+}
+
+// startKeepAlive pings conn every c.keepAlive. A peer that stays silent for
+// two unanswered pings, with no inbound bytes either, is reported through
+// onTimeout (TS SandboxChannel.keepalive). Closing done stops the heartbeat.
+func (c *Channel) startKeepAlive(conn Conn, done <-chan struct{}, onTimeout func()) {
+	hb, ok := conn.(heartbeatConn)
+	if !ok || c.keepAlive <= 0 {
+		return
+	}
+	go func() {
+		ticker := time.NewTicker(c.keepAlive)
+		defer ticker.Stop()
+		unanswered := 0
+		lastBytes := hb.BytesRead()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+			}
+			if !connIsOpen(conn) {
+				continue
+			}
+			// Pongs queue behind a large frame still transferring on a slow
+			// link, so inbound bytes also count as a sign of life. Ending a
+			// progressing transfer would only make the bridge replay the same
+			// frame (TS 3334b4d34b).
+			if n := hb.BytesRead(); n != lastBytes {
+				lastBytes = n
+				unanswered = 0
+			}
+			if unanswered >= 2 {
+				onTimeout()
+				return
+			}
+			unanswered++
+			if err := hb.Ping(); err != nil {
+				onTimeout()
+				return
+			}
 		}
 	}()
 }
@@ -1214,6 +1322,7 @@ func (c *Channel) finalizeClose(code int, reason string) {
 	}
 	c.terminal = true
 	c.connected = false
+	c.stopKeepAliveLocked()
 	handlers := append([]func(int, string){}, c.closeHandlers...)
 	close(c.done)
 	c.mu.Unlock()
