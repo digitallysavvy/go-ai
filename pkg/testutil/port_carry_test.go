@@ -13,7 +13,7 @@ func TestPortCarryMockExtractionModel(t *testing.T) {
 	if m.Provider() != "mock-provider" || m.ModelID() != "mock-model-id" || len(m.SupportedFieldTypes()) != 7 {
 		t.Fatal("defaults")
 	}
-	if _, err := m.DoExtract(context.Background(), provider.ExtractionCallOptions{}); err == nil || err.Error() != "Not implemented" {
+	if _, err := m.DoExtract(context.Background(), provider.ExtractionCallOptions{}); err == nil || err.Error() != "not implemented" {
 		t.Fatalf("err = %v", err)
 	}
 	if len(m.ExtractCalls) != 1 {

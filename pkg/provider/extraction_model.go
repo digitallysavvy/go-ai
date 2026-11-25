@@ -60,8 +60,9 @@ type ExtractionField struct {
 	Unit string
 
 	// Integer requires an integer value ("number", "duration") or integer
-	// items ("list" of number items).
-	Integer bool
+	// items ("list" of number items). Nil means unset (TS `integer`
+	// undefined); a pointer to false is an explicit false.
+	Integer *bool
 
 	// Decimals is the maximum number of decimal places, an integer from 0 to
 	// 6 ("number", "duration", "list" of number items). Nil means unset.

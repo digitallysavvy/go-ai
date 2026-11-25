@@ -46,7 +46,7 @@ func (m *MockExtractionModel) SupportedFieldTypes() []string {
 }
 
 // DoExtract records the call and runs DoExtractFunc; without one it fails
-// like the TS notImplemented default.
+// like the TS notImplemented default ("not implemented").
 func (m *MockExtractionModel) DoExtract(ctx context.Context, opts provider.ExtractionCallOptions) (*provider.ExtractionResult, error) {
 	m.mu.Lock()
 	m.ExtractCalls = append(m.ExtractCalls, opts)
@@ -54,5 +54,5 @@ func (m *MockExtractionModel) DoExtract(ctx context.Context, opts provider.Extra
 	if m.DoExtractFunc != nil {
 		return m.DoExtractFunc(ctx, opts)
 	}
-	return nil, errors.New("Not implemented")
+	return nil, errors.New("not implemented")
 }
