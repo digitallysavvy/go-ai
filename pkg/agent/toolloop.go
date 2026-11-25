@@ -834,6 +834,12 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 			prepared := a.prepareCallConfig(ctx, stepIndex, "", currentMessages, result.Steps, result.Usage, customData)
 			callTools = prepared.Tools
 			callConfig = a.finishStepCallConfig(ctx, stepIndex, prepared)
+			// PrepareCall can return the same slice for several steps, so the
+			// step gets a copy (TS 0b8cbfadb8): the step's tools and approval
+			// functions all see this step's slice and no other step's.
+			if callConfig.Messages != nil {
+				callConfig.Messages = append(make([]types.Message, 0, len(callConfig.Messages)), callConfig.Messages...)
+			}
 		}
 		// A PrepareCall override of the telemetry settings (TS prepareCall
 		// `telemetry`) applies to this and the following steps' spans.
