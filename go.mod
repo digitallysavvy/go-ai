@@ -3,6 +3,7 @@ module github.com/digitallysavvy/go-ai
 go 1.26.0
 
 require (
+	github.com/gatewaytofredom/pjson v0.3.1
 	github.com/gin-gonic/gin v1.12.0
 	github.com/go-chi/chi/v5 v5.3.2
 	github.com/go-chi/cors v1.2.2

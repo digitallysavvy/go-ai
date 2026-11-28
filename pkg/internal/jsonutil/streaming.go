@@ -3,24 +3,47 @@ package jsonutil
 import (
 	"encoding/json"
 	"strings"
+
+	"github.com/gatewaytofredom/pjson"
 )
+
+func newIncrementalParser() *pjson.Parser {
+	return pjson.New(
+		pjson.WithMaxDepth(512),
+		pjson.WithCompleteLiterals(),
+		pjson.WithTrailingCommas(),
+	)
+}
 
 // StreamingParser handles incremental JSON parsing for streaming scenarios
 type StreamingParser struct {
 	buffer      strings.Builder
+	parser      *pjson.Parser
+	snapBuf     []byte
+	fallback    bool
 	lastValid   interface{}
 	accumulated string
 }
 
 // NewStreamingParser creates a new streaming JSON parser
 func NewStreamingParser() *StreamingParser {
-	return &StreamingParser{}
+	return &StreamingParser{
+		parser: newIncrementalParser(),
+	}
 }
 
 // Append adds more data to the parser
 func (p *StreamingParser) Append(data string) {
 	p.buffer.WriteString(data)
 	p.accumulated = p.buffer.String()
+	if !p.fallback && data != "" {
+		if p.parser == nil {
+			p.parser = newIncrementalParser()
+		}
+		if _, err := p.parser.WriteString(data); err != nil {
+			p.fallback = true
+		}
+	}
 }
 
 // TryParse attempts to parse the accumulated data
@@ -32,14 +55,24 @@ func (p *StreamingParser) TryParse() (interface{}, bool) {
 		return nil, false
 	}
 
-	// Try direct parse
+	if !p.fallback && p.parser != nil {
+		p.snapBuf = p.parser.CompleteJSONAppend(p.snapBuf[:0])
+		if len(p.snapBuf) > 0 {
+			var result interface{}
+			if err := json.Unmarshal(p.snapBuf, &result); err == nil {
+				p.lastValid = result
+				return result, true
+			}
+		}
+		return p.lastValid, false
+	}
+
+	// Fallback for non-standard malformed JSON (comments, unquoted keys, single quotes).
 	var result interface{}
 	if err := json.Unmarshal([]byte(current), &result); err == nil {
 		p.lastValid = result
 		return result, true
 	}
-
-	// Try with partial parsing
 	if partial, err := ParsePartialJSON(current); err == nil && partial != nil {
 		p.lastValid = partial
 		return partial, true
@@ -61,6 +94,11 @@ func (p *StreamingParser) GetLastValid() interface{} {
 // Reset clears the parser state
 func (p *StreamingParser) Reset() {
 	p.buffer.Reset()
+	if p.parser != nil {
+		p.parser.Reset()
+	}
+	p.snapBuf = p.snapBuf[:0]
+	p.fallback = false
 	p.lastValid = nil
 	p.accumulated = ""
 }
@@ -68,6 +106,9 @@ func (p *StreamingParser) Reset() {
 // ObjectStreamingParser handles streaming of objects with progressive field updates
 type ObjectStreamingParser struct {
 	buffer      strings.Builder
+	parser      *pjson.Parser
+	snapBuf     []byte
+	fallback    bool
 	accumulated string
 	fields      map[string]interface{}
 }
@@ -75,6 +116,7 @@ type ObjectStreamingParser struct {
 // NewObjectStreamingParser creates a new object streaming parser
 func NewObjectStreamingParser() *ObjectStreamingParser {
 	return &ObjectStreamingParser{
+		parser: newIncrementalParser(),
 		fields: make(map[string]interface{}),
 	}
 }
@@ -83,6 +125,14 @@ func NewObjectStreamingParser() *ObjectStreamingParser {
 func (p *ObjectStreamingParser) Append(data string) {
 	p.buffer.WriteString(data)
 	p.accumulated = p.buffer.String()
+	if !p.fallback && data != "" {
+		if p.parser == nil {
+			p.parser = newIncrementalParser()
+		}
+		if _, err := p.parser.WriteString(data); err != nil {
+			p.fallback = true
+		}
+	}
 
 	// Try to extract completed fields
 	p.extractFields()
@@ -90,12 +140,23 @@ func (p *ObjectStreamingParser) Append(data string) {
 
 // extractFields attempts to extract completed fields from partial JSON
 func (p *ObjectStreamingParser) extractFields() {
-	current := p.accumulated
+	if !p.fallback && p.parser != nil {
+		p.snapBuf = p.parser.CompleteJSONAppend(p.snapBuf[:0])
+		if len(p.snapBuf) > 0 {
+			var partial interface{}
+			if err := json.Unmarshal(p.snapBuf, &partial); err == nil {
+				if obj, ok := partial.(map[string]interface{}); ok {
+					for k, v := range obj {
+						p.fields[k] = v
+					}
+				}
+			}
+		}
+		return
+	}
 
-	// Try parsing as partial object
-	if partial, err := ParsePartialJSON(current); err == nil {
+	if partial, err := ParsePartialJSON(p.accumulated); err == nil {
 		if obj, ok := partial.(map[string]interface{}); ok {
-			// Update fields
 			for k, v := range obj {
 				p.fields[k] = v
 			}
@@ -122,6 +183,11 @@ func (p *ObjectStreamingParser) GetCurrent() string {
 // Reset clears the parser state
 func (p *ObjectStreamingParser) Reset() {
 	p.buffer.Reset()
+	if p.parser != nil {
+		p.parser.Reset()
+	}
+	p.snapBuf = p.snapBuf[:0]
+	p.fallback = false
 	p.accumulated = ""
 	p.fields = make(map[string]interface{})
 }
@@ -129,6 +195,9 @@ func (p *ObjectStreamingParser) Reset() {
 // ArrayStreamingParser handles streaming of arrays with progressive element extraction
 type ArrayStreamingParser struct {
 	buffer      strings.Builder
+	parser      *pjson.Parser
+	snapBuf     []byte
+	fallback    bool
 	accumulated string
 	elements    []interface{}
 }
@@ -136,6 +205,7 @@ type ArrayStreamingParser struct {
 // NewArrayStreamingParser creates a new array streaming parser
 func NewArrayStreamingParser() *ArrayStreamingParser {
 	return &ArrayStreamingParser{
+		parser:   newIncrementalParser(),
 		elements: make([]interface{}, 0),
 	}
 }
@@ -144,6 +214,14 @@ func NewArrayStreamingParser() *ArrayStreamingParser {
 func (p *ArrayStreamingParser) Append(data string) {
 	p.buffer.WriteString(data)
 	p.accumulated = p.buffer.String()
+	if !p.fallback && data != "" {
+		if p.parser == nil {
+			p.parser = newIncrementalParser()
+		}
+		if _, err := p.parser.WriteString(data); err != nil {
+			p.fallback = true
+		}
+	}
 
 	// Try to extract completed elements
 	p.extractElements()
@@ -151,12 +229,21 @@ func (p *ArrayStreamingParser) Append(data string) {
 
 // extractElements attempts to extract completed array elements from partial JSON
 func (p *ArrayStreamingParser) extractElements() {
-	current := p.accumulated
+	if !p.fallback && p.parser != nil {
+		p.snapBuf = p.parser.CompleteJSONAppend(p.snapBuf[:0])
+		if len(p.snapBuf) > 0 {
+			var partial interface{}
+			if err := json.Unmarshal(p.snapBuf, &partial); err == nil {
+				if arr, ok := partial.([]interface{}); ok && len(arr) > len(p.elements) {
+					p.elements = arr
+				}
+			}
+		}
+		return
+	}
 
-	// Try parsing as partial array
-	if partial, err := ParsePartialJSON(current); err == nil {
+	if partial, err := ParsePartialJSON(p.accumulated); err == nil {
 		if arr, ok := partial.([]interface{}); ok {
-			// Only update if we have more elements
 			if len(arr) > len(p.elements) {
 				p.elements = arr
 			}
@@ -182,6 +269,11 @@ func (p *ArrayStreamingParser) GetCurrent() string {
 // Reset clears the parser state
 func (p *ArrayStreamingParser) Reset() {
 	p.buffer.Reset()
+	if p.parser != nil {
+		p.parser.Reset()
+	}
+	p.snapBuf = p.snapBuf[:0]
+	p.fallback = false
 	p.accumulated = ""
 	p.elements = make([]interface{}, 0)
 }
