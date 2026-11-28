@@ -2,6 +2,8 @@ package jsonparser
 
 import (
 	"encoding/json"
+
+	"github.com/gatewaytofredom/pjson"
 )
 
 // ParseState represents the state of JSON parsing
@@ -33,24 +35,12 @@ type ParseResult struct {
 	Error error
 }
 
-// ParsePartialJSON attempts to parse potentially incomplete JSON
-// It first tries to parse the JSON as-is, and if that fails, uses FixJSON
-// to repair incomplete structures before parsing again
+// ParsePartialJSON attempts to parse potentially incomplete JSON.
+// It uses pjson to scan and auto-close incomplete structures in a single pass.
 func ParsePartialJSON(jsonText string) ParseResult {
-	// Phase 1: Try direct parsing
-	var value interface{}
-	err := json.Unmarshal([]byte(jsonText), &value)
-	if err == nil {
-		return ParseResult{
-			Value: value,
-			State: ParseStateSuccessful,
-			Error: nil,
-		}
-	}
-
-	// Phase 2: Try repair and parse
-	repairedJSON := FixJSON(jsonText)
-	if repairedJSON == "" {
+	if jsonText == "" {
+		var value interface{}
+		err := json.Unmarshal([]byte(jsonText), &value)
 		return ParseResult{
 			Value: nil,
 			State: ParseStateFailed,
@@ -58,8 +48,41 @@ func ParsePartialJSON(jsonText string) ParseResult {
 		}
 	}
 
-	err = json.Unmarshal([]byte(repairedJSON), &value)
-	if err == nil {
+	p := pjson.New(
+		pjson.WithMaxDepth(512),
+		pjson.WithCompleteLiterals(),
+		pjson.WithInitialCapacity(len(jsonText)+16),
+	)
+	if _, err := p.WriteString(jsonText); err != nil {
+		var value interface{}
+		return ParseResult{
+			Value: nil,
+			State: ParseStateFailed,
+			Error: json.Unmarshal([]byte(jsonText), &value),
+		}
+	}
+
+	var value interface{}
+	if p.Done() {
+		if err := json.Unmarshal([]byte(jsonText), &value); err == nil {
+			return ParseResult{
+				Value: value,
+				State: ParseStateSuccessful,
+				Error: nil,
+			}
+		}
+	}
+
+	snap := p.CompleteJSON()
+	if len(snap) == 0 {
+		return ParseResult{
+			Value: nil,
+			State: ParseStateFailed,
+			Error: json.Unmarshal([]byte(jsonText), &value),
+		}
+	}
+
+	if err := json.Unmarshal(snap, &value); err == nil {
 		return ParseResult{
 			Value: value,
 			State: ParseStateRepaired,
@@ -67,10 +90,9 @@ func ParsePartialJSON(jsonText string) ParseResult {
 		}
 	}
 
-	// Both attempts failed
 	return ParseResult{
 		Value: nil,
 		State: ParseStateFailed,
-		Error: err,
+		Error: json.Unmarshal([]byte(jsonText), &value),
 	}
 }

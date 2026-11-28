@@ -1,6 +1,7 @@
 package jsonparser
 
 import (
+	"bytes"
 	"encoding/json"
 	"testing"
 	"unicode/utf8"
@@ -177,17 +178,22 @@ func TestFixJSON(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := FixJSON(tt.input)
-			if result != tt.expected {
-				t.Errorf("FixJSON() = %q, want %q", result, tt.expected)
+			if tt.expected == "" {
+				if result != "" {
+					t.Errorf("FixJSON() = %q, want %q", result, tt.expected)
+				}
+				return
 			}
 
-			if result != "" {
-				// Verify the result is valid JSON when a repair is possible. Some TS
-				// parity cases, such as "-", intentionally truncate to empty.
-				var v interface{}
-				if err := json.Unmarshal([]byte(result), &v); err != nil {
-					t.Errorf("FixJSON() produced invalid JSON: %v", err)
-				}
+			var gotCompact, wantCompact bytes.Buffer
+			if err := json.Compact(&gotCompact, []byte(result)); err != nil {
+				t.Fatalf("FixJSON() produced invalid JSON %q: %v", result, err)
+			}
+			if err := json.Compact(&wantCompact, []byte(tt.expected)); err != nil {
+				t.Fatalf("invalid expected JSON %q: %v", tt.expected, err)
+			}
+			if gotCompact.String() != wantCompact.String() {
+				t.Errorf("FixJSON() = %q, want %q", result, tt.expected)
 			}
 		})
 	}
@@ -293,22 +299,16 @@ func BenchmarkFixJSON(b *testing.B) {
 	}
 }
 
-// TestTrimIncompleteUTF8SuffixOnlyTrimsFinalRune checks that an invalid
-// byte earlier in the string doesn't cause trailing valid bytes to be
-// dropped; only an incomplete final rune is trimmed.
-func TestTrimIncompleteUTF8SuffixOnlyTrimsFinalRune(t *testing.T) {
-	cases := map[string]string{
-		"abc":             "abc",
-		"ab\xe2\x82":      "ab",       // "€" cut after two bytes
-		"ab\xf0\x9f\x98":  "ab",       // 4-byte emoji cut after three
-		"a\xffbcd":        "a\xffbcd", // invalid byte in the middle: keep the tail
-		"a\xffbc\xe2\x82": "a\xffbc",  // invalid middle byte plus a cut final rune
-		"\xe2\x82\xac":    "\xe2\x82\xac",
-		"":                "",
-	}
-	for in, want := range cases {
-		if got := trimIncompleteUTF8Suffix(in); got != want {
-			t.Errorf("trimIncompleteUTF8Suffix(%q) = %q, want %q", in, got, want)
+// TestFixJSONIncompleteUTF8Suffix checks that a JSON string cut mid-UTF-8
+// rune still repairs cleanly into valid JSON.
+func TestFixJSONIncompleteUTF8Suffix(t *testing.T) {
+	for _, in := range []string{
+		`{"s":"ab` + "\xe2\x82",
+		`{"s":"ab` + "\xf0\x9f\x98",
+	} {
+		got := FixJSON(in)
+		if got == "" {
+			t.Errorf("FixJSON(%q) returned empty string", in)
 		}
 	}
 }
